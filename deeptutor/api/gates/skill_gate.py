@@ -47,7 +47,12 @@ SCORE = re.compile(
 # 宿主端三个事实的学生消息命中词
 SKIP_EXAMPLE_RE = re.compile(r"(例题.*(别|不用|跳过|不讲)|直接出题|跳例题)")
 LOW_CONFIDENCE_RE = re.compile(r"(我猜的|不确定|大概是吧|瞎选|蒙的)")
-HINT_LEVEL_RE = re.compile(r"(第\s*(\d)\s*级提示|这是第\s*(\d)\s*级)")
+# 求提示类消息（含口语化表达）—— 用于累加 max_hint_level，硬否决②依赖它
+HINT_REQUEST_RE = re.compile(
+    r"(提示|给我点提示|给个提示|再具体(一点|点|些)?|再提示|提示一下|帮我一下|"
+    r"不知道怎么(做|写)|不会(做|写)|卡住|下一步怎么|然后呢|再讲(一点|些)?|"
+    r"看不明白|没听懂|不太懂|还是不会|再给点)"
+)
 
 # 补救消息模板（方案 B 3.4）
 REMEDY_TEMPLATE = (
@@ -132,11 +137,18 @@ def init_gate_state() -> dict[str, Any]:
 
 
 def update_gate_state(state: dict[str, Any], user_message: str) -> None:
-    """根据学生消息更新宿主端三个事实。"""
+    """根据学生消息更新宿主端三个事实。
+
+    - example_skipped: 学生要求跳例题
+    - max_hint_level: 学生每求一次提示 +1（硬否决②依赖，识别口语化"再具体点"等）
+    - low_confidence: 学生说"我猜的/不确定"
+    """
     if not state:
         return
     if SKIP_EXAMPLE_RE.search(user_message):
         state["example_skipped"] = True
+    if HINT_REQUEST_RE.search(user_message):
+        state["max_hint_level"] = int(state.get("max_hint_level") or 0) + 1
     if LOW_CONFIDENCE_RE.search(user_message):
         state["low_confidence"] = True
 
