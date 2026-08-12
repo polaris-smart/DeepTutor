@@ -30,6 +30,9 @@ import SectionBlock from "./SectionBlock";
 import PlaceholderBlock from "./PlaceholderBlock";
 // YuEdu fork: 学科专属 block
 import PoetryBlock from "./PoetryBlock";
+import GrammarBlock from "./GrammarBlock";
+import TerrainBlock from "./TerrainBlock";
+import ClimateBlock from "./ClimateBlock";
 
 const CHANGEABLE_TYPES: BlockType[] = [
   "text",
@@ -176,9 +179,14 @@ export default function BlockRenderer({
       body = <PoetryBlock block={block} />;
       break;
     case "grammar":
+      body = <GrammarBlock block={block} />;
+      break;
     case "terrain":
+      body = <TerrainBlock block={block} />;
+      break;
     case "climate":
-      body = <PlaceholderBlock block={block} />;
+      body = <ClimateBlock block={block} />;
+      break;
     default:
       body = <PlaceholderBlock block={block} />;
   }
