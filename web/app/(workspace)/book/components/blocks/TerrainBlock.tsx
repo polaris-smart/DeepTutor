@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "lucide-react";
+import { useEffect, useRef } from "react";
 import type { Block } from "@/lib/book-types";
 
 /**
