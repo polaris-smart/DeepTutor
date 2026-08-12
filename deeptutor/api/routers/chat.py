@@ -11,6 +11,11 @@ import logging
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
 from deeptutor.agents.chat import ChatAgent, SessionManager
+from deeptutor.api.gates.skill_gate import (
+    check_and_remedy,
+    init_gate_state,
+    update_gate_state,
+)
 from deeptutor.services.config import PROJECT_ROOT, load_config_with_main
 from deeptutor.services.llm.config import get_llm_config
 from deeptutor.services.settings.interface_settings import get_response_language
@@ -84,6 +89,7 @@ async def websocket_chat(websocket: WebSocket):
             kb_name = data.get("kb_name", "")
             enable_rag = data.get("enable_rag", False)
             enable_web_search = data.get("enable_web_search", False)
+            gate_skill = str(data.get("gate_skill") or "").strip()
 
             if not message:
                 await websocket.send_json({"type": "error", "message": "Message is required"})
@@ -106,6 +112,7 @@ async def websocket_chat(websocket: WebSocket):
                                 "kb_name": kb_name,
                                 "enable_rag": enable_rag,
                                 "enable_web_search": enable_web_search,
+                                "gate_skill": gate_skill,
                             },
                         )
                         session_id = session["session_id"]
@@ -116,6 +123,7 @@ async def websocket_chat(websocket: WebSocket):
                             "kb_name": kb_name,
                             "enable_rag": enable_rag,
                             "enable_web_search": enable_web_search,
+                            "gate_skill": gate_skill,
                         },
                     )
                     session_id = session["session_id"]
@@ -212,6 +220,26 @@ async def websocket_chat(websocket: WebSocket):
 
                 if sources.get("rag") or sources.get("web"):
                     await websocket.send_json({"type": "sources", **sources})
+
+                # ── 悦学方案B：⑧NEXT 掌握度门禁软校验 ──────────────────────
+                # 仅当会话 settings 显式启用了 gate_skill 时生效（声明式，不污染其它对话）。
+                # 流式 UX 不变：违规时不重跑整轮，直接把补报分消息追加到 result。
+                # 宿主端记账从用户消息解析，掌握度不依赖模型记忆。
+                session_settings = session.get("settings") or {}
+                if session_settings.get("gate_skill"):
+                    gate_state = init_gate_state()
+                    update_gate_state(gate_state, message)
+                    remedy_msg, _ = check_and_remedy(full_response, gate_state)
+                    if remedy_msg:
+                        full_response = (
+                            full_response.rstrip()
+                            + "\n\n"
+                            + remedy_msg
+                        )
+                        logger.info(
+                            "[skill_gate] %s: ⑧门禁违规 → 追加补报分消息",
+                            session_settings.get("gate_skill"),
+                        )
 
                 await websocket.send_json(
                     {
