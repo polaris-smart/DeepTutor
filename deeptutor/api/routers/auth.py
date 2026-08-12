@@ -128,8 +128,9 @@ class SetRoleRequest(BaseModel):
     @field_validator("role")
     @classmethod
     def role_valid(cls, v: str) -> str:
-        if v not in ("admin", "user"):
-            raise ValueError("Role must be 'admin' or 'user'")
+        # 悦学 fork: 支持 admin/teacher/student/user 四角色
+        if v not in ("admin", "teacher", "student", "user"):
+            raise ValueError("Role must be 'admin', 'teacher', 'student' or 'user'")
         return v
 
 
