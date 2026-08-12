@@ -72,6 +72,11 @@ export interface SettingsCategory {
   href: string;
   /** Leaves listed on the sub-hub page (omitted for direct-leaf categories). */
   children?: SettingsLeaf[];
+  /**
+   * 悦学: 可见角色白名单。缺省=所有角色可见；命中则从设置 hub 隐藏。
+   * admin 永远可见。用于隐藏模型/网络/伙伴和智能体等纯 admin 后台配置。
+   */
+  roles?: ("admin" | "teacher" | "student")[];
 }
 
 const MODEL_CHILDREN: SettingsLeaf[] = [
@@ -288,6 +293,7 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
     },
     icon: Network,
     href: "/settings/network",
+    roles: ["admin"],
   },
   {
     key: "models",
@@ -299,6 +305,7 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
     icon: Boxes,
     href: "/settings/models",
     children: MODEL_CHILDREN,
+    roles: ["admin"],
   },
   {
     key: "knowledge",
@@ -328,6 +335,7 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
     icon: Bot,
     href: "/settings/agents",
     children: AGENT_CHILDREN,
+    roles: ["admin"],
   },
   {
     key: "memory",

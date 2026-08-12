@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { ChevronRight, Rocket, type LucideIcon } from "lucide-react";
 
 import { apiFetch, apiUrl } from "@/lib/api";
+import { useAuthStatus } from "@/hooks/useAuthStatus";
 import {
   serviceReadiness,
   useSettings,
@@ -36,6 +37,12 @@ export default function SettingsHub() {
   const { i18n } = useTranslation();
   const zh = i18n.language?.toLowerCase().startsWith("zh");
   const tr = useCallback((l: Lang) => (zh ? l.zh : l.en), [zh]);
+  // 悦学: 当前角色，设置分类按角色隐藏（模型/网络/伙伴和智能体仅 admin）
+  const { role } = useAuthStatus();
+  const roleKey = (role as "admin" | "teacher" | "student") || "";
+  const visibleCategories = SETTINGS_CATEGORIES.filter(
+    (c) => !c.roles || roleKey === "admin" || c.roles.includes(roleKey),
+  );
 
   const { catalog, catalogEditable, diagnosticsResults, startTour } =
     useSettings();
@@ -115,7 +122,7 @@ export default function SettingsHub() {
       <SettingsStatusPanel />
 
       <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {SETTINGS_CATEGORIES.map((category) => (
+        {visibleCategories.map((category) => (
           <CategoryBlock
             key={category.key}
             category={category}

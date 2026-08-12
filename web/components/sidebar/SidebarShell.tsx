@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { useAppShell } from "@/context/AppShellContext";
+import { useAuthStatus } from "@/hooks/useAuthStatus";
 import {
   BookOpen,
   BookText,
@@ -40,6 +41,11 @@ interface NavEntry {
   tooltipKey?: string;
   /** Model capability this feature needs; locked when the user lacks it. */
   requires?: Capability;
+  /**
+   * 悦学: 可见角色白名单。缺省=所有角色可见。
+   * 命中则彻底隐藏（不是 requires 的锁定）。admin 永远可见。
+   */
+  roles?: ("admin" | "teacher" | "student")[];
 }
 
 const PRIMARY_NAV: NavEntry[] = [
@@ -56,6 +62,7 @@ const PRIMARY_NAV: NavEntry[] = [
     icon: HeartHandshake,
     tooltipKey: "Partners tooltip",
     requires: "llm",
+    roles: ["admin"],
   },
   {
     // My Agents is its own top-level feature (pulled out of the Learning
@@ -66,6 +73,7 @@ const PRIMARY_NAV: NavEntry[] = [
     label: "My Agents",
     icon: Bot,
     tooltipKey: "Agents tooltip",
+    roles: ["admin"],
   },
   {
     href: "/co-writer",
@@ -73,6 +81,7 @@ const PRIMARY_NAV: NavEntry[] = [
     icon: PenLine,
     tooltipKey: "Co-Writer tooltip",
     requires: "llm",
+    roles: ["admin", "teacher"],
   },
   {
     href: "/book",
@@ -80,6 +89,7 @@ const PRIMARY_NAV: NavEntry[] = [
     icon: Library,
     tooltipKey: "Book tooltip",
     requires: "llm",
+    roles: ["admin", "teacher"],
   },
   {
     href: "/space",
@@ -152,6 +162,13 @@ export function SidebarShell({
   const { sidebarCollapsed, setSidebarCollapsed: setCollapsed } = useAppShell();
   const { isMobile } = useDevice();
   const drawer = useSidebarDrawer();
+  // 悦学: 当前角色，用于按角色隐藏导航项（admin 永远可见）
+  const { role } = useAuthStatus();
+  const roleKey = (role as "admin" | "teacher" | "student") || "";
+
+  /** 悦学: 完全隐藏（非锁定）—— roles 白名单不包含当前角色且非 admin 时隐藏。 */
+  const navHidden = (item: NavEntry) =>
+    !!item.roles && roleKey !== "admin" && !item.roles.includes(roleKey);
 
   // Inside the mobile drawer the icon-only rail is pointless — the panel is
   // already hidden when you don't want it, so it always opens fully expanded
@@ -234,6 +251,7 @@ export function SidebarShell({
         {/* Primary nav */}
         <nav className="mt-1 flex w-full flex-col items-center gap-1 px-1.5">
           {PRIMARY_NAV.map((item) => {
+            if (navHidden(item)) return null; // 悦学: 按角色彻底隐藏
             const active = pathname.startsWith(item.href);
             const locked = navLocked(item);
             const description = locked
@@ -294,6 +312,7 @@ export function SidebarShell({
         <div className="flex w-full flex-col items-center gap-1 px-1.5">
           <div className="my-1 h-px w-7 bg-[var(--border)]/40" />
           {SECONDARY_NAV.map((item) => {
+            if (navHidden(item)) return null; // 悦学: 按角色彻底隐藏
             const active = pathname.startsWith(item.href);
             return (
               <Link
@@ -374,6 +393,7 @@ export function SidebarShell({
       <nav className="px-2 pt-1">
         <div className="space-y-px">
           {PRIMARY_NAV.map((item) => {
+            if (navHidden(item)) return null; // 悦学: 按角色彻底隐藏
             const active = pathname.startsWith(item.href);
             const locked = navLocked(item);
             if (locked) {
@@ -475,6 +495,7 @@ export function SidebarShell({
       {/* Secondary nav + footer */}
       <div className="border-t border-[var(--border)]/40 px-2 py-2">
         {SECONDARY_NAV.map((item) => {
+          if (navHidden(item)) return null; // 悦学: 按角色彻底隐藏
           const active = pathname.startsWith(item.href);
           return (
             <Link
