@@ -515,6 +515,9 @@ export function SidebarShell({
           >
             <Github size={13} strokeWidth={1.7} />
           </a>
+          <span className="ml-1 truncate text-[10px] leading-none text-[var(--muted-foreground)]/45">
+            {POWERED_BY}
+          </span>
         </div>
       </div>
     </aside>
