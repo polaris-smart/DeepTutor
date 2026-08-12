@@ -25,6 +25,11 @@ const INSERTABLE_TYPES: BlockType[] = [
   "animation",
   "deep_dive",
   "user_note",
+  // YuEdu fork: 学科专属
+  "poetry",
+  "grammar",
+  "terrain",
+  "climate",
 ];
 
 export interface PageReaderProps {

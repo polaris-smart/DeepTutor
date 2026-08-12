@@ -77,6 +77,11 @@ class BlockType(str, Enum):
     ERROR_DIAGNOSIS = "error_diagnosis"
     MODULE_TEST = "module_test"
     PROGRESS_DASHBOARD = "progress_dashboard"
+    # YuEdu fork: 学科专属 block 类型
+    POETRY = "poetry"        # 诗词（原文+拼音+注解+朗读）
+    GRAMMAR = "grammar"      # 语法（句型模式+例句+练习）
+    TERRAIN = "terrain"      # 地形（地图/3D地形可视化）
+    CLIMATE = "climate"      # 气候（气候数据图表）
 
 
 class ContentType(str, Enum):

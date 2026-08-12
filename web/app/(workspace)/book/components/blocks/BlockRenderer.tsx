@@ -28,6 +28,8 @@ import DeepDiveBlock from "./DeepDiveBlock";
 import ConceptGraphBlock from "./ConceptGraphBlock";
 import SectionBlock from "./SectionBlock";
 import PlaceholderBlock from "./PlaceholderBlock";
+// YuEdu fork: 学科专属 block
+import PoetryBlock from "./PoetryBlock";
 
 const CHANGEABLE_TYPES: BlockType[] = [
   "text",
@@ -169,6 +171,14 @@ export default function BlockRenderer({
         />
       );
       break;
+    // YuEdu fork: 学科专属 block
+    case "poetry":
+      body = <PoetryBlock block={block} />;
+      break;
+    case "grammar":
+    case "terrain":
+    case "climate":
+      body = <PlaceholderBlock block={block} />;
     default:
       body = <PlaceholderBlock block={block} />;
   }

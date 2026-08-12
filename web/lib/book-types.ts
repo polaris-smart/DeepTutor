@@ -38,7 +38,12 @@ export type BlockType =
   | "flash_cards"
   | "deep_dive"
   | "section"
-  | "concept_graph";
+  | "concept_graph"
+  // YuEdu fork: 学科专属 block 类型
+  | "poetry"
+  | "grammar"
+  | "terrain"
+  | "climate";
 
 export type ContentType =
   | "theory"
