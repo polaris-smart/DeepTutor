@@ -50,11 +50,8 @@ export default function TerrainBlock({ block }: { block: Block }) {
         });
       }
 
-      const L = w.L as Record<string, unknown> & {
-        map: (...args: unknown[]) => Record<string, unknown>;
-        tileLayer: (...args: unknown[]) => Record<string, unknown>;
-        marker: (...args: unknown[]) => Record<string, unknown>;
-      };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const L = w.L as any;
 
       // 计算中心点
       const lats = markers.map((m: Record<string, unknown>) => Number(m.lat)).filter((n) => !isNaN(n));

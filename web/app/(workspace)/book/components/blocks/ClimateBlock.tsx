@@ -46,8 +46,9 @@ export default function ClimateBlock({ block }: { block: Block }) {
         });
       }
 
-      const echarts = w.echarts as Record<string, unknown> & {
-        init: (el: HTMLElement) => Record<string, unknown>;
+      const echarts = w.echarts as {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        init: (el: HTMLElement) => any;
       };
 
       if (chartInstanceRef.current) {
