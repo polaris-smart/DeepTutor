@@ -44,7 +44,7 @@ COPY deeptutor/__version__.py /app/deeptutor/__version__.py
 # into the bundle: `apiUrl`/`wsUrl` in web/lib/api.ts are pass-throughs and
 # the actual backend host is read at request time by web/proxy.ts from
 # DEEPTUTOR_API_BASE_URL (exported by the entrypoint on every start).
-RUN printf 'NEXT_PUBLIC_APP_VERSION=\n' > .env.local
+RUN printf 'NEXT_PUBLIC_APP_VERSION=\nNEXT_PUBLIC_AUTH_ENABLED=true\n' > .env.local
 
 # Build Next.js for production with standalone output
 # This allows runtime environment variable injection

@@ -33,8 +33,14 @@ class MinerUParser:
     def resolve_config(self) -> MinerUConfig:
         return resolve_mineru_config()
 
+    # 悦学 fork: cloud 模式放开多格式（MinerU 云 API 原生支持 doc/docx/ppt/pptx），
+    # local 模式仍只认 PDF（MinerU CLI 限制，local.py 有独立拦截）。
+    _CLOUD_FORMATS = frozenset({".pdf", ".doc", ".docx", ".ppt", ".pptx"})
+    _LOCAL_FORMATS = frozenset({".pdf"})
+
     def supported_formats(self) -> frozenset[str]:
-        return frozenset({".pdf"})
+        config = self.resolve_config()
+        return self._CLOUD_FORMATS if config.is_cloud else self._LOCAL_FORMATS
 
     def signature(self, config: MinerUConfig) -> ParserSignature:
         version = f"cloud:{config.api_base_url}" if config.is_cloud else package_version("mineru")

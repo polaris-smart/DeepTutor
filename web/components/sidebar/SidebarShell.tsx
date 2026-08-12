@@ -113,6 +113,8 @@ const SECONDARY_NAV: NavEntry[] = [
 const GITHUB_REPO_URL = "https://github.com/HKUDS/DeepTutor";
 const DOCS_URL = "https://deeptutor.info/";
 const RECENTS_COLLAPSED_KEY = "deeptutor.sidebar.recentsCollapsed";
+// YuEdu: 底部保留 DeepTutor 版权（Apache-2.0 合规）
+const POWERED_BY = "Powered by DeepTutor © HKUDS";
 
 interface SidebarShellProps {
   sessions?: SessionSummary[];

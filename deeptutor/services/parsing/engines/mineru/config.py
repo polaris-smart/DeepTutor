@@ -48,7 +48,8 @@ class MinerUConfig:
     language: str = "auto"
     enable_formula: bool = True
     enable_table: bool = True
-    is_ocr: bool = False
+    # 悦学 fork: 默认强制 OCR（中文教材/试卷多为扫描件，OCR 确保文字一致提取）
+    is_ocr: bool = True
     # When False (default), a local parse fails fast instead of letting the
     # MinerU CLI silently download multi-GB model weights on first run. The user
     # opts in explicitly (Settings → Document Parsing) or via the one-click
@@ -84,7 +85,7 @@ def resolve_mineru_config() -> MinerUConfig:
         language=str(settings.get("language") or "auto"),
         enable_formula=bool(settings.get("enable_formula", True)),
         enable_table=bool(settings.get("enable_table", True)),
-        is_ocr=bool(settings.get("is_ocr", False)),
+        is_ocr=bool(settings.get("is_ocr", True)),
         allow_local_model_download=bool(settings.get("allow_local_model_download", False)),
     )
 
