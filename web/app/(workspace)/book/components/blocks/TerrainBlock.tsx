@@ -68,7 +68,7 @@ export default function TerrainBlock({ block }: { block: Block }) {
         (mapInstanceRef.current as any)?.remove?.();
       }
 
-      const map = L.map(mapRef.current).setView([centerLat, centerLng], zoom);
+      const map = L.map(mapRef.current!).setView([centerLat, centerLng], zoom);
       mapInstanceRef.current = map;
 
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {

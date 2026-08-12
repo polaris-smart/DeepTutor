@@ -55,7 +55,7 @@ export default function ClimateBlock({ block }: { block: Block }) {
         (chartInstanceRef.current as any)?.dispose?.();
       }
 
-      const chart = echarts.init(chartRef.current);
+      const chart = echarts.init(chartRef.current!);
       chartInstanceRef.current = chart;
 
       const option = {
