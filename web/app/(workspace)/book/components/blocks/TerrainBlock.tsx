@@ -38,8 +38,9 @@ export default function TerrainBlock({ block }: { block: Block }) {
         link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
         document.head.appendChild(link);
       }
+      const w = window as unknown as Record<string, unknown>;
       // JS
-      if (!(window as Record<string, unknown>).L) {
+      if (!w.L) {
         await new Promise<void>((resolve, reject) => {
           const script = document.createElement("script");
           script.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
@@ -49,7 +50,7 @@ export default function TerrainBlock({ block }: { block: Block }) {
         });
       }
 
-      const L = (window as Record<string, unknown>).L as Record<string, unknown> & {
+      const L = w.L as Record<string, unknown> & {
         map: (...args: unknown[]) => Record<string, unknown>;
         tileLayer: (...args: unknown[]) => Record<string, unknown>;
         marker: (...args: unknown[]) => Record<string, unknown>;

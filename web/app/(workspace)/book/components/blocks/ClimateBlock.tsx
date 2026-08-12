@@ -35,7 +35,8 @@ export default function ClimateBlock({ block }: { block: Block }) {
     if (!chartRef.current || months.length === 0) return;
 
     const loadECharts = async () => {
-      if (!(window as Record<string, unknown>).echarts) {
+      const w = window as unknown as Record<string, unknown>;
+      if (!w.echarts) {
         await new Promise<void>((resolve, reject) => {
           const script = document.createElement("script");
           script.src = "https://cdn.bootcdn.net/ajax/libs/echarts/5.5.0/echarts.min.js";
@@ -45,7 +46,7 @@ export default function ClimateBlock({ block }: { block: Block }) {
         });
       }
 
-      const echarts = (window as Record<string, unknown>).echarts as Record<string, unknown> & {
+      const echarts = w.echarts as Record<string, unknown> & {
         init: (el: HTMLElement) => Record<string, unknown>;
       };
 
