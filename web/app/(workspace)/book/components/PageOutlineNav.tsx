@@ -9,7 +9,9 @@ import {
   Code2,
   FileText,
   Film,
+  Globe,
   Image as ImageIcon,
+  Languages,
   Layers,
   ListChecks,
   Loader2,
@@ -18,6 +20,8 @@ import {
   MousePointerClick,
   Sparkles,
   Sticker,
+  Thermometer,
+  Type,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -37,6 +41,11 @@ const TYPE_ICON: Record<BlockType, LucideIcon> = {
   flash_cards: Sticker,
   deep_dive: MessageCircle,
   concept_graph: Layers,
+  // YuEdu fork: 学科专属
+  poetry: Type,
+  grammar: Languages,
+  terrain: Globe,
+  climate: Thermometer,
 };
 
 const TYPE_LABEL_EN: Record<BlockType, string> = {
@@ -53,6 +62,11 @@ const TYPE_LABEL_EN: Record<BlockType, string> = {
   flash_cards: "Flash cards",
   deep_dive: "Deep dive",
   concept_graph: "Concept graph",
+  // YuEdu fork: 学科专属
+  poetry: "Poetry",
+  grammar: "Grammar",
+  terrain: "Terrain",
+  climate: "Climate",
 };
 
 function shortLabel(block: Block, fallback: string): string {

@@ -42,7 +42,7 @@ export default function PoetryBlock({ block }: { block: Block }) {
         )}
         {(author || dynasty) && (
           <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-            {[dynaltyText(dynasty), author].filter(Boolean).join(" · ")}
+            {[dynastyText(dynasty), author].filter(Boolean).join(" · ")}
           </p>
         )}
       </div>
@@ -100,7 +100,7 @@ export default function PoetryBlock({ block }: { block: Block }) {
   );
 }
 
-function dynaltyText(dynasty: string): string {
+function dynastyText(dynasty: string): string {
   if (!dynasty) return "";
   return `${dynasty}代`;
 }
