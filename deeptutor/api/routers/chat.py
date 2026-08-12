@@ -224,10 +224,12 @@ async def websocket_chat(websocket: WebSocket):
                 # ── 悦学方案B：⑧NEXT 掌握度门禁软校验 ──────────────────────
                 # 仅当会话 settings 显式启用了 gate_skill 时生效（声明式，不污染其它对话）。
                 # 流式 UX 不变：违规时不重跑整轮，直接把补报分消息追加到 result。
-                # 宿主端记账从用户消息解析，掌握度不依赖模型记忆。
+                # 宿主端记账（example_skipped/max_hint_level/low_confidence）跨轮存于会话
+                # settings.gate_state，掌握度不依赖模型记忆。
                 session_settings = session.get("settings") or {}
                 if session_settings.get("gate_skill"):
-                    gate_state = init_gate_state()
+                    # 从会话读取已有记账（跨轮保留），并先按本轮用户消息更新
+                    gate_state = session_settings.get("gate_state") or init_gate_state()
                     update_gate_state(gate_state, message)
                     remedy_msg, _ = check_and_remedy(full_response, gate_state)
                     if remedy_msg:
@@ -239,6 +241,12 @@ async def websocket_chat(websocket: WebSocket):
                         logger.info(
                             "[skill_gate] %s: ⑧门禁违规 → 追加补报分消息",
                             session_settings.get("gate_skill"),
+                        )
+                    # 写回记账（仅当有实质状态，避免无限膨胀 settings）
+                    if any(gate_state.get(k) for k in ("example_skipped", "max_hint_level", "low_confidence")):
+                        sm.update_session(
+                            session_id=session_id,
+                            settings={**session_settings, "gate_state": gate_state},
                         )
 
                 await websocket.send_json(
