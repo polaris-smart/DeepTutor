@@ -64,7 +64,8 @@ export default function TerrainBlock({ block }: { block: Block }) {
 
       // 清除旧地图
       if (mapInstanceRef.current) {
-        (mapInstanceRef.current as Record<string, unknown>).remove?.();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (mapInstanceRef.current as any)?.remove?.();
       }
 
       const map = L.map(mapRef.current).setView([centerLat, centerLng], zoom);
@@ -97,7 +98,8 @@ export default function TerrainBlock({ block }: { block: Block }) {
 
     return () => {
       if (mapInstanceRef.current) {
-        (mapInstanceRef.current as Record<string, unknown>).remove?.();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (mapInstanceRef.current as any)?.remove?.();
         mapInstanceRef.current = null;
       }
     };

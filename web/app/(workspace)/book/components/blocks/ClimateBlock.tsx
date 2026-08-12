@@ -51,7 +51,8 @@ export default function ClimateBlock({ block }: { block: Block }) {
       };
 
       if (chartInstanceRef.current) {
-        (chartInstanceRef.current as Record<string, unknown>).dispose?.();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (chartInstanceRef.current as any)?.dispose?.();
       }
 
       const chart = echarts.init(chartRef.current);
@@ -115,8 +116,10 @@ export default function ClimateBlock({ block }: { block: Block }) {
 
       chart.setOption(option);
 
-      const handleResize = () =>
-        (chartInstanceRef.current as Record<string, unknown>)?.resize?.();
+      const handleResize = () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (chartInstanceRef.current as any)?.resize?.();
+      };
       window.addEventListener("resize", handleResize);
     };
 
@@ -129,7 +132,8 @@ export default function ClimateBlock({ block }: { block: Block }) {
 
     return () => {
       if (chartInstanceRef.current) {
-        (chartInstanceRef.current as Record<string, unknown>).dispose?.();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (chartInstanceRef.current as any)?.dispose?.();
         chartInstanceRef.current = null;
       }
     };
