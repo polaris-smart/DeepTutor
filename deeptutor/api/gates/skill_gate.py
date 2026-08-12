@@ -58,6 +58,65 @@ REMEDY_TEMPLATE = (
 )
 
 
+# ---------------------------------------------------------------------------
+# 声明式门禁（HS 方案：skill frontmatter 声明 gates[]，DT 装载自动挂）
+# ---------------------------------------------------------------------------
+# frontmatter 中 gates[] 的示例结构：
+#   gates:
+#     - id: khan_next_step_v1
+#       trigger: { match_role: assistant, match_keywords: ["太棒了", "下一题"] }
+#       require_in_same_message: "\\d+\\s*分|合计\\s*\\d+|达线|没达线"
+#       on_miss: regenerate_with_hint
+#       max_retries: 1
+
+# 内建门禁注册表：id -> 校验规则（SCORE 缺省用全局 SCORE）
+BUILTIN_GATES: dict[str, dict[str, Any]] = {
+    "khan_next_step_v1": {
+        "trigger_keywords": ["太棒了", "做得非常好", "完全正确", "很好", "不错", "完美", "漂亮", "厉害", "下一题", "挑战一道", "进入下一个", "再来一道"],
+        "require_pattern": SCORE,
+        "tail_only": True,  # 换题话术只在回复末尾匹配
+    },
+    "khan_hint_level_v1": {
+        "trigger_keywords": ["提示", "试试看", "可以先"],
+        "require_pattern": re.compile(r"第\s*[1-4]\s*级|独立度\s*\d+"),
+        "tail_only": False,
+    },
+}
+
+
+def parse_gates_from_frontmatter(frontmatter: dict[str, Any]) -> list[dict[str, Any]]:
+    """从 skill frontmatter 的 gates[] 解析出门禁清单（声明式）。
+
+    只返回注册表里存在的门禁 id（DT 不知道的忽略，不报错）。
+    """
+    raw_gates = frontmatter.get("gates") or []
+    if not isinstance(raw_gates, list):
+        return []
+    resolved: list[dict[str, Any]] = []
+    for g in raw_gates:
+        if not isinstance(g, dict):
+            continue
+        gid = str(g.get("id") or "")
+        if gid not in BUILTIN_GATES:
+            logger.debug("[skill_gate] 忽略未注册门禁 id=%s", gid)
+            continue
+        spec = dict(BUILTIN_GATES[gid])
+        # 允许 frontmatter 覆盖 trigger/require/on_miss/max_retries
+        trigger = g.get("trigger") or {}
+        if isinstance(trigger, dict):
+            kw = trigger.get("match_keywords")
+            if isinstance(kw, list) and kw:
+                spec["trigger_keywords"] = [str(k) for k in kw]
+        req = g.get("require_in_same_message")
+        if req:
+            spec["require_pattern"] = re.compile(str(req))
+        spec["id"] = gid
+        spec["on_miss"] = g.get("on_miss") or "regenerate_with_hint"
+        spec["max_retries"] = int(g.get("max_retries") or spec.get("max_retries") or 1)
+        resolved.append(spec)
+    return resolved
+
+
 def _default_gate_state() -> dict[str, Any]:
     return {
         "example_skipped": False,
@@ -87,48 +146,72 @@ def needs_gate(session_settings: dict[str, Any] | None) -> bool:
     return bool(session_settings and session_settings.get("gate_skill") == GATE_SKILL)
 
 
-def check_and_remedy(
+def _hit_trigger(gate_spec: dict[str, Any], full_response: str) -> bool:
+    """检查回复是否命中 gate 的 trigger 关键词。"""
+    keywords = gate_spec.get("trigger_keywords") or []
+    if not keywords:
+        return False
+    text = full_response
+    if gate_spec.get("tail_only"):
+        text = full_response[-200:]
+    return any(kw in text for kw in keywords)
+
+
+def check_gate(
+    gate_spec: dict[str, Any],
     full_response: str,
     state: dict[str, Any],
-) -> tuple[str, str | None]:
-    """校验 assistant 回复，需要补救时返回 (是否补救, 补救消息)。
+) -> str | None:
+    """按声明式 gate 校验，违规返回补救消息，否则 None。"""
+    if not _hit_trigger(gate_spec, full_response):
+        return None
+    require = gate_spec.get("require_pattern")
+    if require and require.search(full_response):
+        return None  # 已满足（已报分）
 
-    Returns:
-        (remedy_msg, new_user_msg)
-        - remedy_msg: 需追加给模型的 system 补救消息（None = 放行）
-        - new_user_msg: 补救后应重生成时传给学生的可见消息
-    """
-    # 命中夸奖或换题（换题只查回复末尾 200 字符，避免题目正文误伤）
-    tail = full_response[-200:]
-    hit_praise = bool(PRAISE.search(full_response))
-    hit_next = bool(NEXT.search(tail))
-    hit_score = bool(SCORE.search(full_response))
-
-    violated = (hit_praise or hit_next) and not hit_score
-    if not violated:
-        return None, None
-
-    # 违规，走补救（最多 1 次）
-    if state.get("remedy_used"):
-        logger.info("[skill_gate] gate_missing: 补救2次仍不报分，放行")
-        return None, None
-
-    state["remedy_used"] = True
+    # 违规，走补救（最多 max_retries 次）
+    max_retries = int(gate_spec.get("max_retries") or 1)
+    if int(state.get("remedy_used") or 0) >= max_retries:
+        logger.info("[skill_gate] gate_missing: %s 补救超限，放行", gate_spec.get("id"))
+        return None
+    state["remedy_used"] = int(state.get("remedy_used") or 0) + 1
     remedy = REMEDY_TEMPLATE.format(
         example_skipped=state.get("example_skipped", False),
         max_hint_level=state.get("max_hint_level", 0),
     )
     logger.info(
-        "[skill_gate] ⑧NEXT 违规拦截：夸奖/换题无报分 → 补救（example_skipped=%s）",
+        "[skill_gate] %s 违规拦截 → 补救（example_skipped=%s）",
+        gate_spec.get("id"),
         state.get("example_skipped"),
     )
-    return remedy, remedy
+    return remedy
+
+
+def check_and_remedy(
+    full_response: str,
+    state: dict[str, Any],
+    gates: list[dict[str, Any]] | None = None,
+) -> tuple[str | None, str | None]:
+    """校验 assistant 回复，需要补救时返回 (补救消息, 可见消息)。
+
+    gates 为空时回退到默认的 khan_next_step_v1（向后兼容硬编码）。
+    """
+    if not gates:
+        gates = [dict(BUILTIN_GATES["khan_next_step_v1"], id="khan_next_step_v1")]
+    for gate in gates:
+        remedy = check_gate(gate, full_response, state)
+        if remedy is not None:
+            return remedy, remedy
+    return None, None
 
 
 __all__ = [
+    "BUILTIN_GATES",
     "GATE_SKILL",
     "check_and_remedy",
+    "check_gate",
     "init_gate_state",
     "needs_gate",
+    "parse_gates_from_frontmatter",
     "update_gate_state",
 ]
