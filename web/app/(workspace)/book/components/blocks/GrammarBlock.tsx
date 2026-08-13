@@ -22,14 +22,43 @@ export default function GrammarBlock({ block }: { block: Block }) {
   const params = (block.payload as Record<string, unknown> | undefined) ?? {};
   const pattern = String(params.pattern ?? "");
   const explanation = String(params.explanation ?? "");
-  const examples = Array.isArray(params.examples) ? params.examples : [];
-  const exercise = params.exercise as Record<string, unknown> | undefined;
+  const examples = Array.isArray(params.examples)
+    ? params.examples.filter(
+        (example): example is Record<string, unknown> =>
+          typeof example === "object" &&
+          example !== null &&
+          !Array.isArray(example),
+      )
+    : [];
+  const exercise =
+    typeof params.exercise === "object" &&
+    params.exercise !== null &&
+    !Array.isArray(params.exercise)
+      ? (params.exercise as Record<string, unknown>)
+      : undefined;
+  const question = String(exercise?.question ?? "");
+  const answer = String(exercise?.answer ?? "");
+  const options = Array.isArray(exercise?.options)
+    ? exercise.options.filter(
+        (option): option is string => typeof option === "string",
+      )
+    : [];
+  const hasExercise = Boolean(question || answer || options.length > 0);
+  const hasContent = Boolean(
+    pattern || explanation || examples.length > 0 || hasExercise,
+  );
 
   const [showAnswer, setShowAnswer] = useState(false);
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
 
   return (
     <div className="my-4 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-sm">
+      {!hasContent && (
+        <div className="flex h-24 items-center justify-center text-sm text-[var(--muted-foreground)]">
+          暂无语法内容
+        </div>
+      )}
+
       {/* 句型模式 */}
       {pattern && (
         <div className="mb-3 flex items-start gap-2">
@@ -56,7 +85,7 @@ export default function GrammarBlock({ block }: { block: Block }) {
         <div className="mb-3">
           <p className="mb-1.5 text-xs font-medium text-[var(--muted-foreground)]">例句</p>
           <ul className="space-y-1.5">
-            {examples.map((ex: Record<string, unknown>, i: number) => {
+            {examples.map((ex, i) => {
               const sentence = String(ex.sentence ?? "");
               const highlight = String(ex.highlight ?? "");
               return (
@@ -85,16 +114,16 @@ export default function GrammarBlock({ block }: { block: Block }) {
       )}
 
       {/* 练习 */}
-      {exercise && (
+      {hasExercise && (
         <div className="border-t border-[var(--border)]/50 pt-3">
           <p className="mb-2 text-xs font-medium text-[var(--muted-foreground)]">练习</p>
-          <p className="mb-2 text-sm text-[var(--foreground)]">
-            {String(exercise.question ?? "")}
-          </p>
-          {Array.isArray(exercise.options) && (
+          {question && (
+            <p className="mb-2 text-sm text-[var(--foreground)]">{question}</p>
+          )}
+          {options.length > 0 && (
             <div className="grid grid-cols-2 gap-1.5">
-              {exercise.options.map((opt: string, i: number) => {
-                const isCorrect = opt === String(exercise.answer ?? "");
+              {options.map((opt, i) => {
+                const isCorrect = opt === answer;
                 const isSelected = opt === selectedOption;
                 return (
                   <button
@@ -117,9 +146,9 @@ export default function GrammarBlock({ block }: { block: Block }) {
               })}
             </div>
           )}
-          {showAnswer && (
+          {showAnswer && answer && (
             <p className="mt-2 text-xs text-[var(--muted-foreground)]">
-              ✓ 正确答案：<span className="font-medium text-[var(--foreground)]">{String(exercise.answer ?? "")}</span>
+              ✓ 正确答案：<span className="font-medium text-[var(--foreground)]">{answer}</span>
             </p>
           )}
         </div>

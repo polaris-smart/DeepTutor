@@ -3,6 +3,14 @@
 import { useEffect, useRef } from "react";
 import type { Block } from "@/lib/book-types";
 
+function isFiniteCoordinate(value: unknown): boolean {
+  return (
+    (typeof value === "number" ||
+      (typeof value === "string" && value.trim() !== "")) &&
+    Number.isFinite(Number(value))
+  );
+}
+
 /**
  * YuEdu fork: 地形 block 渲染组件（地理专用）。
  * 用 Leaflet（OpenStreetMap）渲染交互式地图 + 标记点 + 描述。
@@ -21,8 +29,18 @@ export default function TerrainBlock({ block }: { block: Block }) {
   const params = (block.payload as Record<string, unknown> | undefined) ?? {};
   const title = String(params.title ?? "");
   const description = String(params.description ?? "");
-  const markers = Array.isArray(params.markers) ? params.markers : [];
-  const zoom = Number(params.zoom ?? 4);
+  const markers = Array.isArray(params.markers)
+    ? params.markers.filter(
+        (marker): marker is Record<string, unknown> =>
+          typeof marker === "object" &&
+          marker !== null &&
+          !Array.isArray(marker) &&
+          isFiniteCoordinate((marker as Record<string, unknown>).lat) &&
+          isFiniteCoordinate((marker as Record<string, unknown>).lng),
+      )
+    : [];
+  const requestedZoom = Number(params.zoom ?? 4);
+  const zoom = Number.isFinite(requestedZoom) ? requestedZoom : 4;
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<unknown>(null);
 
@@ -54,8 +72,8 @@ export default function TerrainBlock({ block }: { block: Block }) {
       const L = w.L as any;
 
       // 计算中心点
-      const lats = markers.map((m: Record<string, unknown>) => Number(m.lat)).filter((n) => !isNaN(n));
-      const lngs = markers.map((m: Record<string, unknown>) => Number(m.lng)).filter((n) => !isNaN(n));
+      const lats = markers.map((marker) => Number(marker.lat));
+      const lngs = markers.map((marker) => Number(marker.lng));
       const centerLat = lats.length ? lats.reduce((a, b) => a + b, 0) / lats.length : 35.0;
       const centerLng = lngs.length ? lngs.reduce((a, b) => a + b, 0) / lngs.length : 105.0;
 
@@ -73,10 +91,9 @@ export default function TerrainBlock({ block }: { block: Block }) {
         maxZoom: 18,
       }).addTo(map);
 
-      markers.forEach((marker: Record<string, unknown>) => {
+      markers.forEach((marker) => {
         const lat = Number(marker.lat);
         const lng = Number(marker.lng);
-        if (isNaN(lat) || isNaN(lng)) return;
         const m = L.marker([lat, lng]).addTo(map);
         const name = String(marker.name ?? "");
         const event = String(marker.event ?? marker.description ?? "");
@@ -123,7 +140,7 @@ export default function TerrainBlock({ block }: { block: Block }) {
       )}
       {markers.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1.5">
-          {markers.map((m: Record<string, unknown>, i: number) => (
+          {markers.map((m, i) => (
             <span
               key={i}
               className="rounded-full bg-[var(--primary)]/10 px-2 py-0.5 text-xs text-[var(--primary)]"

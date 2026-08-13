@@ -1,7 +1,9 @@
 "use client";
 
-import { Volume2 } from "lucide-react";
+import { Loader2, Square, Volume2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Block } from "@/lib/book-types";
+import { apiFetch, apiUrl } from "@/lib/api";
 
 /**
  * YuEdu fork: 诗词 block 渲染组件。
@@ -20,18 +22,113 @@ export default function PoetryBlock({ block }: { block: Block }) {
   const title = String(params.title ?? "");
   const author = String(params.author ?? "");
   const dynasty = String(params.dynasty ?? "");
-  const lines = Array.isArray(params.lines) ? params.lines : [];
-  const annotations = Array.isArray(params.annotations) ? params.annotations : [];
+  const lines = Array.isArray(params.lines)
+    ? params.lines.filter(
+        (line): line is Record<string, unknown> =>
+          typeof line === "object" && line !== null && !Array.isArray(line),
+      )
+    : [];
+  const annotations = Array.isArray(params.annotations)
+    ? params.annotations.filter(
+        (annotation): annotation is Record<string, unknown> =>
+          typeof annotation === "object" &&
+          annotation !== null &&
+          !Array.isArray(annotation),
+      )
+    : [];
+  const speakText = lines.map((line) => String(line.text ?? "")).join("。");
+  const [playState, setPlayState] = useState<"idle" | "loading" | "playing">(
+    "idle",
+  );
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const urlRef = useRef<string | null>(null);
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
 
-  const handleSpeak = () => {
-    const text = lines.map((l: Record<string, unknown>) => String(l.text ?? "")).join("。");
-    if (text && "speechSynthesis" in window) {
-      const utterance = new SpeechSynthesisUtterance(text);
+  const cleanup = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    if (utteranceRef.current && "speechSynthesis" in window) {
+      utteranceRef.current = null;
+      window.speechSynthesis.cancel();
+    }
+    if (urlRef.current) {
+      URL.revokeObjectURL(urlRef.current);
+      urlRef.current = null;
+    }
+  }, []);
+
+  const fallbackToSpeechSynthesis = useCallback(() => {
+    cleanup();
+    if (speakText && "speechSynthesis" in window) {
+      const utterance = new SpeechSynthesisUtterance(speakText);
       utterance.lang = "zh-CN";
       utterance.rate = 0.8;
-      speechSynthesis.speak(utterance);
+      utteranceRef.current = utterance;
+      const reset = () => {
+        if (utteranceRef.current === utterance) {
+          utteranceRef.current = null;
+          setPlayState("idle");
+        }
+      };
+      utterance.onend = reset;
+      utterance.onerror = reset;
+      window.speechSynthesis.speak(utterance);
+      setPlayState("playing");
+      return;
     }
-  };
+    setPlayState("idle");
+  }, [cleanup, speakText]);
+
+  const play = useCallback(async () => {
+    let didFallback = false;
+    const fallback = () => {
+      if (didFallback) return;
+      didFallback = true;
+      fallbackToSpeechSynthesis();
+    };
+
+    setPlayState("loading");
+    try {
+      const response = await apiFetch(apiUrl("/api/v1/voice/tts"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: speakText }),
+      });
+      if (!response.ok) {
+        fallback();
+        return;
+      }
+
+      const blob = await response.blob();
+      cleanup();
+      const url = URL.createObjectURL(blob);
+      urlRef.current = url;
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = () => {
+        setPlayState("idle");
+        cleanup();
+      };
+      audio.onerror = fallback;
+      await audio.play();
+      setPlayState("playing");
+    } catch {
+      fallback();
+    }
+  }, [cleanup, fallbackToSpeechSynthesis, speakText]);
+
+  const handleSpeak = useCallback(() => {
+    if (playState === "playing" || playState === "loading") {
+      cleanup();
+      setPlayState("idle");
+      return;
+    }
+    void play();
+  }, [cleanup, play, playState]);
+
+  useEffect(() => cleanup, [cleanup]);
 
   return (
     <div className="my-4 rounded-2xl border border-[var(--border)] bg-gradient-to-b from-[var(--card)] to-[var(--background)] p-6 shadow-sm">
@@ -49,41 +146,61 @@ export default function PoetryBlock({ block }: { block: Block }) {
 
       {/* 诗句 + 拼音 */}
       <div className="mx-auto max-w-md space-y-3">
-        {lines.map((line: Record<string, unknown>, i: number) => {
-          const text = String(line.text ?? "");
-          const pinyin = String(line.pinyin ?? "");
-          return (
-            <div key={i} className="text-center">
-              {pinyin && (
-                <p className="text-xs text-[var(--muted-foreground)]/70 tracking-wide">
-                  {pinyin}
+        {lines.length > 0 ? (
+          lines.map((line, i) => {
+            const text = String(line.text ?? "");
+            const pinyin = String(line.pinyin ?? "");
+            return (
+              <div key={i} className="text-center">
+                {pinyin && (
+                  <p className="text-xs text-[var(--muted-foreground)]/70 tracking-wide">
+                    {pinyin}
+                  </p>
+                )}
+                <p className="text-lg leading-relaxed text-[var(--foreground)] tracking-wider">
+                  {text}
                 </p>
-              )}
-              <p className="text-lg leading-relaxed text-[var(--foreground)] tracking-wider">
-                {text}
-              </p>
-            </div>
-          );
-        })}
+              </div>
+            );
+          })
+        ) : (
+          <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">
+            暂无诗词内容
+          </p>
+        )}
       </div>
 
       {/* 朗读按钮 */}
-      <div className="mt-4 text-center">
-        <button
-          onClick={handleSpeak}
-          className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--card)] px-3 py-1 text-xs text-[var(--muted-foreground)] transition hover:bg-[var(--background)] hover:text-[var(--foreground)]"
-        >
-          <Volume2 className="h-3.5 w-3.5" />
-          朗读
-        </button>
-      </div>
+      {lines.length > 0 && (
+        <div className="mt-4 text-center">
+          <button
+            type="button"
+            onClick={handleSpeak}
+            aria-label={playState === "playing" ? "停止朗读" : "朗读"}
+            className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--card)] px-3 py-1 text-xs text-[var(--muted-foreground)] transition hover:bg-[var(--background)] hover:text-[var(--foreground)]"
+          >
+            {playState === "loading" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : playState === "playing" ? (
+              <Square className="h-3 w-3 fill-current" />
+            ) : (
+              <Volume2 className="h-3.5 w-3.5" />
+            )}
+            {playState === "loading"
+              ? "加载中"
+              : playState === "playing"
+                ? "停止"
+                : "朗读"}
+          </button>
+        </div>
+      )}
 
       {/* 注解 */}
       {annotations.length > 0 && (
         <div className="mt-4 border-t border-[var(--border)]/50 pt-3">
           <p className="mb-2 text-xs font-medium text-[var(--muted-foreground)]">注释</p>
           <dl className="space-y-1">
-            {annotations.map((ann: Record<string, unknown>, i: number) => (
+            {annotations.map((ann, i) => (
               <div key={i} className="flex gap-2 text-sm">
                 <dt className="font-medium text-[var(--foreground)]">
                   {String(ann.term ?? "")}

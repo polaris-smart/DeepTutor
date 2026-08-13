@@ -3,6 +3,17 @@
 import { useEffect, useRef } from "react";
 import type { Block } from "@/lib/book-types";
 
+function toFiniteNumber(value: unknown): number | null {
+  if (
+    typeof value !== "number" &&
+    (typeof value !== "string" || value.trim() === "")
+  ) {
+    return null;
+  }
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 /**
  * YuEdu fork: 气候 block 渲染组件（地理专用）。
  * 用 ECharts（CDN）渲染气候数据图（温度折线 + 降水柱状组合图）。
@@ -19,15 +30,44 @@ export default function ClimateBlock({ block }: { block: Block }) {
   const params = (block.payload as Record<string, unknown> | undefined) ?? {};
   const title = String(params.title ?? "");
   const description = String(params.description ?? "");
-  const months = Array.isArray(params.months)
-    ? (params.months as unknown[]).map(String)
+  const rawMonths = Array.isArray(params.months) ? params.months : [];
+  const rawTemperature = Array.isArray(params.temperature)
+    ? params.temperature
     : [];
-  const temperature = Array.isArray(params.temperature)
-    ? (params.temperature as unknown[]).map(Number)
+  const rawPrecipitation = Array.isArray(params.precipitation)
+    ? params.precipitation
     : [];
-  const precipitation = Array.isArray(params.precipitation)
-    ? (params.precipitation as unknown[]).map(Number)
-    : [];
+  const dataLength = Math.min(
+    rawMonths.length,
+    rawTemperature.length,
+    rawPrecipitation.length,
+  );
+  const dataPoints = Array.from({ length: dataLength }, (_, index) => {
+    const month = rawMonths[index];
+    const temperatureValue = rawTemperature[index];
+    const precipitationValue = rawPrecipitation[index];
+    if (typeof month !== "string" && typeof month !== "number") {
+      return null;
+    }
+    const monthLabel = String(month).trim();
+    const temperature = toFiniteNumber(temperatureValue);
+    const precipitation = toFiniteNumber(precipitationValue);
+    if (!monthLabel || temperature === null || precipitation === null) {
+      return null;
+    }
+    return { month: monthLabel, temperature, precipitation };
+  }).filter(
+    (
+      point,
+    ): point is {
+      month: string;
+      temperature: number;
+      precipitation: number;
+    } => point !== null,
+  );
+  const months = dataPoints.map((point) => point.month);
+  const temperature = dataPoints.map((point) => point.temperature);
+  const precipitation = dataPoints.map((point) => point.precipitation);
   const chartRef = useRef<HTMLDivElement>(null);
   const chartInstanceRef = useRef<unknown>(null);
 
@@ -141,7 +181,7 @@ export default function ClimateBlock({ block }: { block: Block }) {
   }, [months, temperature, precipitation]);
 
   // 无图表数据时，显示文字描述表格
-  const hasChartData = months.length > 0 && (temperature.length > 0 || precipitation.length > 0);
+  const hasChartData = months.length > 0;
 
   return (
     <div className="my-4 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 shadow-sm">
