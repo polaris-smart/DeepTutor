@@ -1,9 +1,13 @@
 "use client";
 
 import { Loader2, Square, Volume2 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Block } from "@/lib/book-types";
+import { bookApi, type RecitationSummary } from "@/lib/book-api";
 import { apiFetch, apiUrl } from "@/lib/api";
+
+import PoetryRecitationPanel from "./PoetryRecitationPanel";
 
 /**
  * YuEdu fork: 诗词 block 渲染组件。
@@ -18,6 +22,8 @@ import { apiFetch, apiUrl } from "@/lib/api";
  * }
  */
 export default function PoetryBlock({ block }: { block: Block }) {
+  const searchParams = useSearchParams();
+  const bookId = bookApi.activeBookId() || searchParams?.get("book") || null;
   const params = (block.payload as Record<string, unknown> | undefined) ?? {};
   const title = String(params.title ?? "");
   const author = String(params.author ?? "");
@@ -37,6 +43,16 @@ export default function PoetryBlock({ block }: { block: Block }) {
       )
     : [];
   const speakText = lines.map((line) => String(line.text ?? "")).join("。");
+  const recitationLines = lines
+    .map((line, index) => ({
+      id: `line-${index + 1}`,
+      text: String(line.text ?? "").trim(),
+    }))
+    .filter((line) => line.text.length > 0);
+  const initialRecitationSummary = useMemo(
+    () => parseRecitationSummary(block.metadata?.recitation),
+    [block.metadata?.recitation],
+  );
   const [playState, setPlayState] = useState<"idle" | "loading" | "playing">(
     "idle",
   );
@@ -170,13 +186,13 @@ export default function PoetryBlock({ block }: { block: Block }) {
         )}
       </div>
 
-      {/* 朗读按钮 */}
+      {/* 示范朗读 */}
       {lines.length > 0 && (
         <div className="mt-4 text-center">
           <button
             type="button"
             onClick={handleSpeak}
-            aria-label={playState === "playing" ? "停止朗读" : "朗读"}
+            aria-label={playState === "playing" ? "停止示范朗读" : "示范朗读"}
             className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--card)] px-3 py-1 text-xs text-[var(--muted-foreground)] transition hover:bg-[var(--background)] hover:text-[var(--foreground)]"
           >
             {playState === "loading" ? (
@@ -190,9 +206,19 @@ export default function PoetryBlock({ block }: { block: Block }) {
               ? "加载中"
               : playState === "playing"
                 ? "停止"
-                : "朗读"}
+                : "示范朗读"}
           </button>
         </div>
+      )}
+
+      {recitationLines.length > 0 && (
+        <PoetryRecitationPanel
+          key={initialRecitationSummary?.last_attempt_id || "recitation"}
+          bookId={bookId}
+          blockId={block.id}
+          lines={recitationLines}
+          initialSummary={initialRecitationSummary}
+        />
       )}
 
       {/* 注解 */}
@@ -220,4 +246,23 @@ export default function PoetryBlock({ block }: { block: Block }) {
 function dynastyText(dynasty: string): string {
   if (!dynasty) return "";
   return `${dynasty}代`;
+}
+
+function parseRecitationSummary(value: unknown): RecitationSummary | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const summary = value as Record<string, unknown>;
+  const dataState = summary.data_state;
+  if (dataState !== "" && dataState !== "scored" && dataState !== "stt_failed") {
+    return null;
+  }
+  return {
+    last_attempt_id: String(summary.last_attempt_id ?? ""),
+    attempt_count: Number(summary.attempt_count ?? 0),
+    latest_accuracy:
+      typeof summary.latest_accuracy === "number" ? summary.latest_accuracy : null,
+    best_accuracy:
+      typeof summary.best_accuracy === "number" ? summary.best_accuracy : null,
+    data_state: dataState,
+    updated_at: Number(summary.updated_at ?? 0),
+  };
 }

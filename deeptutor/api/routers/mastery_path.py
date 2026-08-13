@@ -16,8 +16,10 @@ from deeptutor.learning.models import (
     KnowledgeType,
     LearningModule,
     LearningStage,
+    SixDimensionSnapshot,
 )
 from deeptutor.learning.service import LearningService
+from deeptutor.learning.six_dimensions import compute_six_dimension_snapshot
 from deeptutor.learning.storage import LearningStore
 from deeptutor.services.settings.interface_settings import get_response_language
 from deeptutor.utils.json_parser import parse_json_response
@@ -129,6 +131,24 @@ async def get_progress_map(book_id: str):
         "next": learning_policy.next_objective(progress).to_dict(),
         "map": learning_policy.map_summary(progress),
     }
+
+
+@router.get(
+    "/progress/{book_id}/six-dimensions",
+    response_model=SixDimensionSnapshot,
+)
+async def get_six_dimension_snapshot(
+    book_id: str,
+    since: float | None = None,
+    until: float | None = None,
+):
+    """Return an evidence-backed learner profile for one mastery path."""
+    _validate_book_id(book_id)
+    if since is not None and until is not None and since > until:
+        raise HTTPException(status_code=400, detail="since must be <= until")
+    service = get_learning_service()
+    progress = service.get_or_create(book_id)
+    return compute_six_dimension_snapshot(progress, since=since, until=until)
 
 
 @router.post("/progress/{book_id}/init-modules")

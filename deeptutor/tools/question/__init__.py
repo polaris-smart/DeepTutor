@@ -1,21 +1,38 @@
-"""
-Question Tools - Question generation system toolset
+"""Question tools with dependency-light, backward-compatible public exports."""
 
-Tools for PDF parsing, question extraction, and mimic entrypoint.
-"""
+from __future__ import annotations
 
-# MinerU parsing now lives in the shared parse layer
-# (deeptutor/services/parsing/engines/mineru); re-exported here for the question
-# toolset's backward-compatible public API.
-from deeptutor.services.parsing.engines.mineru.backend import parse_pdf_to_workdir
-from deeptutor.services.parsing.engines.mineru.config import (
-    MinerUConfig,
-    MinerUError,
-    resolve_mineru_config,
-)
-from deeptutor.services.parsing.engines.mineru.local import parse_pdf_with_mineru
+import importlib
 
-from .question_extractor import extract_questions_from_paper
+_LAZY_EXPORTS = {
+    "MinerUConfig": ("deeptutor.services.parsing.engines.mineru.config", "MinerUConfig"),
+    "MinerUError": ("deeptutor.services.parsing.engines.mineru.config", "MinerUError"),
+    "extract_questions_from_paper": (
+        "deeptutor.tools.question.question_extractor",
+        "extract_questions_from_paper",
+    ),
+    "parse_pdf_to_workdir": (
+        "deeptutor.services.parsing.engines.mineru.backend",
+        "parse_pdf_to_workdir",
+    ),
+    "parse_pdf_with_mineru": (
+        "deeptutor.services.parsing.engines.mineru.local",
+        "parse_pdf_with_mineru",
+    ),
+    "resolve_mineru_config": (
+        "deeptutor.services.parsing.engines.mineru.config",
+        "resolve_mineru_config",
+    ),
+}
+
+
+def __getattr__(name: str):
+    if name not in _LAZY_EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attribute_name = _LAZY_EXPORTS[name]
+    value = getattr(importlib.import_module(module_name), attribute_name)
+    globals()[name] = value
+    return value
 
 
 async def mimic_exam_questions(*args, **kwargs):

@@ -23,6 +23,12 @@ from deeptutor.learning.models import (
     RepetitionState,
     RetryAttempt,
     ReviewTask,
+    SixDimensionDataState,
+    SixDimensionEvidenceKind,
+    SixDimensionEvidenceRef,
+    SixDimensionKey,
+    SixDimensionResult,
+    SixDimensionSnapshot,
 )
 
 __all__ = [
@@ -38,4 +44,10 @@ __all__ = [
     "RepetitionState",
     "RetryAttempt",
     "ReviewTask",
+    "SixDimensionDataState",
+    "SixDimensionEvidenceKind",
+    "SixDimensionEvidenceRef",
+    "SixDimensionKey",
+    "SixDimensionResult",
+    "SixDimensionSnapshot",
 ]

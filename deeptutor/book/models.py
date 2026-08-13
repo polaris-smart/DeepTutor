@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from enum import Enum
 import time
-from typing import Any
+from typing import Any, Literal
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -408,6 +408,19 @@ class QuizAttempt(BaseModel):
     timestamp: float = Field(default_factory=_now)
 
 
+class RecitationSummary(BaseModel):
+    """Small poetry-practice summary persisted in ``Block.metadata``."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    last_attempt_id: str = ""
+    attempt_count: int = Field(default=0, ge=0)
+    latest_accuracy: float | None = Field(default=None, ge=0.0, le=1.0)
+    best_accuracy: float | None = Field(default=None, ge=0.0, le=1.0)
+    data_state: Literal["", "scored", "stt_failed"] = ""
+    updated_at: float = 0.0
+
+
 class Progress(BaseModel):
     """Per-user progress through the book."""
 
@@ -474,6 +487,7 @@ __all__ = [
     "Page",
     "PageLink",
     "QuizAttempt",
+    "RecitationSummary",
     "Progress",
     "Book",
 ]

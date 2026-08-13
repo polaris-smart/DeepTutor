@@ -12,7 +12,7 @@ import asyncio
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from deeptutor.book import (
@@ -22,12 +22,21 @@ from deeptutor.book import (
     get_book_engine,
 )
 from deeptutor.book.models import ContentType
+from deeptutor.book.recitation import (
+    resolve_target_lines,
+    score_recitation,
+    stt_failed_attempt,
+    update_recitation_summary,
+)
 from deeptutor.book.streaming import SOURCE as BOOK_SOURCE
 from deeptutor.core.stream import StreamEventType
 from deeptutor.core.stream_bus import StreamBus
+from deeptutor.services.voice import transcribe_audio
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+_MAX_RECITATION_AUDIO_BYTES = 25 * 1024 * 1024
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -184,6 +193,83 @@ async def get_page(book_id: str, page_id: str) -> dict[str, Any]:
     if page is None:
         raise HTTPException(status_code=404, detail="Page not found")
     return {"page": page.model_dump(mode="json")}
+
+
+@router.post("/books/recitation")
+async def submit_recitation(
+    book_id: str = Form(...),
+    block_id: str = Form(...),
+    line_ids: list[str] = Form(...),
+    audio: UploadFile = File(...),
+) -> dict[str, Any]:
+    """Transcribe and score selected poetry lines without accepting answer text."""
+
+    engine = get_book_engine()
+    book = engine.load_book(book_id)
+    if book is None:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    page_and_block = next(
+        (
+            (page, block)
+            for page in engine.list_pages(book_id)
+            for block in page.blocks
+            if block.id == block_id
+        ),
+        None,
+    )
+    if page_and_block is None:
+        raise HTTPException(status_code=404, detail="Block not found")
+    page, block = page_and_block
+    if block.type != BlockType.POETRY:
+        raise HTTPException(status_code=400, detail="Block is not a poetry block")
+
+    try:
+        target_lines = resolve_target_lines(block.payload.get("lines"), line_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    audio_bytes = await audio.read()
+    await audio.close()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Empty audio upload.")
+    if len(audio_bytes) > _MAX_RECITATION_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="Audio exceeds the 25 MB limit.")
+
+    try:
+        transcript = await transcribe_audio(
+            audio_bytes,
+            filename=audio.filename or "recitation.webm",
+            content_type=audio.content_type or "application/octet-stream",
+            language=book.language or None,
+        )
+    except Exception as exc:  # noqa: BLE001 - provider/config failures are an explicit state
+        logger.warning("Poetry recitation STT failed: %s", exc)
+        attempt = stt_failed_attempt(
+            book_id=book_id,
+            block_id=block_id,
+            target_line_ids=[line_id for line_id, _ in target_lines],
+        )
+    else:
+        attempt = score_recitation(
+            book_id=book_id,
+            block_id=block_id,
+            target_lines=target_lines,
+            transcript=transcript,
+        )
+
+    summary = update_recitation_summary(block.metadata.get("recitation"), attempt)
+    block.metadata = {
+        **block.metadata,
+        "recitation": summary.model_dump(mode="json"),
+    }
+    block.updated_at = attempt.created_at
+    page.updated_at = attempt.created_at
+    engine.storage.save_page(page)
+    return {
+        "attempt": attempt.model_dump(mode="json"),
+        "summary": summary.model_dump(mode="json"),
+    }
 
 
 @router.delete("/books/{book_id}")

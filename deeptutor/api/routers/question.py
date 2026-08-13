@@ -6,8 +6,10 @@ from pathlib import Path
 import re
 import sys
 import traceback
+from typing import Literal
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Response, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from deeptutor.agents.question import AgentCoordinator
 from deeptutor.api.utils.task_id_manager import TaskIDManager
@@ -33,11 +35,100 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+class PaperReorderApiRequest(BaseModel):
+    """HTTP projection of the tools-layer reorder contract.
+
+    The nested rules are validated by ``PaperReorderRequest`` after the source
+    has been resolved. Keeping this small projection local avoids importing the
+    agent-backed artifact adapter during the existing WebSocket router startup.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str = Field(min_length=1)
+    rules: dict[str, object]
+    include_answer_sheet: bool = False
+
+
+class PaperExportApiRequest(PaperReorderApiRequest):
+    format: Literal["html", "markdown"]
+
+
 def _mimic_output_dir():
     # Resolved per-call so a per-user PathService (set after auth) routes
     # generated mimic papers under the caller's own workspace instead of
     # admin's directory frozen at import time.
     return get_path_service().get_question_dir() / "mimic_papers"
+
+
+def _build_reordered_paper(body: PaperReorderApiRequest):
+    """Resolve, validate and reorder one user-scoped extractor artifact."""
+    from deeptutor.multi_user.context import get_current_user
+    from deeptutor.tools.question.paper_artifact import (
+        PaperArtifactError,
+        load_paper_artifact,
+        resolve_question_source,
+    )
+    from deeptutor.tools.question.paper_reorder import (
+        PaperReorderError,
+        PaperReorderRequest,
+        reorder_paper,
+    )
+
+    if body.include_answer_sheet and get_current_user().role not in {"admin", "teacher"}:
+        raise HTTPException(status_code=403, detail="Teacher access is required for answer sheets")
+
+    try:
+        request = PaperReorderRequest.model_validate(
+            {
+                "source_id": body.source_id,
+                "rules": body.rules,
+                "include_answer_sheet": body.include_answer_sheet,
+            }
+        )
+        path_service = get_path_service()
+        question_file = resolve_question_source(path_service.get_question_dir(), body.source_id)
+        artifact = load_paper_artifact(
+            question_file,
+            source_id=body.source_id,
+            allowed_image_root=path_service.workspace_root,
+        )
+        return reorder_paper(artifact, request)
+    except PaperReorderError as exc:
+        detail: dict[str, object] = {"message": str(exc)}
+        if exc.audit is not None:
+            detail["audit"] = exc.audit.model_dump(mode="json")
+        raise HTTPException(status_code=422, detail=detail) from exc
+    except (PaperArtifactError, ValidationError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/paper-reorder/preview")
+def preview_paper_reorder(body: PaperReorderApiRequest):
+    """Return a traceable preview; warnings remain visible to the editor."""
+    return _build_reordered_paper(body)
+
+
+@router.post("/paper-reorder/export")
+def export_paper_reorder(body: PaperExportApiRequest) -> Response:
+    """Export a conserved student paper and, for teachers, its answer page."""
+    from deeptutor.tools.question.paper_reorder import PaperExportError, render_paper_export
+
+    paper = _build_reordered_paper(body)
+    try:
+        content = render_paper_export(paper, body.format)
+    except PaperExportError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    extension = "html" if body.format == "html" else "md"
+    media_type = (
+        "text/html; charset=utf-8" if body.format == "html" else "text/markdown; charset=utf-8"
+    )
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{paper.id}.{extension}"'},
+    )
 
 
 @router.websocket("/mimic")

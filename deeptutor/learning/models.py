@@ -4,7 +4,7 @@ from enum import Enum
 import time
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 _KNOWLEDGE_TYPE_LEGACY: dict[str, str] = {
     "记忆型": "memory",
@@ -43,6 +43,75 @@ class ErrorType(str, Enum):
     def _missing_(cls, value: object) -> ErrorType | None:
         mapped = _ERROR_TYPE_LEGACY.get(str(value))
         return cls(mapped) if mapped else None
+
+
+SixDimensionKey = Literal[
+    "knowledge",
+    "procedure",
+    "understanding",
+    "transfer",
+    "retention",
+    "habit",
+]
+SixDimensionDataState = Literal["scored", "insufficient"]
+SixDimensionEvidenceKind = Literal["attempt", "error", "review", "route_task"]
+
+
+class SixDimensionEvidenceRef(BaseModel):
+    """Stable pointer to one item of evidence behind a dimension score."""
+
+    kind: SixDimensionEvidenceKind
+    id: str = Field(min_length=1)
+
+
+class SixDimensionResult(BaseModel):
+    """One explainable dimension in a :class:`SixDimensionSnapshot`."""
+
+    key: SixDimensionKey
+    score: float | None = Field(default=None, ge=0, le=100)
+    data_state: SixDimensionDataState
+    confidence: float = Field(ge=0, le=1)
+    evidence_count: int = Field(ge=0)
+    evidence_refs: list[SixDimensionEvidenceRef] = Field(default_factory=list)
+    explanation: str
+    next_action: str
+
+    @model_validator(mode="after")
+    def _validate_score_and_evidence(self) -> SixDimensionResult:
+        if self.evidence_count != len(self.evidence_refs):
+            raise ValueError("evidence_count must match evidence_refs")
+        if self.data_state == "scored":
+            if self.score is None:
+                raise ValueError("scored dimensions require a score")
+            if not self.evidence_refs:
+                raise ValueError("scored dimensions require traceable evidence")
+        elif self.score is not None:
+            raise ValueError("insufficient dimensions must use a null score")
+        return self
+
+
+class SixDimensionSnapshot(BaseModel):
+    """A point-in-time, evidence-backed learner profile for one book."""
+
+    book_id: str
+    generated_at: float = Field(default_factory=time.time)
+    dimensions: list[SixDimensionResult]
+    overall: float | None = Field(default=None, ge=0, le=100)
+
+    @model_validator(mode="after")
+    def _validate_complete_dimension_set(self) -> SixDimensionSnapshot:
+        expected = {
+            "knowledge",
+            "procedure",
+            "understanding",
+            "transfer",
+            "retention",
+            "habit",
+        }
+        keys = [dimension.key for dimension in self.dimensions]
+        if len(keys) != 6 or set(keys) != expected:
+            raise ValueError("dimensions must contain each six-dimension key exactly once")
+        return self
 
 
 # Stages removed in the Mastery Path simplification are mapped onto the nearest
@@ -216,6 +285,12 @@ class LearningProgress(BaseModel):
 __all__ = [
     "KnowledgeType",
     "ErrorType",
+    "SixDimensionKey",
+    "SixDimensionDataState",
+    "SixDimensionEvidenceKind",
+    "SixDimensionEvidenceRef",
+    "SixDimensionResult",
+    "SixDimensionSnapshot",
     "LearningStage",
     "KnowledgePoint",
     "LearningModule",
