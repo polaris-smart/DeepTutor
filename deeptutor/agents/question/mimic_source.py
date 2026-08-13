@@ -22,6 +22,8 @@ import json
 import logging
 from pathlib import Path
 
+from deeptutor.agents.question.artifact_guard import validate_conservation
+from deeptutor.agents.question.parsed_question import ParsedQuestion
 from deeptutor.agents.question.pipeline import (
     _VALID_DIFFICULTIES,
     _VALID_QUESTION_TYPES,
@@ -130,6 +132,7 @@ def _parse_sync(
     if max_questions > 0:
         questions = questions[:max_questions]
 
+    parsed_questions: list[ParsedQuestion] = []
     templates: list[QuizTemplate] = []
     for idx, item in enumerate(questions, 1):
         if not isinstance(item, dict):
@@ -137,17 +140,35 @@ def _parse_sync(
         q_text = str(item.get("question_text") or "").strip()
         if not q_text:
             continue
+        raw_options = item.get("options")
+        options = (
+            {str(key): str(value) for key, value in raw_options.items()}
+            if isinstance(raw_options, dict)
+            else None
+        )
+        parsed = ParsedQuestion(
+            question_text=q_text,
+            question_type=_coerce_question_type(item.get("question_type")),
+            difficulty=_coerce_difficulty(item.get("difficulty")),
+            answer=str(item.get("answer") or "").strip() or None,
+            options=options,
+            source_paper=str(paper_path),
+            original_index=idx,
+        )
+        parsed_questions.append(parsed)
         templates.append(
             QuizTemplate(
-                question_id=f"q_{idx}",
-                topic=q_text[:_TOPIC_CLIP_CHARS],
-                question_type=_coerce_question_type(item.get("question_type")),
-                difficulty=_coerce_difficulty(item.get("difficulty")),
+                question_id=parsed.stable_id,
+                topic=parsed.question_text[:_TOPIC_CLIP_CHARS],
+                question_type=parsed.question_type,
+                difficulty=parsed.difficulty,
                 source="mimic",
-                reference_question=q_text,
-                reference_answer=str(item.get("answer") or "").strip() or None,
+                reference_question=parsed.question_text,
+                reference_answer=parsed.answer,
             )
         )
+
+    validate_conservation(parsed_questions, templates)
 
     trace = {
         "paper_dir": str(working_dir),
