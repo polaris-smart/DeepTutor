@@ -38,6 +38,10 @@ IMAGE_DESCRIPTION_PROMPT = (
     "and any educational or technical meaning. Keep the answer under 180 words."
 )
 
+# Volcano Ark embedding `input` strings cap at 100000 bytes; keep the base64
+# image data comfortably below that (headroom for the data-URI prefix).
+_MAX_IMAGE_DATA_URI_BYTES = 90_000
+
 
 @dataclass(frozen=True)
 class _ImageSource:
@@ -255,12 +259,38 @@ class LlamaIndexDocumentLoader:
                 f"maximum allowed: {DocumentValidator.MAX_FILE_SIZE} bytes"
             )
         mimetype = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
-        encoded = base64.b64encode(file_path.read_bytes()).decode("ascii")
+        payload = file_path.read_bytes()
+        # Volcano Ark's embedding endpoint rejects `input` strings over
+        # 100000 bytes; big textbook images exceed that as base64. Downscale
+        # (and re-encode as JPEG when lossy-friendly) to stay under the cap.
+        encoded = base64.b64encode(payload).decode("ascii")
+        if len(encoded) > _MAX_IMAGE_DATA_URI_BYTES:
+            for max_edge in (1024, 768, 512, 256):
+                resized = self._downscale_image_bytes(payload, max_edge=max_edge)
+                encoded = base64.b64encode(resized).decode("ascii")
+                if len(encoded) <= _MAX_IMAGE_DATA_URI_BYTES:
+                    break
+            mimetype = "image/jpeg"
         return {
             "base64": encoded,
             "data_uri": f"data:{mimetype};base64,{encoded}",
             "mimetype": mimetype,
         }
+
+    @staticmethod
+    def _downscale_image_bytes(data: bytes, max_edge: int = 1024, quality: int = 85) -> bytes:
+        """Resize an image so its base64 form fits Ark's input byte cap."""
+        from io import BytesIO
+
+        from PIL import Image
+
+        with Image.open(BytesIO(data)) as img:
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            img.thumbnail((max_edge, max_edge))
+            out = BytesIO()
+            img.save(out, format="JPEG", quality=quality, optimize=True)
+            return out.getvalue()
 
     def _append_if_nonempty(self, documents: list[Any], file_path: Path, text: str) -> None:
         if text.strip():
