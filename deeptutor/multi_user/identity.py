@@ -59,7 +59,7 @@ def _canonical_record(
     if not hashed:
         return None
     role = str(value.get("role") or default_role)
-    if role not in {"admin", "user"}:
+    if role not in {"admin", "teacher", "student", "user"}:
         role = default_role
     return {
         "id": str(value.get("id") or new_user_id()),
@@ -92,7 +92,12 @@ def _migrate_legacy_users() -> dict[str, dict[str, Any]] | None:
     users: dict[str, dict[str, Any]] = {}
     for username, value in legacy.items():
         role: Role = "admin" if not users else "user"
-        if isinstance(value, dict) and str(value.get("role") or "") in {"admin", "user"}:
+        if isinstance(value, dict) and str(value.get("role") or "") in {
+            "admin",
+            "teacher",
+            "student",
+            "user",
+        }:
             role = str(value.get("role"))  # type: ignore[assignment]
         record = _canonical_record(username, value, default_role=role)
         if record is not None:
@@ -140,7 +145,12 @@ def load_users(  # nosec B107 - empty defaults mean "no env fallback supplied".
     changed = False
     for index, (username, value) in enumerate(users.items()):
         role: Role = "admin" if index == 0 else "user"
-        if isinstance(value, dict) and str(value.get("role") or "") in {"admin", "user"}:
+        if isinstance(value, dict) and str(value.get("role") or "") in {
+            "admin",
+            "teacher",
+            "student",
+            "user",
+        }:
             role = str(value.get("role"))  # type: ignore[assignment]
         record = _canonical_record(str(username), value, default_role=role)
         if record is None:
@@ -288,8 +298,8 @@ def delete_avatar_file(user_id: str) -> None:
 
 
 def set_role(username: str, role: Role) -> bool:
-    if role not in {"admin", "user"}:
-        raise ValueError("role must be 'admin' or 'user'")
+    if role not in {"admin", "teacher", "student", "user"}:
+        raise ValueError("role must be 'admin', 'teacher', 'student' or 'user'")
     if not USERS_FILE.exists():
         return False
     users = load_users()
