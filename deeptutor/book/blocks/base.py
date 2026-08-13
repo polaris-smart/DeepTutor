@@ -192,14 +192,18 @@ def _build_default_registry() -> BlockGeneratorRegistry:
     # Lazy imports to avoid circular deps
     from .animation import AnimationGenerator
     from .callout import CalloutGenerator
+    from .climate import ClimateGenerator
     from .code import CodeGenerator
     from .concept_graph import ConceptGraphGenerator
     from .deep_dive import DeepDiveGenerator
     from .figure import FigureGenerator
     from .flash_cards import FlashCardsGenerator
+    from .grammar import GrammarGenerator
     from .interactive import InteractiveGenerator
+    from .poetry import PoetryGenerator
     from .quiz import QuizGenerator
     from .section import SectionGenerator
+    from .terrain import TerrainGenerator
     from .text import TextGenerator
     from .timeline import TimelineGenerator
     from .user_note import UserNoteGenerator
@@ -218,6 +222,10 @@ def _build_default_registry() -> BlockGeneratorRegistry:
         DeepDiveGenerator,
         ConceptGraphGenerator,
         SectionGenerator,
+        PoetryGenerator,
+        GrammarGenerator,
+        TerrainGenerator,
+        ClimateGenerator,
     ):
         registry.register(cls())
     return registry
