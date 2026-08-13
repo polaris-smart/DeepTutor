@@ -195,3 +195,52 @@ def test_model_info_reports_multimodal_at_model_level() -> None:
         ).get_model_info()["multimodal"]
         is False
     )
+
+
+def test_model_info_reports_doubao_embedding_vision_as_multimodal() -> None:
+    """doubao-embedding-vision accepts data-URI strings as `input` (Ark plan)."""
+    assert (
+        OpenAICompatibleEmbeddingAdapter(
+            {
+                "api_key": "ark-test",
+                "base_url": "https://ark.cn-beijing.volces.com/api/plan/v3/embeddings",
+                "model": "doubao-embedding-vision",
+            }
+        ).get_model_info()["multimodal"]
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_openai_compat_flattens_contents_for_volcengine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ark's /embeddings rejects the OpenAI object form — input must be a
+    flat list of strings (data-URI strings for images)."""
+    captured: dict[str, Any] = {}
+
+    async def fake_post(self: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
+        captured["json"] = kwargs.get("json")
+        request = httpx.Request("POST", url)
+        return httpx.Response(
+            status_code=200,
+            json={"data": [{"embedding": [0.1, 0.2]}], "model": "doubao-embedding-vision"},
+            request=request,
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    adapter = OpenAICompatibleEmbeddingAdapter(
+        {
+            "api_key": "ark-test",
+            "base_url": "https://ark.cn-beijing.volces.com/api/plan/v3/embeddings",
+            "model": "doubao-embedding-vision",
+            "request_timeout": 5,
+        }
+    )
+    contents = [{"text": "caption"}, {"image": "data:image/png;base64,XXX"}]
+    await adapter.embed(
+        EmbeddingRequest(texts=[], model="doubao-embedding-vision", contents=contents)
+    )
+    assert captured["json"]["input"] == ["caption", "data:image/png;base64,XXX"]
+

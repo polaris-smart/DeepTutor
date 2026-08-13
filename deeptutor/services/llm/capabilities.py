@@ -324,6 +324,9 @@ MODEL_OVERRIDES: dict[str, dict[str, object]] = {
     "kimi-k2.5": {"supports_vision": True},
     "kimi-k2.6": {"supports_vision": True},
     "kimi-k3": {"supports_vision": True},
+    # Volcano Ark doubao-seed family accepts image_url content in
+    # chat/completions (verified against the Agent Plan endpoint).
+    "doubao-seed-": {"supports_vision": True},
 }
 
 

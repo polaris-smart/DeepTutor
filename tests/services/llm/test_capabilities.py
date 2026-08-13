@@ -127,6 +127,16 @@ def test_kimi_k3_is_vision_capable() -> None:
     assert supports_vision("custom", "kimi-k3") is True
 
 
+def test_doubao_seed_family_is_vision_capable() -> None:
+    """Volcano Ark doubao-seed-* accepts image_url content on the Agent Plan
+    endpoint (verified live). glm-5.2 on the same binding stays text-only."""
+    assert supports_vision("custom", "doubao-seed-2.0-lite") is True
+    assert supports_vision("custom", "doubao-seed-2.0-mini") is True
+    assert supports_vision("custom", "doubao-seed-2.1-turbo") is True
+    assert supports_vision("custom", "doubao-seed-evolving") is True
+    assert supports_vision("custom", "glm-5.2") is False
+
+
 def test_qwen38_max_enables_vision_without_legacy_vl_suffix() -> None:
     """Qwen3.8-Max is multimodal despite not carrying the legacy ``-vl`` suffix."""
     assert supports_vision("dashscope", "qwen3.8-max") is True

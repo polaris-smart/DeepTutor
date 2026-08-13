@@ -22,6 +22,7 @@ def looks_like_multimodal_embedding_model(model_name: Optional[str]) -> bool:
             "qwen3-vl-embedding",
             "multimodal-embedding",
             "vision-embedding",
+            "embedding-vision",
             "vl-embedding",
             "image-embedding",
         )

@@ -19,6 +19,32 @@ from .base import (
 logger = logging.getLogger(__name__)
 
 
+def _is_volcengine_endpoint(base_url: str | None) -> bool:
+    """True when the endpoint is Volcano Ark's OpenAI-compatible gateway.
+
+    Ark's ``/embeddings`` accepts plain strings (text or data-URI) in
+    ``input`` and rejects the OpenAI object form, so content items must be
+    flattened before sending.
+    """
+    return bool(base_url) and "volces.com" in str(base_url)
+
+
+def _flatten_content_item(item: Any) -> Any:
+    """Convert one provider-agnostic content item to Ark's string form.
+
+    ``{"text": t}`` → ``t``; ``{"image": data_uri|url}`` → the URI itself.
+    Unknown shapes pass through untouched so a caller bug surfaces as an
+    upstream 400 instead of being silently rewritten.
+    """
+    if not isinstance(item, dict):
+        return item
+    if "text" in item:
+        return item["text"]
+    if "image" in item:
+        return item["image"]
+    return item
+
+
 class OpenAICompatibleEmbeddingAdapter(BaseEmbeddingAdapter):
     NO_KEY_SENTINEL = "sk-no-key-required"
 
@@ -163,6 +189,14 @@ class OpenAICompatibleEmbeddingAdapter(BaseEmbeddingAdapter):
                 "multimodal `contents`."
             )
         input_payload: Any = request.contents if request.contents else request.texts
+        # Volcano Ark's embedding endpoint rejects the OpenAI object form
+        # ({"type": "image_url", ...}) — it expects plain strings, with images
+        # sent as data-URI strings. Flatten provider-agnostic contents to that
+        # shape when talking to a Volcengine endpoint.
+        if isinstance(input_payload, list) and _is_volcengine_endpoint(self.base_url):
+            input_payload = [
+                _flatten_content_item(item) for item in input_payload
+            ]
 
         payload = {
             "input": input_payload,
