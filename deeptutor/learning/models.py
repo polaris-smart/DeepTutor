@@ -282,6 +282,38 @@ class LearningProgress(BaseModel):
     updated_at: float = Field(default_factory=time.time)
 
 
+class LearningEvidence(BaseModel):
+    """One immutable row of learner evidence (collection-side payload).
+
+    Written by the fail-open hooks in :class:`LearningService` and persisted
+    append-only by ``deeptutor.learning.evidence_store.EvidenceStore``. Field
+    names align with the ``evidence_captured`` schema of education-agent-skills
+    so the engine's decision side can query a stable, cross-book evidence
+    stream. ``confidence_*`` / ``hint_level_reached`` are reserved for the
+    tutor-persona capture pass and stay NULL until then.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    #: Row id assigned by SQLite on append; None until persisted.
+    id: int | None = None
+    created_at: float = Field(default_factory=time.time)
+    user_id: str = ""
+    book_id: str = ""
+    kp_id: str = ""
+    question_id: str = ""
+    session_id: str = ""
+    evidence_type: Literal["graded_quiz", "qualitative_gate"]
+    is_correct: bool | None = None
+    passed: bool | None = None
+    cognitive_gate: str = ""
+    confidence_before: int | None = None
+    confidence_after: int | None = None
+    hint_level_reached: int | None = None
+    error_type: str = ""
+    detail_json: dict[str, Any] = Field(default_factory=dict)
+
+
 __all__ = [
     "KnowledgeType",
     "ErrorType",
@@ -302,4 +334,5 @@ __all__ = [
     "ReviewTask",
     "PendingQuestion",
     "LearningProgress",
+    "LearningEvidence",
 ]

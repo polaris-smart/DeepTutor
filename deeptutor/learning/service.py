@@ -6,9 +6,11 @@ from typing import TYPE_CHECKING
 import uuid
 
 from deeptutor.learning.grading import classify_error, grade_answer
+from deeptutor.learning.evidence_store import EvidenceStore
 from deeptutor.learning.mastery import compute_mastery
 from deeptutor.learning.models import (
     ErrorRecord,
+    LearningEvidence,
     LearningModule,
     LearningProgress,
     LearningStage,
@@ -22,9 +24,37 @@ if TYPE_CHECKING:
     from deeptutor.learning.scheduler import SpacedRepetitionScheduler
 
 
+logger = logging.getLogger(__name__)
+
+
 class LearningService:
-    def __init__(self, store: LearningStore | None = None) -> None:
+    def __init__(
+        self,
+        store: LearningStore | None = None,
+        evidence_store: EvidenceStore | None = None,
+    ) -> None:
         self._store = store or LearningStore()
+        self._evidence_store = evidence_store
+
+    def _record_evidence(self, evidence: LearningEvidence) -> None:
+        """Persist one evidence row without ever failing the caller.
+
+        The evidence layer is a side channel: any failure to construct the
+        store or append a row must not interrupt the mastery main flow, so the
+        whole path is guarded and only logged.
+        """
+        try:
+            store = self._evidence_store
+            if store is None:
+                store = EvidenceStore()
+                self._evidence_store = store
+            store.append(evidence)
+        except Exception:
+            logger.warning(
+                "Failed to persist learning evidence (evidence_type=%s)",
+                evidence.evidence_type,
+                exc_info=True,
+            )
 
     def get_or_create(self, book_id: str) -> LearningProgress:
         existing = self._store.load(book_id)
@@ -170,6 +200,8 @@ class LearningService:
         question_type: str = "short",
         self_attribution: str = "",
         scheduler: SpacedRepetitionScheduler | None = None,
+        user_id: str = "",
+        session_id: str = "",
     ) -> bool:
         """Grade one answer and fold it through the full post-answer pipeline.
 
@@ -207,6 +239,19 @@ class LearningService:
                 scheduler.schedule_next(state, kp_type, is_correct)
                 progress.review_queue = scheduler.build_review_queue(progress)
         self.save(progress)
+        self._record_evidence(
+            LearningEvidence(
+                user_id=user_id,
+                book_id=progress.book_id,
+                kp_id=knowledge_point_id,
+                question_id=question_id,
+                session_id=session_id,
+                evidence_type="graded_quiz",
+                is_correct=is_correct,
+                cognitive_gate="retrieval",
+                error_type="" if is_correct else classify_error(user_answer).value,
+            )
+        )
         return is_correct
 
     # ── Loop-driven tutoring helpers ─────────────────────────────────────
@@ -230,6 +275,8 @@ class LearningService:
         *,
         passed: bool,
         evidence: str = "",
+        user_id: str = "",
+        session_id: str = "",
     ) -> None:
         """Record the qualitative (CONCEPT / DESIGN) gate outcome.
 
@@ -243,6 +290,18 @@ class LearningService:
             progress.feynman_explanations[kp_id] = evidence
         progress.updated_at = time.time()
         self.save(progress)
+        self._record_evidence(
+            LearningEvidence(
+                user_id=user_id,
+                book_id=progress.book_id,
+                kp_id=kp_id,
+                session_id=session_id,
+                evidence_type="qualitative_gate",
+                passed=passed,
+                cognitive_gate="self_explanation",
+                detail_json={"evidence": evidence} if evidence else {},
+            )
+        )
 
     def list_progress(self) -> dict:
         """Return summary of all book progress with per-book error info."""
