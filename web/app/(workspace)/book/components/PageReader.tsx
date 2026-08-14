@@ -30,6 +30,15 @@ const INSERTABLE_TYPES: BlockType[] = [
   "grammar",
   "terrain",
   "climate",
+  // YuEdu fork: 数学交互
+  "desmos",
+  "geometry",
+  "geogebra",
+  "three_scene",
+  "formula",
+  "venn",
+  "complex",
+  "chart",
 ];
 
 export interface PageReaderProps {

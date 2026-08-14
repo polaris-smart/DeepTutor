@@ -43,7 +43,16 @@ export type BlockType =
   | "poetry"
   | "grammar"
   | "terrain"
-  | "climate";
+  | "climate"
+  // YuEdu fork: 数学交互 block（老悦学 8 件精华移植）
+  | "desmos"
+  | "geometry"
+  | "geogebra"
+  | "three_scene"
+  | "formula"
+  | "venn"
+  | "complex"
+  | "chart";
 
 export type ContentType =
   | "theory"

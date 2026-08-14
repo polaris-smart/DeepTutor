@@ -33,6 +33,16 @@ import PoetryBlock from "./PoetryBlock";
 import GrammarBlock from "./GrammarBlock";
 import TerrainBlock from "./TerrainBlock";
 import ClimateBlock from "./ClimateBlock";
+// YuEdu fork: 数学交互 block（老悦学 8 件精华移植）
+import { configFromBlock } from "./math/mathBlockAdapter";
+import DesmosBlock from "./math/DesmosBlock";
+import JsxGeometryBlock from "./math/JsxGeometryBlock";
+import GeoGebraBlock from "./math/GeoGebraBlock";
+import ThreeSceneBlock from "./math/ThreeSceneBlock";
+import KatexFormulaBlock from "./math/KatexFormulaBlock";
+import VennDiagramBlock from "./math/VennDiagramBlock";
+import ComplexPlaneBlock from "./math/ComplexPlaneBlock";
+import EchartsBlock from "./math/EchartsBlock";
 
 const CHANGEABLE_TYPES: BlockType[] = [
   "text",
@@ -186,6 +196,31 @@ export default function BlockRenderer({
       break;
     case "climate":
       body = <ClimateBlock block={block} />;
+      break;
+    // YuEdu fork: 数学交互 block（adapter 保险层，组件只吃 config）
+    case "desmos":
+      body = <DesmosBlock config={configFromBlock(block)} />;
+      break;
+    case "geometry":
+      body = <JsxGeometryBlock config={configFromBlock(block)} />;
+      break;
+    case "geogebra":
+      body = <GeoGebraBlock config={configFromBlock(block)} />;
+      break;
+    case "three_scene":
+      body = <ThreeSceneBlock config={configFromBlock(block)} />;
+      break;
+    case "formula":
+      body = <KatexFormulaBlock config={configFromBlock(block)} />;
+      break;
+    case "venn":
+      body = <VennDiagramBlock config={configFromBlock(block)} />;
+      break;
+    case "complex":
+      body = <ComplexPlaneBlock config={configFromBlock(block)} />;
+      break;
+    case "chart":
+      body = <EchartsBlock config={configFromBlock(block)} />;
       break;
     default:
       body = <PlaceholderBlock block={block} />;

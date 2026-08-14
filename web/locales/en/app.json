@@ -2932,5 +2932,13 @@
   "poetry": "Poetry",
   "grammar": "Grammar",
   "terrain": "Terrain",
-  "climate": "Climate"
+  "climate": "Climate",
+  "desmos": "Desmos graph",
+  "geometry": "Geometry board",
+  "geogebra": "GeoGebra",
+  "three_scene": "3D scene",
+  "formula": "Formula",
+  "venn": "Venn diagram",
+  "complex": "Complex plane",
+  "chart": "Data chart"
 }

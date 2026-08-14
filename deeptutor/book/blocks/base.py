@@ -192,12 +192,18 @@ def _build_default_registry() -> BlockGeneratorRegistry:
     # Lazy imports to avoid circular deps
     from .animation import AnimationGenerator
     from .callout import CalloutGenerator
+    from .chart import ChartGenerator
     from .climate import ClimateGenerator
     from .code import CodeGenerator
+    from .complex import ComplexGenerator
     from .concept_graph import ConceptGraphGenerator
     from .deep_dive import DeepDiveGenerator
+    from .desmos import DesmosGenerator
     from .figure import FigureGenerator
     from .flash_cards import FlashCardsGenerator
+    from .formula import FormulaGenerator
+    from .geometry import GeometryGenerator
+    from .geogebra import GeoGebraGenerator
     from .grammar import GrammarGenerator
     from .interactive import InteractiveGenerator
     from .poetry import PoetryGenerator
@@ -205,8 +211,10 @@ def _build_default_registry() -> BlockGeneratorRegistry:
     from .section import SectionGenerator
     from .terrain import TerrainGenerator
     from .text import TextGenerator
+    from .three_scene import ThreeSceneGenerator
     from .timeline import TimelineGenerator
     from .user_note import UserNoteGenerator
+    from .venn import VennGenerator
 
     for cls in (
         TextGenerator,
@@ -226,6 +234,15 @@ def _build_default_registry() -> BlockGeneratorRegistry:
         GrammarGenerator,
         TerrainGenerator,
         ClimateGenerator,
+        # YuEdu fork: 数学交互 block（老悦学 8 件精华移植）
+        DesmosGenerator,
+        GeometryGenerator,
+        GeoGebraGenerator,
+        ThreeSceneGenerator,
+        FormulaGenerator,
+        VennGenerator,
+        ComplexGenerator,
+        ChartGenerator,
     ):
         registry.register(cls())
     return registry

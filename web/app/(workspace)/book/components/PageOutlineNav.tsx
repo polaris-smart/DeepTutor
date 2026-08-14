@@ -4,8 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
   AlignLeft,
+  BarChart3,
   BookOpen,
+  Box,
   ChevronRight,
+  CircleDot,
   Code2,
   FileText,
   Film,
@@ -18,6 +21,11 @@ import {
   type LucideIcon,
   MessageCircle,
   MousePointerClick,
+  PencilRuler,
+  Pi,
+  Radar,
+  Shapes,
+  Sigma,
   Sparkles,
   Sticker,
   Thermometer,
@@ -46,6 +54,15 @@ const TYPE_ICON: Record<BlockType, LucideIcon> = {
   grammar: Languages,
   terrain: Globe,
   climate: Thermometer,
+  // YuEdu fork: 数学交互
+  desmos: Sigma,
+  geometry: Shapes,
+  geogebra: PencilRuler,
+  three_scene: Box,
+  formula: Pi,
+  venn: CircleDot,
+  complex: Radar,
+  chart: BarChart3,
 };
 
 const TYPE_LABEL_EN: Record<BlockType, string> = {
@@ -67,6 +84,15 @@ const TYPE_LABEL_EN: Record<BlockType, string> = {
   grammar: "Grammar",
   terrain: "Terrain",
   climate: "Climate",
+  // YuEdu fork: 数学交互
+  desmos: "Desmos graph",
+  geometry: "Geometry board",
+  geogebra: "GeoGebra",
+  three_scene: "3D scene",
+  formula: "Formula",
+  venn: "Venn diagram",
+  complex: "Complex plane",
+  chart: "Data chart",
 };
 
 function shortLabel(block: Block, fallback: string): string {

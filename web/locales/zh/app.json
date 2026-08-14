@@ -2932,5 +2932,13 @@
   "poetry": "诗词",
   "grammar": "语法",
   "terrain": "地形",
-  "climate": "气候"
+  "climate": "气候",
+  "desmos": "Desmos 图像",
+  "geometry": "几何画板",
+  "geogebra": "GeoGebra",
+  "three_scene": "3D 立体",
+  "formula": "公式",
+  "venn": "维恩图",
+  "complex": "复数平面",
+  "chart": "数据图表"
 }
