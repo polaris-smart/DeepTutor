@@ -120,6 +120,9 @@ class LlamaIndexDocumentLoader:
             return "", []
 
         text = parsed.markdown.strip() or self._text_from_blocks(parsed.blocks)
+        # 悦学 doc_intel: keep the structured blocks for _append_if_nonempty's
+        # enrich pass (content_list carries heading levels / bboxes / page_idx).
+        self._last_parsed_blocks = parsed.blocks
         images = self._collect_asset_images(parsed.asset_dir, origin=file_path)
         return text, images
 
@@ -301,13 +304,31 @@ class LlamaIndexDocumentLoader:
 
     def _append_if_nonempty(self, documents: list[Any], file_path: Path, text: str) -> None:
         if text.strip():
+            metadata = {
+                "file_name": file_path.name,
+                "file_path": str(file_path),
+            }
+            # 悦学 doc_intel: doc-level classification from the parse cache's
+            # content_list (fail-open — enrich never blocks indexing).
+            try:
+                from deeptutor.knowledge.doc_intel import enrich as _doc_intel_enrich
+
+                _blocks = getattr(self, "_last_parsed_blocks", None)
+                if _blocks is not None:
+                    payload = _doc_intel_enrich(_blocks, text, file_path.name)
+                    metadata.update(payload["classification"].as_metadata())
+                    if payload.get("tree"):
+                        import json as _json
+
+                        metadata["doc_tree"] = _json.dumps(
+                            payload["tree"], ensure_ascii=False
+                        )
+            except Exception:
+                self.logger.debug("doc_intel enrich skipped for %s", file_path.name)
             documents.append(
                 Document(
                     text=text,
-                    metadata={
-                        "file_name": file_path.name,
-                        "file_path": str(file_path),
-                    },
+                    metadata=metadata,
                 )
             )
             self.logger.info(f"Loaded: {file_path.name} ({len(text)} chars)")
