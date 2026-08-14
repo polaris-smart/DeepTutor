@@ -61,8 +61,9 @@ class _ImageSource:
 class LlamaIndexDocumentLoader:
     """Convert source files into LlamaIndex ``Document`` / ``ImageNode`` objects."""
 
-    def __init__(self, logger=None) -> None:
+    def __init__(self, logger=None, image_concurrency: int = 6) -> None:
         self.logger = logger or logging.getLogger(__name__)
+        self.image_concurrency = max(1, int(image_concurrency))
 
     async def load(self, file_paths: Iterable[str]) -> list[Any]:
         documents: list[Any] = []
@@ -184,54 +185,58 @@ class LlamaIndexDocumentLoader:
                 )
             return []
 
-        embedded: list[_ImageSource] = []
-        descriptions: list[str] = []
-        contents = []
-        for source in sources:
-            try:
-                image_payload = self._load_image_payload(source.path)
-                description = await self._describe_image(
-                    source.path,
-                    image_payload["base64"],
-                    image_payload["mimetype"],
-                )
-                if not description:
-                    self.logger.warning(
-                        "Skipped image because the configured multimodal LLM "
-                        f"returned no description: {source.path.name}"
+        description_semaphore = asyncio.Semaphore(self.image_concurrency)
+
+        async def describe(source: _ImageSource) -> tuple[_ImageSource, str, str] | None:
+            async with description_semaphore:
+                try:
+                    payload = self._load_image_payload(source.path)
+                    description = await self._describe_image(
+                        source.path, payload["base64"], payload["mimetype"]
                     )
-                    continue
-                contents.append({"image": image_payload["data_uri"]})
-                embedded.append(source)
-                descriptions.append(description)
-            except OSError as exc:
-                self.logger.error(f"Failed to read image {source.path.name}: {exc}")
-            except Exception as exc:
-                self.logger.error(
-                    "Failed to describe image %s with configured multimodal LLM "
-                    "(binding=%s, model=%s): %s",
-                    source.path.name,
-                    llm_client.config.binding,
-                    llm_client.config.model,
-                    exc,
-                )
+                    return (source, description, payload["data_uri"]) if description else None
+                except Exception as exc:
+                    self.logger.error("Failed to describe image %s: %s", source.path.name, exc)
+                    return None
 
-        if not contents:
+        description_results = await asyncio.gather(*(describe(source) for source in sources))
+        described = [result for result in description_results if result is not None]
+        description_failures = [
+            source.path.name
+            for source, result in zip(sources, description_results)
+            if result is None
+        ]
+        if description_failures:
+            self.logger.warning("Image description failures: %s", ", ".join(description_failures))
+        if not described:
             return []
 
-        try:
-            embeddings = await embedding_client.embed_contents(contents)
-        except Exception as exc:
-            self.logger.error(
-                "Failed to embed image contents with configured multimodal embedding "
-                "provider/model (binding=%s, model=%s): %s",
-                embedding_client.config.binding,
-                embedding_client.config.model,
-                exc,
-            )
-            return []
+        embedding_semaphore = asyncio.Semaphore(self.image_concurrency)
+
+        async def embed(
+            item: tuple[_ImageSource, str, str],
+        ) -> tuple[_ImageSource, str, list[float]] | None:
+            source, description, data_uri = item
+            async with embedding_semaphore:
+                try:
+                    vectors = await embedding_client.embed_contents([{"image": data_uri}])
+                    return (source, description, vectors[0]) if vectors else None
+                except Exception as exc:
+                    self.logger.error("Failed to embed image %s: %s", source.path.name, exc)
+                    return None
+
+        embedding_results = await asyncio.gather(*(embed(item) for item in described))
+        embedded = [result for result in embedding_results if result is not None]
+        embedding_failures = [
+            item[0].path.name
+            for item, result in zip(described, embedding_results)
+            if result is None
+        ]
+        if embedding_failures:
+            self.logger.warning("Image embedding failures: %s", ", ".join(embedding_failures))
+
         nodes: list[ImageNode] = []
-        for source, description, embedding in zip(embedded, descriptions, embeddings):
+        for source, description, embedding in embedded:
             mimetype = mimetypes.guess_type(source.path.name)[0] or "application/octet-stream"
             nodes.append(
                 ImageNode(

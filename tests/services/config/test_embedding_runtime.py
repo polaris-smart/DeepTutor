@@ -76,6 +76,30 @@ def test_embedding_explicit_binding_and_headers() -> None:
     assert resolved.dimension == 1024
 
 
+def test_embedding_runtime_preserves_api_key_array() -> None:
+    catalog = _build_catalog(
+        embedding_profile={
+            "id": "embedding-p",
+            "name": "Embedding pool",
+            "binding": "openai",
+            "base_url": "https://api.example.com/v1/embeddings",
+            "api_key": ["key-a", "key-b"],
+            "api_version": "",
+            "extra_headers": {},
+            "models": [
+                {
+                    "id": "embedding-m",
+                    "name": "m",
+                    "model": "text-embedding-3-small",
+                    "dimension": "1536",
+                }
+            ],
+        }
+    )
+
+    assert resolve_embedding_runtime_config(catalog=catalog).api_key == ["key-a", "key-b"]
+
+
 def test_embedding_alias_canonicalization_google_to_gemini() -> None:
     catalog = _build_catalog(
         embedding_profile={
