@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import JXG from "jsxgraph";
-import "jsxgraph/distrib/jsxgraph.css";
+import "./jsxgraph.css";
 import { useTranslation } from "react-i18next";
 import type { MathBlockConfig } from "./mathBlockAdapter";
 
