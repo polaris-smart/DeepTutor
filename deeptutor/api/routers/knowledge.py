@@ -719,6 +719,48 @@ def _node_text(node) -> str:
     return str(getattr(node, "text", "") or "")
 
 
+def _video_index_for_kb(kb_name: str) -> tuple[str, Path]:
+    """Resolve a registered KB, or a local video-only index awaiting registration."""
+    from deeptutor.knowledge.video_library import video_index_path
+
+    try:
+        manager, resolved_name = _readable_kb(kb_name)
+    except HTTPException as exc:
+        # A scan is intentionally zero-manual: before it becomes a full RAG KB,
+        # its metadata-only directory is still readable from the current user's
+        # own workspace. Authorization failures must never use this fallback.
+        if exc.status_code != 404:
+            raise
+        candidate = video_index_path(kb_name, kb_base_dir=current_kb_base_dir())
+        if not candidate.is_file():
+            raise
+        return kb_name, candidate
+    return resolved_name, video_index_path(resolved_name, kb_base_dir=Path(manager.base_dir))
+
+
+@router.get("/{kb_name}/videos")
+async def get_videos(
+    kb_name: str,
+    query: str = "",
+    struct_path: str = "",
+):
+    """Return locally indexed videos matched by title/KP hints or textbook structure."""
+    try:
+        from deeptutor.knowledge.video_library import (
+            load_video_index,
+            search_videos,
+        )
+
+        _, index_path = _video_index_for_kb(kb_name)
+        videos = await asyncio.to_thread(load_video_index, index_path)
+        return search_videos(videos, query=query, struct_path=struct_path, limit=20)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to query videos for KB '%s': %s", kb_name, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @router.get("/{kb_name}/textbook-tree")
 async def get_textbook_tree(kb_name: str):
     """Aggregate document structure trees from the active LlamaIndex docstore."""
