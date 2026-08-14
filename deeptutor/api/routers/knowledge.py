@@ -23,6 +23,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     UploadFile,
     WebSocket,
     WebSocketDisconnect,
@@ -682,6 +683,130 @@ def _resolve_registered_kb_name(manager: KnowledgeBaseManager, kb_name: str | No
         raise HTTPException(status_code=404, detail="No default knowledge base is configured")
 
     raise HTTPException(status_code=404, detail=f"Knowledge base '{requested}' not found")
+
+
+def _readable_kb(kb_name: str) -> tuple[KnowledgeBaseManager, str]:
+    """Resolve an access-checked KB for read-only index inspection."""
+    manager = _overridden_kb_manager()
+    if manager is not None:
+        return manager, _resolve_registered_kb_name(manager, kb_name)
+    resource = resolve_kb(kb_name)
+    return manager_for_resource(resource), resource.name
+
+
+def _load_kb_docstore(kb_name: str):
+    """Load the active LlamaIndex docstore, or return ``None`` for an empty KB."""
+    manager, resolved_name = _readable_kb(kb_name)
+    try:
+        storage_dir = manager.get_rag_storage_path(resolved_name)
+    except ValueError:
+        return resolved_name, None
+
+    docstore_path = storage_dir / "docstore.json"
+    if not docstore_path.is_file():
+        return resolved_name, None
+
+    from llama_index.core.storage.docstore import SimpleDocumentStore
+
+    return resolved_name, SimpleDocumentStore.from_persist_dir(str(storage_dir))
+
+
+def _node_text(node) -> str:
+    """Read display text across the LlamaIndex node API variants we support."""
+    get_content = getattr(node, "get_content", None)
+    if callable(get_content):
+        return str(get_content() or "")
+    return str(getattr(node, "text", "") or "")
+
+
+@router.get("/{kb_name}/textbook-tree")
+async def get_textbook_tree(kb_name: str):
+    """Aggregate document structure trees from the active LlamaIndex docstore."""
+    try:
+        resolved_name, docstore = await asyncio.to_thread(_load_kb_docstore, kb_name)
+        if docstore is None:
+            return {"kb_name": resolved_name, "textbooks": []}
+
+        textbooks = []
+        seen_doc_ids: set[str] = set()
+        nodes = await asyncio.to_thread(lambda: list(docstore.docs.values()))
+        for node in nodes:
+            metadata = getattr(node, "metadata", {}) or {}
+            raw_tree = metadata.get("doc_tree")
+            if not raw_tree:
+                continue
+            if isinstance(raw_tree, str):
+                try:
+                    tree = json.loads(raw_tree)
+                except (TypeError, ValueError):
+                    logger.warning("Skipping malformed doc_tree metadata in KB '%s'", resolved_name)
+                    continue
+            elif isinstance(raw_tree, dict):
+                tree = raw_tree
+            else:
+                continue
+            if not isinstance(tree, dict):
+                continue
+
+            doc_id = str(
+                getattr(node, "ref_doc_id", None)
+                or metadata.get("doc_id")
+                or getattr(node, "node_id", "")
+            )
+            if doc_id in seen_doc_ids:
+                continue
+            seen_doc_ids.add(doc_id)
+            textbooks.append(
+                {
+                    "doc_id": doc_id,
+                    "file_name": str(metadata.get("file_name") or ""),
+                    "subject": str(metadata.get("doc_subject") or ""),
+                    "doc_type": str(metadata.get("doc_type") or ""),
+                    "grade": str(metadata.get("doc_grade") or ""),
+                    "tree": tree,
+                }
+            )
+        return {"kb_name": resolved_name, "textbooks": textbooks}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to read textbook tree for KB '%s': %s", kb_name, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/{kb_name}/docs/by-struct")
+async def get_docs_by_struct(
+    kb_name: str,
+    path: str = Query(..., min_length=1),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Return nodes whose ``struct_path`` starts with the requested path."""
+    try:
+        resolved_name, docstore = await asyncio.to_thread(_load_kb_docstore, kb_name)
+        nodes = []
+        if docstore is not None:
+            docstore_nodes = await asyncio.to_thread(lambda: list(docstore.docs.values()))
+            for node in docstore_nodes:
+                metadata = getattr(node, "metadata", {}) or {}
+                struct_path = str(metadata.get("struct_path") or "")
+                if not struct_path.startswith(path):
+                    continue
+                nodes.append(
+                    {
+                        "node_id": str(getattr(node, "node_id", "")),
+                        "struct_path": struct_path,
+                        "file_name": str(metadata.get("file_name") or ""),
+                        "preview": _node_text(node)[:200],
+                    }
+                )
+                if len(nodes) >= limit:
+                    break
+        return {"kb_name": resolved_name, "path": path, "nodes": nodes}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to query structure path in KB '%s': %s", kb_name, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 def _load_kb_entry_or_404(manager: KnowledgeBaseManager, kb_name: str) -> dict:
