@@ -235,18 +235,47 @@ def build_exam_paper_docx(
         return paragraph
 
     add_para(title or "试卷", bold=True, size=18, align=WD_ALIGN_PARAGRAPH.CENTER)
+
+    # Group by question type into Chinese-exam major sections (review round 2:
+    # teachers expect 一、选择题 / 二、填空题 / 三、解答题 with per-section
+    # counts and continuous numbering; data already carries q_type).
+    section_order = ["choice", "fill", "short", "open", ""]
+    zh_names = {
+        "choice": "一、选择题",
+        "fill": "二、填空题",
+        "short": "三、解答题",
+        "open": "三、解答题",
+        "": "四、其他",
+    }
+    groups: dict[str, list[dict]] = {}
+    for question in questions:
+        qtype = str(question.get("q_type") or "").strip().lower()
+        key = qtype if qtype in zh_names else ""
+        groups.setdefault(key, []).append(question)
+
+    ordered = [k for k in section_order if k in groups]
+    ordered += [k for k in groups if k not in section_order]
+
     add_para(f"共 {len(questions)} 题", size=10, align=WD_ALIGN_PARAGRAPH.CENTER)
     doc.add_paragraph()
 
-    for idx, question in enumerate(questions, start=1):
-        add_para(f"{idx}. {question['text']}")
+    numbering = 0
+    per_question_number: list[tuple[int, dict]] = []
+    for key in ordered:
+        bucket = groups[key]
+        add_para(f"{zh_names.get(key, '四、其他')}（共 {len(bucket)} 题）", bold=True, size=12)
         doc.add_paragraph()
+        for question in bucket:
+            numbering += 1
+            add_para(f"{numbering}. {question['text']}")
+            per_question_number.append((numbering, question))
+            doc.add_paragraph()
 
     if include_answers:
         doc.add_page_break()
         add_para("参考答案", bold=True, size=16, align=WD_ALIGN_PARAGRAPH.CENTER)
         doc.add_paragraph()
-        for idx, question in enumerate(questions, start=1):
+        for idx, question in per_question_number:
             answer = question.get("answer") or "（该题未收录答案）"
             add_para(f"{idx}. {answer}")
             doc.add_paragraph()
