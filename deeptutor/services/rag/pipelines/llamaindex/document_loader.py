@@ -433,9 +433,40 @@ class LlamaIndexDocumentLoader:
                     if payload.get("tree"):
                         import json as _json
 
-                        metadata["doc_tree"] = _json.dumps(
-                            payload["tree"], ensure_ascii=False
+                        # Same chunk-budget rule as di_block_meta (review
+                        # follow-up): a parsed PDF's full tree can exceed the
+                        # chunk size and LlamaIndex rejects the whole document.
+                        # Store a slimmed tree — title/level/id keys only.
+                        def _slim_tree(node: dict) -> dict:
+                            slim = {
+                                k: node[k]
+                                for k in ("title", "level", "node_id", "struct_path")
+                                if node.get(k) not in (None, "")
+                            }
+                            kids = node.get("children") or []
+                            if kids:
+                                slim["children"] = [_slim_tree(c) for c in kids]
+                            return slim
+
+                        tree_blob = _json.dumps(
+                            _slim_tree(payload["tree"]), ensure_ascii=False
                         )
+                        if len(tree_blob) > _DI_BLOCK_META_BUDGET * 4:
+                            # Still too fat (huge outlines) — collapse to a
+                            # chapter title list only so indexing never fails
+                            # on tree size; the full tree stays in the API's
+                            # textbook-tree view (rebuilt from cache on demand).
+                            top_titles = [
+                                c.get("title", "")[:40]
+                                for c in (payload["tree"].get("children") or [])
+                            ]
+                            metadata["doc_tree"] = _json.dumps(
+                                {"title": payload["tree"].get("title", ""),
+                                 "chapters": top_titles},
+                                ensure_ascii=False,
+                            )
+                        else:
+                            metadata["doc_tree"] = tree_blob
                     # Per-block struct_path/textbook_node_id/q_id: chunk-level
                     # bridge data. The doc-level Document's metadata carries
                     # them for downstream chunkers that split this document —
