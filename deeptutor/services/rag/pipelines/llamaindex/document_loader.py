@@ -419,7 +419,11 @@ class LlamaIndexDocumentLoader:
 
                 _blocks = getattr(self, "_last_parsed_blocks", None)
                 if _blocks is not None:
-                    payload = _doc_intel_enrich(_blocks, text, file_path.name)
+                    # doc_id keys stable_node_id so same-titled chapters in
+                    # different books of one KB never collide (review round 2).
+                    payload = _doc_intel_enrich(
+                        _blocks, text, file_path.name, doc_id=file_path.stem
+                    )
                     metadata.update(payload["classification"].as_metadata())
                     if payload.get("tree"):
                         import json as _json
@@ -427,6 +431,24 @@ class LlamaIndexDocumentLoader:
                         metadata["doc_tree"] = _json.dumps(
                             payload["tree"], ensure_ascii=False
                         )
+                    # Per-block struct_path/textbook_node_id/q_id: chunk-level
+                    # bridge data. The doc-level Document's metadata carries
+                    # them for downstream chunkers that split this document —
+                    # the T022 enricher reads struct_path/node_id from chunks.
+                    block_meta = payload.get("block_meta") or []
+                    if block_meta:
+                        import json as _json
+
+                        metadata["di_block_meta"] = _json.dumps(
+                            block_meta, ensure_ascii=False
+                        )
+                        question_ids = [
+                            m.get("q_id") for m in block_meta if m.get("q_id")
+                        ]
+                        if question_ids:
+                            metadata["di_q_ids"] = ",".join(
+                                str(q) for q in question_ids
+                            )
             except Exception:
                 self.logger.debug("doc_intel enrich skipped for %s", file_path.name)
             documents.append(

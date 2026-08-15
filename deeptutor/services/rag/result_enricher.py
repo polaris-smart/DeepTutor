@@ -53,6 +53,17 @@ def enrich_search_results(
         struct_path = _string(metadata.get("struct_path"))
         node_id = _node_id(node)
         textbook_node_id = _string(metadata.get("textbook_node_id"))
+        if not (struct_path or textbook_node_id):
+            # Chunks inherit the *document's* metadata, so per-block doc_intel
+            # data rides in as a JSON list under di_block_meta (review round 2:
+            # the node_id bridge must fire on production indexes). Recover this
+            # chunk's own block entry — q_id match first, then text overlap.
+            recovered = _recover_block_meta(metadata, node)
+            if recovered is not None:
+                struct_path = struct_path or _string(recovered.get("struct_path"))
+                textbook_node_id = textbook_node_id or _string(
+                    recovered.get("textbook_node_id")
+                )
 
         # A structural location is only meaningful for doc-intel annotated
         # nodes. This also makes old, metadata-free indexes degrade to empties.
@@ -118,6 +129,49 @@ def enrich_search_results(
         "related_questions": related_questions[: _RELATED_LIMIT],
         "related_images": related_images,
     }
+
+
+def _recover_block_meta(
+    metadata: Mapping[str, Any], node: Any
+) -> Mapping[str, Any] | None:
+    """Best-effort recover this chunk's doc_intel block entry.
+
+    ``di_block_meta`` is the document-level list injected by the loader; a
+    chunk whose text matches a block (or that carries a matching ``q_id``)
+    gets that block's struct_path/textbook_node_id. Fail-open: any error or
+    miss returns None.
+    """
+    import json as _json
+
+    raw = _string(metadata.get("di_block_meta"))
+    if not raw:
+        return None
+    try:
+        blocks = _json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(blocks, list):
+        return None
+    q_id = _string(metadata.get("q_id"))
+    if q_id:
+        for block in blocks:
+            if isinstance(block, dict) and _string(block.get("q_id")) == q_id:
+                return block
+    text = _preview(node)
+    if not text:
+        return None
+    best: tuple[int, Mapping[str, Any]] = (0, {})
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        block_text = _string(block.get("text") or block.get("preview"))
+        if not block_text:
+            continue
+        head = block_text[:40]
+        overlap = len(set(head) & set(text[:60]))
+        if overlap > best[0]:
+            best = (overlap, block)
+    return best[1] if best[0] >= 12 else None
 
 
 def _kp_match_score(
