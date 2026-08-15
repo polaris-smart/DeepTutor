@@ -7,6 +7,8 @@ import {
   Plus,
   ChevronDown,
   ChevronUp,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { Block, BlockType, Page } from "@/lib/book-types";
@@ -58,6 +60,9 @@ export interface PageReaderProps {
   loading?: boolean;
   bookId?: string;
   bookLanguage?: string;
+  // YuEdu fork: 上一页/下一页（对接 book/page.tsx 的 handleSelectPage）。
+  pages?: Page[];
+  onSelectPage?: (pageId: string) => void;
 }
 
 export default function PageReader({
@@ -74,6 +79,8 @@ export default function PageReader({
   loading = false,
   bookId,
   bookLanguage,
+  pages,
+  onSelectPage,
 }: PageReaderProps) {
   const { t } = useTranslation();
   const [showInsertMenu, setShowInsertMenu] = useState(false);
@@ -119,6 +126,38 @@ export default function PageReader({
     return () => scrollContainer.removeEventListener("scroll", handler);
   }, [scrollContainer, userToggled]);
 
+  // ── 上一页/下一页导航 ───────────────────────────────────────────────
+  // 键盘 ←/→ 翻页：输入框/文本域/可编辑区域与带修饰键时不拦截。
+  useEffect(() => {
+    if (!page || !pages || pages.length === 0 || !onSelectPage) return;
+    const handler = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+        return;
+      }
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      const index = pages.findIndex((p) => p.id === page.id);
+      if (index < 0) return;
+      if (event.key === "ArrowLeft" && index > 0) {
+        event.preventDefault();
+        onSelectPage(pages[index - 1].id);
+      } else if (event.key === "ArrowRight" && index < pages.length - 1) {
+        event.preventDefault();
+        onSelectPage(pages[index + 1].id);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [page, pages, onSelectPage]);
+
   if (!page) {
     return (
       <div className="flex h-full items-center justify-center text-[var(--muted-foreground)]">
@@ -131,6 +170,16 @@ export default function PageReader({
   const collapseTip = t("Collapse header");
   const failedBlocks = page.blocks.filter((block) => block.status === "error");
   const hasFailedBlocks = failedBlocks.length > 0;
+
+  // 上一页/下一页：按 pages 顺序计算当前页位置，首尾页禁用。
+  const currentIndex = pages
+    ? pages.findIndex((p) => p.id === page.id)
+    : -1;
+  const hasPrev = currentIndex > 0;
+  const hasNext =
+    !!pages && currentIndex >= 0 && currentIndex < pages.length - 1;
+  const prevPage = hasPrev && pages ? pages[currentIndex - 1] : null;
+  const nextPage = hasNext && pages ? pages[currentIndex + 1] : null;
 
   return (
     // The outer container is `relative` so the floating outline nav can
@@ -336,6 +385,39 @@ export default function PageReader({
                   </div>
                 )}
               </div>
+            )}
+
+            {/* 上一页/下一页：位于正文底部，首尾页禁用，仅在有页面列表时显示。 */}
+            {pages && pages.length > 0 && currentIndex >= 0 && (
+              <nav
+                aria-label={t("Page navigation")}
+                className="mt-6 flex items-center justify-between gap-3 border-t border-[var(--border)] pt-4"
+              >
+                <button
+                  type="button"
+                  onClick={() => prevPage && onSelectPage?.(prevPage.id)}
+                  disabled={!hasPrev}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm font-medium text-[var(--muted-foreground)] hover:border-[var(--primary)]/40 hover:text-[var(--primary)] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                  {t("Previous page")}
+                </button>
+                <span className="text-xs text-[var(--muted-foreground)]">
+                  {t("Page {{current}} / {{total}}", {
+                    current: currentIndex + 1,
+                    total: pages.length,
+                  })}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => nextPage && onSelectPage?.(nextPage.id)}
+                  disabled={!hasNext}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm font-medium text-[var(--muted-foreground)] hover:border-[var(--primary)]/40 hover:text-[var(--primary)] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {t("Next page")}
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </nav>
             )}
           </article>
         )}

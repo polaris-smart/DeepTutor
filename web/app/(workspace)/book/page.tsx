@@ -560,6 +560,9 @@ function BookPageInner() {
                 loading={
                   !!compilingPageId && compilingPageId === selectedPage?.id
                 }
+                // YuEdu fork: 上一页/下一页导航（对接现有 handleSelectPage）。
+                pages={detail?.pages || []}
+                onSelectPage={handleSelectPage}
                 onRegenerateBlock={(block) => void handleRegenerateBlock(block)}
                 onDeleteBlock={(block) => void handleDeleteBlock(block)}
                 onMoveBlock={(block, dir) => void handleMoveBlock(block, dir)}
