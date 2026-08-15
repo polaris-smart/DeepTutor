@@ -203,6 +203,7 @@ class LearningService:
         user_id: str = "",
         session_id: str = "",
         hint_level: int | None = None,
+        confidence_before: int | None = None,
     ) -> bool:
         """Grade one answer and fold it through the full post-answer pipeline.
 
@@ -211,6 +212,10 @@ class LearningService:
         of truth for what happens when a student answers, shared by every
         interactive stage. Grading is fail-closed: with no stored expected
         answer the attempt is recorded wrong, never right.
+
+        ``confidence_before`` is the learner's self-reported confidence
+        (1-5) captured on the question card before grading; it is written
+        onto the evidence row and never affects the correctness result.
         """
         is_correct = bool(expected_answer) and grade_answer(
             user_answer, expected_answer, question_type
@@ -252,6 +257,7 @@ class LearningService:
                 cognitive_gate="retrieval",
                 error_type="" if is_correct else classify_error(user_answer).value,
                 hint_level_reached=hint_level,
+                confidence_before=confidence_before,
             )
         )
         return is_correct

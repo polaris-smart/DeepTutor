@@ -69,7 +69,20 @@ def test_pending_question_overrides_reauthored_ask_user_mapping(tmp_path, monkey
                 ],
                 "multi_select": False,
                 "allow_free_text": True,
-            }
+            },
+            {
+                "id": "stable-question_conf",
+                "prompt": "你有多大把握？(1=纯猜, 5=非常确定)",
+                "options": [
+                    {"label": "1", "description": None},
+                    {"label": "2", "description": None},
+                    {"label": "3", "description": None},
+                    {"label": "4", "description": None},
+                    {"label": "5", "description": None},
+                ],
+                "multi_select": False,
+                "allow_free_text": False,
+            },
         ],
     }
 

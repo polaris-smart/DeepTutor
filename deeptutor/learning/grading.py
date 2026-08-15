@@ -17,14 +17,23 @@ if TYPE_CHECKING:
 # Short answers are often mathematically equivalent without being textually
 # equal ("1/2" vs "0.5", "√2/2" vs "二分之√2", "x=1" vs "1", "1<x<2" vs
 # "(1,2)", "y=2x+1" vs "2x+1=y"). ``_normalize_math_answer`` maps such forms
-# onto one of three canonical kinds:
+# onto one of six canonical kinds:
 #
 #   ("num", float)                     pure numeric value (tolerance compare)
 #   ("interval", (lo, a, b, ro))       interval bounds (per-bound compare)
+#   ("set", (elem, ...))               braced enumeration {a, b, c} (order-free)
+#   ("solution_set", (elem, ...))      multi-solution list "±2" / "1或2" / "1,2"
+#   ("interval_union", (iv, ...))      ∪-joined intervals / 或-joined inequalities
 #   ("expr", str)                      canonical expression string (exact)
 #
-# Anything it cannot recognize returns None and ``grade_answer`` falls back to
-# the legacy string/similarity logic, so existing behavior is preserved.
+# The three collection kinds (set / solution_set / interval_union) compare
+# order-free and only claim a string when the WHOLE string matches their form
+# AND every element normalizes; anything unrecognizable returns None and
+# ``grade_answer`` falls back to the legacy string/similarity logic, so
+# existing behavior is preserved (fail-closed).
+#
+# TODO(判分1.5): set-builder forms ({x | x > 1}) are not claimed yet — their
+# semantic equivalence with intervals (e.g. (1, +∞)) is future work.
 # ---------------------------------------------------------------------------
 
 #: Absolute tolerance for numeric equivalence.
@@ -81,7 +90,12 @@ _Interval = tuple[bool, float, float, bool]
 #: kind value for "num": bare float, or (value, unit) where the unit is part
 #: of the comparison key — 20厘米 vs 20米 must NOT compare equal.
 _NumValue = float | tuple[float, str]
-_Normalized = tuple[str, _NumValue | _Interval | str]
+#: An element inside a set / solution-set: any normalized math form. Nested
+#: collections stay possible (elements go through ``_normalize_math_answer``).
+_Collection = tuple[tuple[str, object], ...]
+#: kind value for "interval_union": order-free tuple of interval bounds.
+_IntervalUnion = tuple[_Interval, ...]
+_Normalized = tuple[str, _NumValue | _Interval | str | _Collection | _IntervalUnion]
 
 
 def _clean_text(text: str) -> str:
@@ -215,6 +229,131 @@ def _normalize_interval(text: str) -> _Interval | None:
     return None
 
 
+def _normalize_interval_branch(text: str) -> _Interval | None:
+    """Normalize one branch of an interval union to ``(left_open, a, b, right_open)``.
+
+    Accepts everything ``_normalize_interval`` accepts plus single-direction
+    inequalities (``x<1`` / ``x≤1`` / ``1<x`` / ``1≤x`` and the mirrored
+    spellings) so inequality groups like ``x<1或x>3`` can meet bracket unions
+    like ``(-∞,1)∪(3,+∞)`` on the same canonical form. Scoped to union
+    branches on purpose: a bare ``x<1`` still flows through the legacy
+    expression path.
+    """
+    interval = _normalize_interval(text)
+    if interval is not None:
+        return interval
+    m = re.fullmatch(r"x\s*(<=|≤|<)\s*(.+)", text)
+    if m:
+        b = _interval_bound(m.group(2))
+        if b is not None:
+            return (True, -math.inf, b, m.group(1) not in ("<=", "≤"))
+    m = re.fullmatch(r"(.+?)\s*(<=|≤|<)\s*x", text)
+    if m:
+        a = _interval_bound(m.group(1))
+        if a is not None:
+            return (m.group(2) not in ("<=", "≤"), a, math.inf, True)
+    m = re.fullmatch(r"x\s*(>=|≥|>)\s*(.+)", text)
+    if m:
+        a = _interval_bound(m.group(2))
+        if a is not None:
+            return (m.group(1) not in (">=", "≥"), a, math.inf, True)
+    m = re.fullmatch(r"(.+?)\s*(>=|≥|>)\s*x", text)
+    if m:
+        b = _interval_bound(m.group(1))
+        if b is not None:
+            return (True, -math.inf, b, m.group(2) not in (">=", "≥"))
+    return None
+
+
+def _normalize_interval_union(text: str) -> _IntervalUnion | None:
+    """Normalize a union of intervals into a sorted, order-free tuple.
+
+    Recognizes ``∪``-connected interval strings (``(-∞,1)∪(3,+∞)``) and
+    ``或``-separated inequality groups (``x<1或x>3``). Claimed only when every
+    branch is a valid interval, so a bare multi-solution list like ``1或2``
+    falls through to the solution-set path instead.
+    """
+    if "∪" not in text and "或" not in text:
+        return None
+    branches = re.split(r"∪", text) if "∪" in text else re.split(r"或", text)
+    intervals: list[_Interval] = []
+    for branch in branches:
+        interval = _normalize_interval_branch(branch.strip())
+        if interval is None:
+            return None
+        intervals.append(interval)
+    if len(intervals) < 2:
+        return None
+    return tuple(sorted(intervals))
+
+
+def _expand_plus_minus(part: str) -> list[str]:
+    """Expand a leading ``±`` prefix into the two signed copies of an element."""
+    if not part.startswith("±"):
+        return [part]
+    rest = part[1:].strip()
+    return [rest, f"-{rest}"] if rest else [part]
+
+
+def _normalize_braced_set(text: str) -> _Collection | None:
+    """Normalize a braced enumeration ``{a, b, c}`` into sorted normalized elements.
+
+    Elements are separated by comma variants and each goes through the full
+    ``_normalize_math_answer`` pipeline, so ``{1, 1/2}`` and ``{1, 0.5}`` meet.
+    Set-builder forms (``{x | x > 1}``) are deliberately NOT claimed here —
+    their equivalence with intervals is tracked as a TODO(判分1.5) — and a
+    non-math element (``{apple, banana}``) rejects the whole claim so the
+    string keeps flowing through the legacy path (fail-closed).
+    """
+    m = re.fullmatch(r"\{([^{}]*)\}", text)
+    if not m:
+        return None
+    content = m.group(1)
+    if "|" in content or "｜" in content:
+        return None  # TODO(判分1.5): {x | x > 1} vs (1, +∞) semantic equivalence
+    elements: list[_Normalized] = []
+    for part in re.split(r"[,，、;；]+", content):
+        token = part.strip()
+        if not token:
+            continue
+        norm = _normalize_math_answer(token)
+        if norm is None:
+            return None
+        elements.append(norm)
+    return tuple(sorted(elements, key=repr))
+
+
+def _normalize_solution_set(text: str) -> _Collection | None:
+    """Normalize a multi-solution answer into sorted normalized elements.
+
+    Recognizes the word separator ``或`` plus the list separators
+    (``， , 、 ; ；``) and whitespace, and expands a leading ``±`` prefix into
+    the two signed solutions. Every solution element goes through the existing
+    ``_normalize_math_answer`` (so ``±1/2`` → {0.5, -0.5}) and the claim is
+    only made with ≥ 2 solutions, keeping plain answers (``2``, ``1/2``,
+    ``x^2+1``) on their single-value paths. ``/`` is deliberately NOT a
+    separator: it is the fraction bar (``1/2``, ``√2/2``), and treating it as
+    a solution separator would re-classify every fraction as a solution list
+    (fail-closed: never claim when ambiguous).
+    """
+    tokens: list[str] = []
+    for part in re.split(r"或", text):
+        for sub in re.split(r"[,，、;；]+", part):
+            for token in re.split(r"\s+", sub.strip()):
+                if not token:
+                    continue
+                tokens.extend(_expand_plus_minus(token))
+    if len(tokens) < 2:
+        return None
+    elements: list[_Normalized] = []
+    for token in tokens:
+        norm = _normalize_math_answer(token)
+        if norm is None:
+            return None
+        elements.append(norm)
+    return tuple(sorted(elements, key=repr))
+
+
 def _strip_algebra_wrapper(text: str) -> str:
     """Strip a leading ``y=``/``f(x)=``/``x=`` prefix or trailing ``=y``."""
     m = _ALGEBRA_PREFIX_RE.match(text)
@@ -256,10 +395,11 @@ def _normalize_math_answer(text: str) -> _Normalized | None:
     """Return a canonical math form for ``text``, or None when it is not math.
 
     The returned tuple is ``(kind, value)`` where kind is one of ``"num"``
-    (compare with tolerance), ``"interval"`` (compare per bound), or
-    ``"expr"`` (compare exactly). Expression answers are only claimed when
-    they contain a digit, so plain words keep flowing through the legacy
-    string/similarity path unchanged.
+    (compare with tolerance), ``"interval"`` (compare per bound), ``"set"`` /
+    ``"solution_set"`` (order-free element compare), ``"interval_union"``
+    (order-free branch compare), or ``"expr"`` (compare exactly). Expression
+    answers are only claimed when they contain a digit, so plain words keep
+    flowing through the legacy string/similarity path unchanged.
     """
     t = _clean_text(text)
     if not t:
@@ -279,6 +419,20 @@ def _normalize_math_answer(text: str) -> _Normalized | None:
 
     t = _normalize_chinese_fraction(t)
     t = _normalize_radical_notation(t)
+
+    # Collection equivalence classes (判分1.5): interval unions must run
+    # before the plain solution set (they share the 或 separator), and the
+    # braced set must run before it too (its commas are set separators, not
+    # solution separators).
+    union = _normalize_interval_union(t)
+    if union is not None:
+        return ("interval_union", union)
+    collection = _normalize_braced_set(t)
+    if collection is not None:
+        return ("set", collection)
+    solutions = _normalize_solution_set(t)
+    if solutions is not None:
+        return ("solution_set", solutions)
 
     number = _parse_number_with_unit(t)
     if number is not None:
@@ -312,6 +466,65 @@ def _num_values_match(a: _NumValue, b: _NumValue) -> bool:
     return _numbers_close(a, b)  # type: ignore[arg-type]
 
 
+def _interval_matches(a: _Interval, b: _Interval) -> bool:
+    """Compare two interval bounds per bound (with numeric tolerance)."""
+    lo_a, a_lo, a_hi, ro_a = a
+    lo_b, b_lo, b_hi, ro_b = b
+    return (
+        lo_a == lo_b
+        and ro_a == ro_b
+        and _numbers_close(a_lo, b_lo)
+        and _numbers_close(a_hi, b_hi)
+    )
+
+
+def _math_element_matches(a: _Normalized, b: _Normalized) -> bool:
+    """Kind-aware equality for one element of a set / solution-set."""
+    kind_a, value_a = a
+    kind_b, value_b = b
+    if kind_a != kind_b:
+        return False
+    if kind_a == "num":
+        return _num_values_match(value_a, value_b)  # type: ignore[arg-type]
+    if kind_a == "interval":
+        return _interval_matches(value_a, value_b)  # type: ignore[arg-type]
+    return value_a == value_b
+
+
+def _collection_matches(user: _Collection, expected: _Collection) -> bool:
+    """Order-free element compare with greedy, no-reuse matching.
+
+    Multiset semantics: duplicate elements are not collapsed, so ``{1,1,2}``
+    vs ``{1,2}`` stays unequal (fail-closed). Numeric elements compare with
+    the same tolerance as plain numbers (``{1/3}`` vs ``{0.3333333}``).
+    """
+    if len(user) != len(expected):
+        return False
+    remaining = list(expected)
+    for element in user:
+        matched = next(
+            (
+                i
+                for i, candidate in enumerate(remaining)
+                if _math_element_matches(element, candidate)
+            ),
+            None,
+        )
+        if matched is None:
+            return False
+        remaining.pop(matched)
+    return True
+
+
+def _interval_union_matches(user: _IntervalUnion, expected: _IntervalUnion) -> bool:
+    """Order-free compare of union branches; no adjacent-branch merging."""
+    if len(user) != len(expected):
+        return False
+    return all(
+        _interval_matches(u, e) for u, e in zip(sorted(user), sorted(expected))
+    )
+
+
 def _math_answers_match(user_norm: _Normalized, expected_norm: _Normalized) -> bool:
     """Compare two normalized math answers of the same kind."""
     kind, user_val = user_norm
@@ -319,14 +532,11 @@ def _math_answers_match(user_norm: _Normalized, expected_norm: _Normalized) -> b
     if kind == "num":
         return _num_values_match(user_val, expected_val)  # type: ignore[arg-type]
     if kind == "interval":
-        lo_u, a_u, b_u, ro_u = user_val  # type: ignore[misc]
-        lo_e, a_e, b_e, ro_e = expected_val  # type: ignore[misc]
-        return (
-            lo_u == lo_e
-            and ro_u == ro_e
-            and _numbers_close(a_u, a_e)
-            and _numbers_close(b_u, b_e)
-        )
+        return _interval_matches(user_val, expected_val)  # type: ignore[arg-type]
+    if kind in ("set", "solution_set"):
+        return _collection_matches(user_val, expected_val)  # type: ignore[arg-type]
+    if kind == "interval_union":
+        return _interval_union_matches(user_val, expected_val)  # type: ignore[arg-type]
     return user_val == expected_val
 
 
