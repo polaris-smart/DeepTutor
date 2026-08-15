@@ -12,8 +12,19 @@ if TYPE_CHECKING:
 _PREVIEW_LENGTH = 200
 _RELATED_LIMIT = 5
 
+#: Match priority of a question node against a knowledge-point reference:
+#: exact textbook-node bridge, then struct_path relation, then name overlap.
+_NODE_ID_HIT = 3
+_STRUCT_PATH_HIT = 2
+_NAME_HIT = 1
 
-def enrich_search_results(nodes: list["BaseNode"], kb_name: str) -> dict[str, list[dict[str, Any]]]:
+
+def enrich_search_results(
+    nodes: list["BaseNode"],
+    kb_name: str,
+    *,
+    kp: Mapping[str, Any] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
     """Build student-facing structure and resource hints from retrieved nodes.
 
     ``nodes`` have already been retrieved from ``kb_name``.  The knowledge-base
@@ -21,6 +32,14 @@ def enrich_search_results(nodes: list["BaseNode"], kb_name: str) -> dict[str, li
     a different interface when a later retriever supplies neighbouring nodes.
     Nodes from older indexes simply lack the doc-intel metadata and contribute
     no entries.
+
+    ``kp`` is an optional knowledge-point reference (e.g. one entry of
+    ``mastery_status``'s map) carrying ``textbook_node_id`` / ``struct_path`` /
+    ``name``. When given, ``related_questions`` is matched node_id-first with
+    name fallback: questions anchored on the same textbook-tree node rank
+    first, then same-struct-path ones, then name-overlap ones. With no ``kp``
+    (or for questions that match nothing) the behaviour is exactly the legacy
+    one — first-come order, no filtering.
     """
     _ = kb_name
     locations: list[dict[str, Any]] = []
@@ -33,33 +52,40 @@ def enrich_search_results(nodes: list["BaseNode"], kb_name: str) -> dict[str, li
         metadata = _metadata(node)
         struct_path = _string(metadata.get("struct_path"))
         node_id = _node_id(node)
+        textbook_node_id = _string(metadata.get("textbook_node_id"))
 
         # A structural location is only meaningful for doc-intel annotated
         # nodes. This also makes old, metadata-free indexes degrade to empties.
         if struct_path:
-            locations.append(
-                {
-                    "node_id": node_id,
-                    "file_name": _string(metadata.get("file_name")),
-                    "struct_path": struct_path,
-                    "preview": _preview(node),
-                }
-            )
+            location: dict[str, Any] = {
+                "node_id": node_id,
+                "file_name": _string(metadata.get("file_name")),
+                "struct_path": struct_path,
+                "preview": _preview(node),
+            }
+            if textbook_node_id:
+                location["textbook_node_id"] = textbook_node_id
+            locations.append(location)
 
-        if metadata.get("is_question") and len(related_questions) < _RELATED_LIMIT:
+        if metadata.get("is_question"):
             q_id = _string(metadata.get("q_id"))
             question_key = q_id or node_id
             if question_key and question_key not in seen_questions:
                 seen_questions.add(question_key)
-                related_questions.append(
-                    {
-                        "node_id": node_id,
-                        "q_id": q_id,
-                        "q_type": _string(metadata.get("q_type")),
-                        "preview": _preview(node),
-                        "has_answer": bool(metadata.get("has_answer")),
-                    }
+                question: dict[str, Any] = {
+                    "node_id": node_id,
+                    "q_id": q_id,
+                    "q_type": _string(metadata.get("q_type")),
+                    "struct_path": struct_path,
+                    "preview": _preview(node),
+                    "has_answer": bool(metadata.get("has_answer")),
+                }
+                if textbook_node_id:
+                    question["textbook_node_id"] = textbook_node_id
+                question["_kp_match"] = _kp_match_score(
+                    kp, textbook_node_id, struct_path, _preview(node)
                 )
+                related_questions.append(question)
 
         if len(related_images) >= _RELATED_LIMIT:
             continue
@@ -82,11 +108,44 @@ def enrich_search_results(nodes: list["BaseNode"], kb_name: str) -> dict[str, li
                 }
             )
 
+    if kp is not None:
+        related_questions.sort(key=lambda q: q["_kp_match"], reverse=True)
+    for question in related_questions[: _RELATED_LIMIT]:
+        question.pop("_kp_match", None)
+
     return {
         "locations": locations,
-        "related_questions": related_questions,
+        "related_questions": related_questions[: _RELATED_LIMIT],
         "related_images": related_images,
     }
+
+
+def _kp_match_score(
+    kp: Mapping[str, Any] | None,
+    textbook_node_id: str,
+    struct_path: str,
+    preview: str,
+) -> int:
+    """Rank a question node against a KP reference (0 = no match).
+
+    node_id-first with name fallback: an exact ``textbook_node_id`` bridge
+    beats a struct_path relation, which beats KP-name overlap in the question
+    text or its structural path. A ``None`` kp matches nothing (score 0) so
+    the legacy order is preserved.
+    """
+    if kp is None:
+        return 0
+    kp_node_id = _string(kp.get("textbook_node_id"))
+    if kp_node_id and textbook_node_id == kp_node_id:
+        return _NODE_ID_HIT
+    kp_path = _string(kp.get("struct_path"))
+    if kp_path and struct_path:
+        if struct_path == kp_path or struct_path.startswith(kp_path + "/"):
+            return _STRUCT_PATH_HIT
+    kp_name = _string(kp.get("name"))
+    if kp_name and (kp_name in preview or kp_name in struct_path):
+        return _NAME_HIT
+    return 0
 
 
 def _metadata(node: "BaseNode") -> Mapping[str, Any]:

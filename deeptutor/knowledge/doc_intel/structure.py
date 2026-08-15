@@ -8,12 +8,16 @@ Signals, in priority order:
    (vlm products emit plain text blocks with levels only sometimes).
 
 Output: per-block ``struct_path`` like ``必修一/第1章 集合/1.1 集合的概念``,
-plus the doc-level tree for the T021 textbook-tree API.
+plus the doc-level tree for the T021 textbook-tree API. Every tree node also
+carries a stable ``node_id`` (``sha1(doc_id|struct_path)[:12]``) so knowledge
+points and questions derived from a node can bridge back to it by id instead
+of fuzzy title matching.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 import re
 from typing import Any
 
@@ -102,6 +106,17 @@ def _content_level(text: str, mineru_level: int) -> int | None:
     return 2 if mineru_level <= 2 else 3
 
 
+def stable_node_id(doc_id: str, struct_path: str) -> str:
+    """Stable 12-hex id for a textbook-tree node.
+
+    ``sha1(doc_id + '|' + struct_path)[:12]`` — same ``(doc_id, struct_path)``
+    pair always yields the same id (re-index stable), different docs or paths
+    collide only by hash chance. ``struct_path`` is the "/"-joined heading
+    chain of the node, which is already the natural content identity.
+    """
+    return hashlib.sha1(f"{doc_id}|{struct_path}".encode("utf-8")).hexdigest()[:12]
+
+
 @dataclass
 class StructureNode:
     title: str
@@ -109,21 +124,31 @@ class StructureNode:
     children: list["StructureNode"] = field(default_factory=list)
     # Flat index of block positions covered by this node (end-exclusive).
     block_span: tuple[int, int] = (0, 0)
+    # "/"-joined heading chain (``第1章 集合/1.1 集合的概念``) and its stable
+    # node id (see :func:`stable_node_id`). Both are the bridge between the
+    # textbook tree and knowledge points / questions derived from this node.
+    struct_path: str = ""
+    node_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "title": self.title,
             "level": self.level,
+            "struct_path": self.struct_path,
+            "node_id": self.node_id,
             "children": [c.to_dict() for c in self.children],
         }
 
 
-def build_tree(blocks: list[dict], *, text_fn=_block_text_v1) -> tuple[dict | None, list[str]]:
+def build_tree(blocks: list[dict], *, text_fn=_block_text_v1, doc_id: str = "") -> tuple[dict | None, list[str]]:
     """Return ``(tree_dict_or_None, per_block_struct_paths)``.
 
     ``per_block_struct_paths[i]`` is the ``a/b/c`` path of block *i* ("" for
     pre-heading front matter). The tree keeps only unit/lesson/section levels
     (1-3); deeper heading levels are folded into the path but not the tree.
+    Every tree node carries its ``struct_path`` and a stable ``node_id``
+    derived from ``doc_id`` (see :func:`stable_node_id`); pass the same
+    ``doc_id`` (e.g. the file path) across re-indexes so node ids survive.
     """
     paths: list[str] = []
     stack: list[tuple[int, str]] = []  # (level, title) — current heading chain
@@ -201,13 +226,20 @@ def build_tree(blocks: list[dict], *, text_fn=_block_text_v1) -> tuple[dict | No
             while node_stack and node_stack[-1].level >= level:
                 node_stack.pop()
             stack.append((level, text))
-            node = StructureNode(title=text, level=level, block_span=(i, i + 1))
+            struct_path = "/".join(t for _, t in stack)
+            node = StructureNode(
+                title=text,
+                level=level,
+                block_span=(i, i + 1),
+                struct_path=struct_path,
+                node_id=stable_node_id(doc_id, struct_path),
+            )
             if node_stack:
                 node_stack[-1].children.append(node)
             else:
                 root_children.append(node)
             node_stack.append(node)
-            paths.append("/".join(t for _, t in stack))
+            paths.append(struct_path)
             continue
 
         # Body block: inherit current chain.

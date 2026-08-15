@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -39,13 +40,24 @@ def _validate_book_id(book_id: str) -> None:
         raise HTTPException(status_code=400, detail="Invalid book_id")
 
 
+def _bridge_str(value: Any) -> str:
+    """Coerce a KP textbook-bridge field to ``str`` (missing/None → "")."""
+    return value if isinstance(value, str) else ""
+
+
 def _parse_modules(body_modules: list[dict]) -> list[LearningModule]:
     """Parse raw module dicts into LearningModule objects (shared by init/replace)."""
     modules: list[LearningModule] = []
     for i, m in enumerate(body_modules):
         kps_data = m.get("knowledge_points", [])
         try:
-            kps = [KnowledgePoint(**kp) for kp in kps_data]
+            kps = [
+                KnowledgePoint(
+                    **{**kp, "struct_path": _bridge_str(kp.get("struct_path")),
+                       "textbook_node_id": _bridge_str(kp.get("textbook_node_id"))}
+                )
+                for kp in kps_data
+            ]
         except PydanticValidationError as exc:
             raise HTTPException(
                 status_code=422,
@@ -95,6 +107,10 @@ class InitModulesRequest(BaseModel):
 class ChapterImport(BaseModel):
     title: str
     knowledge_points: list[str] = []
+    # Textbook-tree bridge: the tree node this chapter was derived from.
+    # Optional so pre-bridge callers (name-only imports) keep working.
+    struct_path: str = ""
+    textbook_node_id: str = ""
 
 
 class ImportFromBookRequest(BaseModel):
@@ -177,6 +193,11 @@ async def import_from_book(book_id: str, body: ImportFromBookRequest):
                 name=kp_name,
                 type=KnowledgeType("concept"),
                 module_id=f"{book_id}_ch{i}",
+                # Bridge to the textbook-tree node the chapter came from; the
+                # whole chapter shares one anchor (per-KP anchors can be sent
+                # through init-modules instead).
+                struct_path=_bridge_str(ch.struct_path),
+                textbook_node_id=_bridge_str(ch.textbook_node_id),
             )
             for j, kp_name in enumerate(ch.knowledge_points)
         ]
@@ -302,6 +323,11 @@ async def generate_from_notebook(book_id: str, body: GenerateFromNotebookRequest
                     name=kp_name,
                     type=KnowledgeType(kp_type),
                     module_id=f"{book_id}_nb{i}",
+                    # Pass through the textbook-tree bridge when the LLM
+                    # supplied it (it read the tree via the knowledge API);
+                    # absent → "" (progressive migration).
+                    struct_path=_bridge_str(kp.get("struct_path")),
+                    textbook_node_id=_bridge_str(kp.get("textbook_node_id")),
                 )
             )
         modules.append(

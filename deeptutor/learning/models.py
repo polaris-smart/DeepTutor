@@ -153,6 +153,13 @@ class KnowledgePoint(BaseModel):
     name: str
     type: KnowledgeType
     module_id: str
+    # Stable bridge to the doc-intel textbook-tree node this KP was derived
+    # from: the "/"-joined heading chain (``struct_path``) and the node's
+    # stable id. Both default to "" so paths built before the bridge existed
+    # (and KPs the model authored without a textbook anchor) keep working —
+    # matching falls back to names exactly as before.
+    struct_path: str = ""
+    textbook_node_id: str = ""
 
 
 class LearningModule(BaseModel):
