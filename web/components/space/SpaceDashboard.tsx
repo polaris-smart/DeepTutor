@@ -18,6 +18,7 @@ import {
 
 import { SPACE_MCP_SURFACE, loadMcpSurface } from "@/components/mcp/surface";
 import { getCliApps } from "@/lib/cli-apps-api";
+import { useAuthStatus } from "@/hooks/useAuthStatus";
 import { listSessions } from "@/lib/session-api";
 import { listNotebooks, listNotebookEntries } from "@/lib/notebook-api";
 import { listPersonas } from "@/lib/personas-api";
@@ -191,18 +192,31 @@ const GROUPS: DashboardGroup[] = [
 
 const ALL_ITEMS = GROUPS.flatMap((g) => g.items);
 
+// Engineer-facing consoles: personas/skills/MCP/CLI are configuration surfaces
+// for admin/teacher. Students get a learning dashboard, not a toolbox.
+const ENGINEER_KEYS: DashKey[] = ["personas", "skills", "mcp", "cli_apps"];
+
 export default function SpaceDashboard() {
   const { i18n } = useTranslation();
+  const { role } = useAuthStatus();
+  const isStudent = role === "student";
   const zh = i18n.language?.toLowerCase().startsWith("zh");
   const tr = useCallback((l: Lang) => (zh ? l.zh : l.en), [zh]);
 
   const [counts, setCounts] = useState<Partial<Record<DashKey, number>>>({});
+
+  const visibleItems = useCallback(
+    (items: DashboardItem[]) =>
+      isStudent ? items.filter((i) => !ENGINEER_KEYS.includes(i.key)) : items,
+    [isStudent]
+  );
 
   useEffect(() => {
     let cancelled = false;
     // Each tile loads independently so one slow/failed endpoint never blanks
     // the whole dashboard.
     for (const item of ALL_ITEMS) {
+      if (isStudent && ENGINEER_KEYS.includes(item.key)) continue;
       item
         .load()
         .then((n) => {
@@ -215,7 +229,7 @@ export default function SpaceDashboard() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isStudent]);
 
   return (
     <div>
@@ -238,7 +252,7 @@ export default function SpaceDashboard() {
               {tr(group.label)}
             </h2>
             <div className="grid gap-3 sm:grid-cols-2">
-              {group.items.map((item) => (
+              {visibleItems(group.items).map((item) => (
                 <DashboardCard
                   key={item.key}
                   item={item}
