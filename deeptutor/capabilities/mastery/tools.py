@@ -90,6 +90,32 @@ def _resolve_turn_id(kwargs: dict[str, Any]) -> str:
     return str(kwargs.get("_turn_id") or "").strip()
 
 
+async def _session_hint_level(kwargs: dict[str, Any]) -> int | None:
+    """The water source for evidence.hint_level (review round 2).
+
+    The skill-gate accounting (``max_hint_level``) lives in the session's
+    settings.gate_state, persisted cross-turn by the chat router. Read it
+    best-effort: no session, no gate state, or a store error all yield None
+    (the evidence row simply records no hint usage).
+    """
+    session_id = _resolve_session_id(kwargs)
+    if not session_id:
+        return None
+    try:
+        from deeptutor.services.session import get_sqlite_session_store
+
+        session = await get_sqlite_session_store().get_session(session_id)
+        if not session:
+            return None
+        gate_state = (session.get("settings") or {}).get("gate_state") or {}
+        level = gate_state.get("max_hint_level")
+        if isinstance(level, (int, float)) and int(level) > 0:
+            return int(level)
+        return None
+    except Exception:
+        return None
+
+
 def _question_bank_type(question_type: str) -> str:
     qtype = str(question_type or "").strip().lower()
     if qtype == "choice":
@@ -470,6 +496,8 @@ class MasteryGradeTool(BaseTool):
             expected_answer=expected_answer,
             question_type=pending.question_type,
             scheduler=scheduler,
+            session_id=_resolve_session_id(kwargs),
+            hint_level=await _session_hint_level(kwargs),
         )
         await _sync_mastery_attempt_to_question_bank(
             session_id=_resolve_session_id(kwargs),
