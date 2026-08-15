@@ -68,7 +68,66 @@ _PHASE1_TYPES = {
     BlockType.FLASH_CARDS,
     BlockType.TIMELINE,
     BlockType.ANIMATION,
+    # YuEdu fork: 数学交互 8 类（T030 交付：前端 math/ 目录 + 8 generator + 双语 prompts）
+    BlockType.DESMOS,
+    BlockType.GEOGEBRA,
+    BlockType.GEOMETRY,
+    BlockType.THREE_SCENE,
+    BlockType.VENN,
+    BlockType.COMPLEX,
+    BlockType.FORMULA,
+    BlockType.CHART,
 }
+
+
+# YuEdu fork: 数学交互 block 家族。静态模板与 LLM 白名单共用，学科门控按此过滤。
+_MATH_BLOCK_TYPES = frozenset(
+    {
+        BlockType.DESMOS,
+        BlockType.GEOGEBRA,
+        BlockType.GEOMETRY,
+        BlockType.THREE_SCENE,
+        BlockType.VENN,
+        BlockType.COMPLEX,
+        BlockType.FORMULA,
+        BlockType.CHART,
+    }
+)
+
+
+def _math_blocks_allowed(chapter: Chapter) -> bool:
+    """Subject gate for the math block family (best effort).
+
+    TODO(T034): Chapter/Spine 目前没有结构化 subject 字段（models.py 未定义），
+    inputs.json/exploration 里的主题信息也还未落到 Chapter 上，只能探测 chapter
+    的 extra 字段（``Chapter.model_config = extra="allow"``）。拿不到学科信息时
+    退化为始终可用；待主题信息落到 Chapter 后升级为强门控。
+    """
+    subject = str(
+        getattr(chapter, "subject", "") or getattr(chapter, "discipline", "")
+    ).strip().lower()
+    if not subject:
+        return True
+    return not any(keyword in subject for keyword in _NON_MATH_SUBJECT_KEYWORDS)
+
+
+# 明确非数学的学科关键词（小写子串匹配）。命中任一即视为非数学书籍，数学块不选用。
+_NON_MATH_SUBJECT_KEYWORDS = (
+    "literature",
+    "language",
+    "history",
+    "poetry",
+    "grammar",
+    "geography",
+    "语文",
+    "文学",
+    "语言",
+    "英语",
+    "历史",
+    "地理",
+    "诗词",
+    "语法",
+)
 
 
 _TEMPLATES_V2: dict[ContentType, list[tuple[BlockType, dict[str, Any]]]] = {
@@ -79,6 +138,13 @@ _TEMPLATES_V2: dict[ContentType, list[tuple[BlockType, dict[str, Any]]]] = {
             {"variant": "diagram", "transition_in": "Visualising the core structure"},
         ),
         (BlockType.SECTION, {"role": "deep_dive", "target_words": 1600}),
+        (
+            BlockType.FORMULA,
+            {
+                "topic": "the core formulas of this chapter",
+                "transition_in": "The core formulas, one line at a time",
+            },
+        ),
         (BlockType.CALLOUT, {"variant": "key_idea", "transition_in": "A key idea to remember"}),
         (
             BlockType.CODE,
@@ -86,6 +152,20 @@ _TEMPLATES_V2: dict[ContentType, list[tuple[BlockType, dict[str, Any]]]] = {
                 "language": "python",
                 "intent": "example",
                 "transition_in": "A concrete example in code",
+            },
+        ),
+        (
+            BlockType.DESMOS,
+            {
+                "topic": "the key functions of this chapter",
+                "transition_in": "Explore the functions interactively",
+            },
+        ),
+        (
+            BlockType.GEOGEBRA,
+            {
+                "topic": "the geometric construction behind this chapter",
+                "transition_in": "Manipulate the geometry live",
             },
         ),
         (BlockType.SECTION, {"role": "synthesis", "target_words": 800}),
@@ -131,6 +211,20 @@ _TEMPLATES_V2: dict[ContentType, list[tuple[BlockType, dict[str, Any]]]] = {
             {"language": "python", "intent": "scaffold", "transition_in": "Try it yourself"},
         ),
         (BlockType.SECTION, {"role": "walkthrough", "target_words": 1200}),
+        (
+            BlockType.CHART,
+            {
+                "topic": "the dataset this practice works on",
+                "transition_in": "The data, at a glance",
+            },
+        ),
+        (
+            BlockType.GEOMETRY,
+            {
+                "topic": "the construction to try",
+                "transition_in": "Now draw it yourself",
+            },
+        ),
         (
             BlockType.INTERACTIVE,
             {"interaction": "guided exercise", "transition_in": "Practise interactively"},
@@ -194,6 +288,8 @@ def _static_plan(
     phase: int,
 ) -> list[Block]:
     template = _TEMPLATES_V2.get(chapter.content_type) or _TEMPLATES_V2[ContentType.THEORY]
+    if not _math_blocks_allowed(chapter):
+        template = [(bt, params) for bt, params in template if bt not in _MATH_BLOCK_TYPES]
     return [_build_block(bt, dict(params), chapter) for bt, params in template]
 
 
@@ -213,6 +309,15 @@ _ALLOWED_LLM_TYPES = {
     BlockType.ANIMATION,
     BlockType.CODE,
     BlockType.TIMELINE,
+    # YuEdu fork: 数学交互 8 类（LLM 可选用，学科门控在 plan_blocks_async 里按章节过滤）
+    BlockType.DESMOS,
+    BlockType.GEOGEBRA,
+    BlockType.GEOMETRY,
+    BlockType.THREE_SCENE,
+    BlockType.VENN,
+    BlockType.COMPLEX,
+    BlockType.FORMULA,
+    BlockType.CHART,
 }
 
 
@@ -311,6 +416,10 @@ class SectionArchitect:
         if not isinstance(items, list) or not items:
             return self.plan_blocks(chapter)
 
+        allowed_types = _ALLOWED_LLM_TYPES
+        if not _math_blocks_allowed(chapter):
+            allowed_types = _ALLOWED_LLM_TYPES - _MATH_BLOCK_TYPES
+
         blocks: list[Block] = []
         for raw_item in items[:12]:
             if not isinstance(raw_item, dict):
@@ -320,7 +429,7 @@ class SectionArchitect:
                 block_type = BlockType(type_str)
             except ValueError:
                 continue
-            if block_type not in _ALLOWED_LLM_TYPES:
+            if block_type not in allowed_types:
                 continue
 
             params = _safe_dict(raw_item.get("params"))
