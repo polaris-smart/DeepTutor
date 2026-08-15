@@ -27,6 +27,11 @@ from deeptutor.services.llm.client import get_llm_client
 from deeptutor.services.rag.file_routing import FileTypeRouter
 from deeptutor.utils.document_validator import DocumentValidator
 
+#: Serialized-size budget (chars) for the doc-level di_block_meta payload.
+#: LlamaIndex rejects a document whose metadata exceeds the chunk size, so
+#: this must stay comfortably below the 1000-char chunk budget.
+_DI_BLOCK_META_BUDGET = 600
+
 IMAGE_DESCRIPTION_SYSTEM_PROMPT = (
     "You describe images for a retrieval-augmented knowledge base. "
     "Be factual, concise, and include any visible text, labels, diagrams, "
@@ -435,20 +440,49 @@ class LlamaIndexDocumentLoader:
                     # bridge data. The doc-level Document's metadata carries
                     # them for downstream chunkers that split this document —
                     # the T022 enricher reads struct_path/node_id from chunks.
+                    # Slimmed hard (review follow-up): raw block text is the
+                    # bulk of the payload and LlamaIndex rejects documents
+                    # whose metadata exceeds the chunk size — keep only the
+                    # bridge keys, drop previews beyond a short head, and cap
+                    # the serialized size so huge docs (a 3500-word vocab list
+                    # has thousands of blocks) never blow the chunk budget.
                     block_meta = payload.get("block_meta") or []
                     if block_meta:
                         import json as _json
 
-                        metadata["di_block_meta"] = _json.dumps(
-                            block_meta, ensure_ascii=False
-                        )
-                        question_ids = [
-                            m.get("q_id") for m in block_meta if m.get("q_id")
-                        ]
-                        if question_ids:
-                            metadata["di_q_ids"] = ",".join(
-                                str(q) for q in question_ids
+                        slim = []
+                        budget = _DI_BLOCK_META_BUDGET
+                        for m in block_meta:
+                            if not isinstance(m, dict):
+                                continue
+                            entry = {
+                                k: m[k]
+                                for k in (
+                                    "q_id",
+                                    "q_type",
+                                    "is_question",
+                                    "struct_path",
+                                    "textbook_node_id",
+                                )
+                                if m.get(k) not in (None, "")
+                            }
+                            head = str(m.get("text") or "")[:64]
+                            if head:
+                                entry["text"] = head
+                            blob = _json.dumps(entry, ensure_ascii=False)
+                            if len(blob) > budget:
+                                break
+                            budget -= len(blob) + 1
+                            slim.append(entry)
+                        if slim:
+                            metadata["di_block_meta"] = _json.dumps(
+                                slim, ensure_ascii=False
                             )
+                            question_ids = [
+                                str(e["q_id"]) for e in slim if e.get("q_id")
+                            ]
+                            if question_ids:
+                                metadata["di_q_ids"] = ",".join(question_ids)
             except Exception:
                 self.logger.debug("doc_intel enrich skipped for %s", file_path.name)
             documents.append(
