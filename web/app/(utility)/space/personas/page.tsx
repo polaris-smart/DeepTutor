@@ -1,5 +1,11 @@
 import PersonasSection from "@/components/space/PersonasSection";
 
+import StudentGuard from "@/components/space/StudentGuard";
+
 export default function SpacePersonasPage() {
-  return <PersonasSection />;
+  return (
+    <StudentGuard>
+      <PersonasSection />
+    </StudentGuard>
+  );
 }
