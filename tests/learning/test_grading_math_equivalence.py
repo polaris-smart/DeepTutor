@@ -10,6 +10,7 @@ interval, and radical forms. Anything it cannot normalize falls back to the
 legacy string/similarity logic, so existing behavior is preserved.
 """
 
+import pytest
 from deeptutor.learning.grading import _normalize_math_answer, grade_answer
 
 
@@ -28,10 +29,13 @@ class TestNumericEquivalence:
         assert grade_answer("50%", "0.5", "short") is True
         assert grade_answer("12.5%", "0.125", "short") is True
 
-    def test_units_stripped(self):
-        assert grade_answer("5cm", "5", "short") is True
-        assert grade_answer("5厘米", "5cm", "short") is True
-        assert grade_answer("3.5千克", "3.5kg", "short") is True
+    def test_units_compared(self):
+        # Units are part of the comparison key (review round 2): same value
+        # with different/missing/zh-vs-en units is NOT equivalent.
+        assert grade_answer("5cm", "5", "short") is False
+        assert grade_answer("5厘米", "5cm", "short") is False
+        assert grade_answer("3.5千克", "3.5kg", "short") is False
+        assert grade_answer("5cm", "5cm", "short") is True
 
     def test_tolerance(self):
         assert grade_answer("1/3", "0.3333333", "short") is True
@@ -132,7 +136,7 @@ class TestNormalizeMathAnswer:
     def test_number_kind(self):
         assert _normalize_math_answer("1/2") == ("num", 0.5)
         assert _normalize_math_answer("50%") == ("num", 0.5)
-        assert _normalize_math_answer("5cm") == ("num", 5.0)
+        assert _normalize_math_answer("5cm") == ("num", (5.0, "cm"))
 
     def test_interval_kind(self):
         assert _normalize_math_answer("1<x<2") == ("interval", (True, 1.0, 2.0, True))
@@ -189,3 +193,17 @@ class TestLegacyBehaviorPreserved:
 
     def test_unknown_type_fail_closed(self):
         assert grade_answer("a", "a", "unknown") is False
+
+
+# ── Unit-aware comparison (review round 2: units join the comparison key) ──
+
+@pytest.mark.parametrize("user,expected,want", [
+    ("20厘米", "20米", False),     # different units, same value → wrong
+    ("20厘米", "20厘米", True),    # identical unit quantities → right
+    ("3kg", "3g", False),          # unit magnitude differs → wrong
+    ("4s", "4t", False),           # bare trailing letters are algebra, not units
+    ("100米", "100m", False),      # zh/en unit spellings do not auto-convert
+    ("5", "5米", False),           # missing unit on one side → not equal
+])
+def test_unit_bearing_answers(user: str, expected: str, want: bool) -> None:
+    assert grade_answer(user, expected) is want

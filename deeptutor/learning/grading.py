@@ -78,7 +78,10 @@ _INF_TOKENS = {"∞", "+∞", "inf", "+inf", "infinity", "正无穷", "无穷大
 _NEG_INF_TOKENS = {"-∞", "-inf", "负无穷"}
 
 _Interval = tuple[bool, float, float, bool]
-_Normalized = tuple[str, float | _Interval | str]
+#: kind value for "num": bare float, or (value, unit) where the unit is part
+#: of the comparison key — 20厘米 vs 20米 must NOT compare equal.
+_NumValue = float | tuple[float, str]
+_Normalized = tuple[str, _NumValue | _Interval | str]
 
 
 def _clean_text(text: str) -> str:
@@ -128,9 +131,29 @@ def _to_arabic(text: str) -> str:
     return str(n) if n is not None else text
 
 
-def _parse_number(text: str) -> float | None:
-    """Parse a pure numeric token: int, float, fraction, percent, 万/亿, or a
-    unit-bearing quantity. Returns None when ``text`` is not a plain number."""
+def _parse_number_with_unit(text: str) -> _NumValue | None:
+    """Parse a numeric token keeping its unit in the comparison key.
+
+    ``20厘米`` → ``(20.0, "厘米")``; ``0.5`` → ``0.5``. The unit is normalized
+    (lowercased, whitespace-stripped) but **kept**: two quantities only match
+    when both value and unit match, so ``3kg`` vs ``3g`` stays unequal.
+    Bare-unit trailing letters that look like algebra (e.g. ``4s`` where the
+    expected answer is ``4t``) no longer swallow the letter — the whole token
+    fails numeric parsing and falls back to the expression path.
+    """
+    t = text.strip()
+    if not t:
+        return None
+    m = _UNIT_SUFFIX_RE.fullmatch(t)
+    if m and m.group(1).strip():
+        inner = _parse_number_bare(m.group(1).strip())
+        if inner is not None:
+            return (inner, m.group(2).strip().lower())
+    return _parse_number_bare(t)
+
+
+def _parse_number_bare(text: str) -> float | None:
+    """Parse a pure numeric token: int, float, fraction, percent, 万/亿."""
     t = text.strip()
     if not t:
         return None
@@ -148,11 +171,6 @@ def _parse_number(text: str) -> float | None:
         return num / den
     if _PLAIN_NUM_RE.fullmatch(t):
         return float(t)
-    m = _UNIT_SUFFIX_RE.fullmatch(t)
-    if m and m.group(1).strip():
-        value = _parse_number(m.group(1).strip())
-        if value is not None:
-            return value
     arabic = _chinese_numeral_to_int(t)
     if arabic is not None:
         return float(arabic)
@@ -165,7 +183,9 @@ def _interval_bound(token: str) -> float | None:
         return math.inf
     if t in _NEG_INF_TOKENS:
         return -math.inf
-    return _parse_number(t)
+    # Interval bounds are bare numbers; a unit there (rare) is left to the
+    # expression path instead of silently swallowing it.
+    return _parse_number_bare(t)
 
 
 def _normalize_interval(text: str) -> _Interval | None:
@@ -260,7 +280,7 @@ def _normalize_math_answer(text: str) -> _Normalized | None:
     t = _normalize_chinese_fraction(t)
     t = _normalize_radical_notation(t)
 
-    number = _parse_number(t)
+    number = _parse_number_with_unit(t)
     if number is not None:
         return ("num", number)
 
@@ -276,12 +296,28 @@ def _numbers_close(a: float, b: float) -> bool:
     return abs(a - b) <= _NUM_TOLERANCE
 
 
+def _num_values_match(a: _NumValue, b: _NumValue) -> bool:
+    """Compare numeric answers; a (value, unit) pair must match on both parts.
+
+    ``20厘米`` vs ``20米`` → units differ → not equal. A bare number matches
+    only another bare number (``5`` vs ``5米`` is a missing unit, judged
+    unequal — expected answers should carry the unit they require).
+    """
+    if isinstance(a, tuple) or isinstance(b, tuple):
+        if not (isinstance(a, tuple) and isinstance(b, tuple)):
+            return False
+        va, ua = a
+        vb, ub = b
+        return ua == ub and _numbers_close(va, vb)
+    return _numbers_close(a, b)  # type: ignore[arg-type]
+
+
 def _math_answers_match(user_norm: _Normalized, expected_norm: _Normalized) -> bool:
     """Compare two normalized math answers of the same kind."""
     kind, user_val = user_norm
     expected_val = expected_norm[1]
     if kind == "num":
-        return _numbers_close(user_val, expected_val)  # type: ignore[arg-type]
+        return _num_values_match(user_val, expected_val)  # type: ignore[arg-type]
     if kind == "interval":
         lo_u, a_u, b_u, ro_u = user_val  # type: ignore[misc]
         lo_e, a_e, b_e, ro_e = expected_val  # type: ignore[misc]
