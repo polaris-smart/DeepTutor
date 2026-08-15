@@ -13,6 +13,7 @@ import {
   Brain,
   ChevronDown,
   Github,
+  GraduationCap,
   HeartHandshake,
   House,
   LayoutGrid,
@@ -89,6 +90,16 @@ const PRIMARY_NAV: NavEntry[] = [
     icon: Library,
     tooltipKey: "Book tooltip",
     requires: "llm",
+    roles: ["admin", "teacher"],
+  },
+  {
+    // Class Insights: teacher/admin console over student mastery. Read-only
+    // and role-gated — students never see the entry (navHidden) nor the route
+    // (page-level check + backend require_admin_or_teacher).
+    href: "/admin/class",
+    label: "Class Insights",
+    icon: GraduationCap,
+    tooltipKey: "Class Insights tooltip",
     roles: ["admin", "teacher"],
   },
   {

@@ -349,6 +349,27 @@ async def require_admin(
     return payload
 
 
+async def require_admin_or_teacher(
+    payload: TokenPayload | None = Depends(require_auth),
+) -> TokenPayload:
+    """
+    FastAPI dependency that requires the caller to be an admin or teacher.
+
+    Guards read-only class-level views (e.g. the class insights overview)
+    that teachers and admins share. Raises HTTP 403 otherwise. When
+    AUTH_ENABLED=false, all requests are treated as admin.
+    """
+    if not AUTH_ENABLED:
+        return _local_admin_token_payload()
+
+    if payload is None or payload.role not in ("admin", "teacher"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin or teacher access required",
+        )
+    return payload
+
+
 def _local_admin_token_payload() -> TokenPayload:
     """Synthetic admin payload used when AUTH_ENABLED=false.
 

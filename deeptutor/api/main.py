@@ -316,6 +316,7 @@ from deeptutor.api.routers import (
     book,
     capabilities_settings,
     chat,
+    class_insights,
     co_writer,
     dashboard,
     exam_paper,
@@ -467,6 +468,15 @@ app.include_router(
 )
 app.include_router(
     partners.router, prefix="/api/v1/partners", tags=["partners"], dependencies=_admin
+)
+# Class insights: the overview route carries its own admin/teacher gate
+# (require_admin_or_teacher); router-level _auth keeps the module consistent
+# with every other workspace router.
+app.include_router(
+    class_insights.router,
+    prefix="/api/v1/class-insights",
+    tags=["class-insights"],
+    dependencies=_auth,
 )
 app.include_router(
     attachments.router,
