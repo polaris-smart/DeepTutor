@@ -158,6 +158,12 @@ class LlamaIndexDocumentLoader:
             source_hash = parse_cache.source_hash_from_path(file_path)
             source_dir = cache_root / source_hash[:2] / source_hash
             if not source_dir.is_dir():
+                # Byte-hash miss is expected for MinerU products converted to
+                # md (cache entries are keyed by the original PDF's bytes).
+                # Fall back to a manifest source-name match so structure
+                # survives the pdf→md conversion hop.
+                source_dir = self._cache_dir_by_source_name(cache_root, file_path.stem)
+            if source_dir is None:
                 return None
             for sig_dir in sorted(source_dir.iterdir()):
                 if not sig_dir.is_dir() or not parse_cache.is_ready(sig_dir):
@@ -175,6 +181,49 @@ class LlamaIndexDocumentLoader:
                 file_path.name,
                 exc,
             )
+        return None
+
+    @staticmethod
+    def _cache_dir_by_source_name(cache_root: Path, stem: str) -> Path | None:
+        """Find a parse-cache source dir whose manifest name matches ``stem``.
+
+        Compares normalized forms (whitespace/extension stripped) because raw
+        md stems like ``学程三  指导手册`` must match cached sources recorded
+        as ``学程三  指导手册.pdf``. Returns the source dir of the first ready
+        match, or ``None``. Scan is fail-open and best-effort.
+        """
+        import json as _json
+
+        def _norm(s: str) -> str:
+            return "".join(ch for ch in s if not ch.isspace())
+
+        want = _norm(stem)
+        if not want:
+            return None
+        try:
+            for prefix_dir in sorted(cache_root.iterdir()):
+                if not prefix_dir.is_dir():
+                    continue
+                for source_dir in sorted(prefix_dir.iterdir()):
+                    if not source_dir.is_dir():
+                        continue
+                    for sig_dir in sorted(source_dir.iterdir()):
+                        manifest = sig_dir / "manifest.json"
+                        if not manifest.is_file():
+                            continue
+                        try:
+                            record = _json.loads(manifest.read_text(encoding="utf-8"))
+                        except Exception:
+                            continue
+                        cached_name = str(
+                            record.get("source_name")
+                            or record.get("original_name")
+                            or ""
+                        )
+                        if cached_name and _norm(cached_name).startswith(want):
+                            return source_dir
+        except Exception:
+            return None
         return None
 
     @staticmethod
