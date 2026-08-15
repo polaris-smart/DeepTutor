@@ -19,7 +19,13 @@ export default function SpaceQuestionsPage() {
   const { role } = useAuthStatus();
   // 组卷 is a teacher workflow — students keep the 题库 (错题本) + 题卷重排 tabs.
   const canAssemble = role === "admin" || role === "teacher";
-  const [view, setView] = useState<QuestionsSpaceView>("question_bank");
+  const [view, setView] = useState<QuestionsSpaceView>(() =>
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("tab") === "exam_assemble" &&
+    (role === "admin" || role === "teacher")
+      ? "exam_assemble"
+      : "question_bank",
+  );
 
   return (
     <div className="space-y-5">

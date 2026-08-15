@@ -106,6 +106,7 @@ import { buildChatOutline } from "@/lib/chat-outline";
 import { isPlaceholderSessionTitle } from "@/lib/session-title";
 import type { SpaceMemoryFile } from "@/lib/space-items";
 import HomeReviewRecallCard from "@/components/chat/home/HomeReviewRecallCard";
+import HomeRoleChips from "@/components/chat/home/HomeRoleChips";
 import {
   selectedBooksToPayload,
   type SelectedBookReference,
@@ -1984,6 +1985,7 @@ export default function ChatPage() {
             ) : !hasMessages ? (
               <div className="flex w-full flex-1 min-h-0 flex-col items-center justify-end pb-14 animate-fade-in px-6">
                 <HomeReviewRecallCard />
+                <HomeRoleChips onPrefill={handlePrefillComposer} />
                 <div className="w-full max-w-[960px] flex items-center justify-center gap-4">
                   <img
                     src="/logo_black.png"
