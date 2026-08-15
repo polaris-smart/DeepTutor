@@ -64,6 +64,10 @@ class LlamaIndexDocumentLoader:
     def __init__(self, logger=None, image_concurrency: int = 6) -> None:
         self.logger = logger or logging.getLogger(__name__)
         self.image_concurrency = max(1, int(image_concurrency))
+        # 悦学 doc_intel: structured blocks of the most recent parsed/backfilled
+        # document, consumed by _append_if_nonempty's enrich pass. Reset per
+        # file so a cache miss never inherits a previous file's blocks.
+        self._last_parsed_blocks = None
 
     async def load(self, file_paths: Iterable[str]) -> list[Any]:
         documents: list[Any] = []
@@ -87,6 +91,13 @@ class LlamaIndexDocumentLoader:
             file_path = Path(file_path_str)
             self.logger.info(f"Parsing text: {file_path.name}")
             text = await FileTypeRouter.read_text_file(str(file_path))
+            # 悦学 doc_intel: md files are direct-read so they never set
+            # _last_parsed_blocks, and enrich stays skipped. The structured
+            # sibling (content_list) may already sit in the parse cache under
+            # the same source hash (MinerU products converted to md) — reuse it
+            # so enrich has blocks to classify / build the doc tree. Fail-open:
+            # a miss indexes plain text with clean metadata.
+            self._last_parsed_blocks = self._lookup_cached_blocks(file_path)
             self._append_if_nonempty(documents, file_path, text)
 
         for file_path_str in classification.image_files:
@@ -126,6 +137,45 @@ class LlamaIndexDocumentLoader:
         self._last_parsed_blocks = parsed.blocks
         images = self._collect_asset_images(parsed.asset_dir, origin=file_path)
         return text, images
+
+    def _lookup_cached_blocks(self, file_path: Path) -> list[dict] | None:
+        """Return content_list blocks cached for a text file, or ``None``.
+
+        The parse cache is keyed by source bytes
+        (``parse_cache/<hash[:2]>/<source_hash>/<signature>/``). md files in
+        ``raw/`` are MinerU products converted to text, so their bytes hash to
+        the entry created when the original document was cloud-parsed; every
+        signature dir under that key is probed (any content_list works — we
+        only want structure, never a re-parse). Fail-open by contract: any
+        failure (missing cache, unreadable entry, corrupt JSON) returns
+        ``None`` and the file is indexed as plain text.
+        """
+        from deeptutor.services import path_service
+        from deeptutor.services.parsing import cache as parse_cache
+
+        try:
+            cache_root = path_service.get_path_service().get_parse_cache_root()
+            source_hash = parse_cache.source_hash_from_path(file_path)
+            source_dir = cache_root / source_hash[:2] / source_hash
+            if not source_dir.is_dir():
+                return None
+            for sig_dir in sorted(source_dir.iterdir()):
+                if not sig_dir.is_dir() or not parse_cache.is_ready(sig_dir):
+                    continue
+                _, blocks, _ = parse_cache.load_ir(sig_dir)
+                if blocks:
+                    self.logger.info(
+                        "Loaded cached content_list for %s (doc_intel backfill)",
+                        file_path.name,
+                    )
+                    return blocks
+        except Exception as exc:  # noqa: BLE001 - fail-open lookup
+            self.logger.debug(
+                "parse_cache content_list lookup failed for %s: %s",
+                file_path.name,
+                exc,
+            )
+        return None
 
     @staticmethod
     def _text_from_blocks(blocks: list[dict] | None) -> str:
