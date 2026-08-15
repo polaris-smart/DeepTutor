@@ -886,7 +886,7 @@ export default memo(function ChatComposer({
                     className="dt-popup-up absolute bottom-full left-0 z-50 mb-1.5 w-[260px] overflow-visible rounded-xl border border-[var(--border)] bg-[var(--popover)] py-1 shadow-lg backdrop-blur-md"
                   >
                     {capabilities
-                      .filter((cap) => !cap.loopEngine)
+                      .filter((cap) => !cap.loopEngine || cap.value === "deep_solve")
                       .map((cap) => (
                         <CapMenuItem
                           key={cap.value}
@@ -897,7 +897,7 @@ export default memo(function ChatComposer({
                       ))}
                     {(() => {
                       const loopCaps = capabilities.filter(
-                        (cap) => cap.loopEngine,
+                        (cap) => cap.loopEngine && cap.value !== "deep_solve",
                       );
                       if (loopCaps.length === 0) return null;
                       const loopSelected = loopCaps.some(

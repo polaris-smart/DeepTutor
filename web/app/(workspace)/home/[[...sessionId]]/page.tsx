@@ -576,6 +576,17 @@ export default function ChatPage() {
   // mount; ``ChatMessageList`` reads it via ``handlePrefillComposer`` so an
   // ``AskUserOptions`` chip click can drop text into the composer textarea.
   const prefillInputRef = useRef<((text: string) => void) | null>(null);
+  // Cross-page prefill bridge (review round 3): the notebook "归因" button and
+  // future entry points drop a draft into sessionStorage and route here; the
+  // composer picks it up once, user confirms before sending.
+  useEffect(() => {
+    const draft = sessionStorage.getItem("dt:prefill");
+    if (draft) {
+      sessionStorage.removeItem("dt:prefill");
+      const timer = setTimeout(() => prefillInputRef.current?.(draft), 600);
+      return () => clearTimeout(timer);
+    }
+  }, []);
   const handlePrefillComposer = useCallback((text: string) => {
     prefillInputRef.current?.(text);
   }, []);
@@ -1072,6 +1083,19 @@ export default function ChatPage() {
   useEffect(() => {
     void refreshKnowledgeBases();
   }, [refreshKnowledgeBases]);
+
+  // Auto-select the default KB once when none is chosen yet: teachers/students
+  // should not have to discover the KB chip before their first 备课/提问 can
+  // find a knowledge base name (review round 3: the kb_name interrogation
+  // died on exactly this).
+  useEffect(() => {
+    if (state.knowledgeBases.length > 0) return;
+    const fallback =
+      knowledgeBases.find((kb) => (kb.metadata as { is_default?: boolean } | undefined)?.is_default) ??
+      knowledgeBases[0];
+    if (fallback?.name) setKBs([fallback.name]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [knowledgeBases, state.knowledgeBases.length]);
 
   const refreshUserEnabledTools = useCallback(
     async (options?: { force?: boolean }) => {

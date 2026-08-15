@@ -10,6 +10,7 @@ import {
   ExternalLink,
   FolderOpen,
   Loader2,
+  Crosshair,
   MessageSquare,
   NotebookPen,
   Pencil,
@@ -650,6 +651,20 @@ export default function NotebookPage() {
                           {t("Follow-up")}
                         </Link>
                       )}
+                      <Link
+                        href="/"
+                        onClick={() => {
+                          const head = (item.question || "").slice(0, 60);
+                          sessionStorage.setItem(
+                            "dt:prefill",
+                            `帮我归因这道错题${item.question_id ? `（question_id=${item.question_id}）` : ""}：${head}…`,
+                          );
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--muted)]/40 px-2.5 py-1 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
+                      >
+                        <Crosshair size={10} />
+                        {t("归因")}
+                      </Link>
                     </div>
                     <span className="text-[var(--muted-foreground)]">
                       {new Date(item.created_at * 1000).toLocaleString()}

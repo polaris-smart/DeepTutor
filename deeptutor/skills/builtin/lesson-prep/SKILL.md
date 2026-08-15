@@ -93,11 +93,11 @@ always: false
 - 认证、权限、参数或服务错误：按 `references/api-guide.md` 的错误码处理，保留具体错误信息，不用臆测内容绕过失败。
 - 素材不完整但老师仍要教案骨架：可以继续输出完整模板，但所有无来源内容必须标记为 `[模型设计]` 或 `[待补素材]`。
 
-## 其他延伸动作（仅提示，不自动调用）
+## 延伸动作（教案交付后主动问）
 
-教案末尾用一句简短提示询问老师是否继续：
+教案交付后，**必须**主动问一句："要不要我现在就把这份教案建成互动课件？"老师确认后即可代劳：
 
-- **生成互动课件**：进入 Book Engine 的 `/book` 页面，或从 `POST /api/v1/book/books` 创建以本教案、`struct_path` 和知识库为输入的 living book；后续仍需确认 proposal 与 spine。
+- **生成互动课件**：调 `POST /api/v1/book/books`，`user_intent` 带课名与 struct_path，`knowledge_bases` 带本次的 kb_name（全部从教案上下文复用，老师零输入）；随后走 confirm-proposal → confirm-spine（auto_compile 默认开，spine 确认后自动编译）。
 - **为课件挂视频**：在 Book Engine 已有 `book_id`、`page_id` 后，从 `POST /api/v1/book/books/insert-block` 插入 `block_type: animation` 的视频块。
 
 这两个入口只是下一步建议。除非老师明确确认继续，否则不要替其创建 Book、确认结构、编译页面或插入视频块，也不要把 living book 说成已经生成的 PowerPoint 文件。
