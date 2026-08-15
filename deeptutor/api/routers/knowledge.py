@@ -2645,6 +2645,22 @@ async def run_reindex_task(kb_name: str, base_dir: str, task_id: str, signature_
                     meta_err,
                 )
 
+            # Flip the KB's on-disk .progress.json to completed, exactly like
+            # the create/upload paths do. Without this the reindex success path
+            # leaves .progress.json stuck at the last embedding-batch snapshot
+            # (stage=processing_documents), so GET /{kb}/progress and the
+            # progress WebSocket report a perpetual "processing" banner even
+            # though kb_config.json has already been promoted to "ready".
+            progress_tracker.update(
+                ProgressStage.COMPLETED,
+                "Re-index complete",
+                current=len(file_paths),
+                total=len(file_paths),
+                indexed_count=len(file_paths),
+                index_changed=True,
+                index_action="reindex",
+            )
+
             manager = get_kb_manager()
             manager.update_kb_status(
                 name=kb_name,
