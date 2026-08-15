@@ -9,43 +9,57 @@
  * you left off" right on the empty home state, so a returning student has a
  * one-click low-friction re-entry instead of an empty greeting.
  *
- * Renders nothing when the fetch fails or there is nothing due and no recent
- * path — the welcome greeting stays exactly as before for fresh accounts.
+ * Renders nothing when the fetch fails or there is nothing active — the
+ * welcome greeting stays exactly as before for fresh accounts.
  */
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useTranslation } from "react-i18next";
-import { fetchAllProgress } from "@/lib/learning-api";
+import { fetchAllProgress, fetchMasteryMap } from "@/lib/learning-api";
 
 interface RecallState {
-  activeBooks: { book_id: string; title: string }[];
+  dueTotal: number;
+  /** Most recently updated active book, plus the count of other active ones. */
+  primaryTitle: string;
+  otherCount: number;
 }
 
 export default function HomeReviewRecallCard() {
-  const { t, i18n } = useTranslation();
+  const { i18n } = useTranslation();
   const zh = i18n.language?.toLowerCase().startsWith("zh");
   const [state, setState] = useState<RecallState | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    fetchAllProgress()
-      .then((result) => {
-        if (cancelled) return;
+    (async () => {
+      try {
+        const result = await fetchAllProgress();
         const active = (result.summaries || [])
           .filter((s) => s.kp_count > 0)
-          .slice(0, 3)
-          .map((s) => ({
-            book_id: s.book_id,
-            title: s.name || s.book_id,
-          }));
-        if (active.length > 0) {
-          setState({ activeBooks: active });
+          .sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+        if (!active.length || cancelled) return;
+        // Pull real due counts from the most recent paths (bounded: first 3,
+        // so a returning student's wait stays short even with many paths).
+        let dueTotal = 0;
+        for (const s of active.slice(0, 3)) {
+          try {
+            const { map } = await fetchMasteryMap(s.book_id);
+            dueTotal += map?.due_reviews || 0;
+          } catch {
+            /* one path failing must not blank the card */
+          }
         }
-      })
-      .catch(() => {
+        if (cancelled) return;
+        setState({
+          dueTotal,
+          primaryTitle: active[0].name || active[0].book_id,
+          otherCount: Math.max(0, active.length - 1),
+        });
+      } catch {
         /* not signed in / API unavailable → stay hidden */
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };
@@ -53,7 +67,17 @@ export default function HomeReviewRecallCard() {
 
   if (!state) return null;
 
-  const headline = zh ? "继续上次的学习" : "Continue where you left off";
+  const hasDue = state.dueTotal > 0;
+  const headline = hasDue
+    ? zh
+      ? `今日有 ${state.dueTotal} 项复习到期`
+      : `${state.dueTotal} item${state.dueTotal > 1 ? "s" : ""} due for review today`
+    : zh
+      ? "继续上次的学习"
+      : "Continue where you left off";
+  const sub = state.otherCount
+    ? `${state.primaryTitle} ${zh ? `等 ${state.otherCount + 1} 本在学` : `+ ${state.otherCount} more paths`}`
+    : state.primaryTitle;
 
   return (
     <div className="mb-6 w-full max-w-[960px]">
@@ -65,14 +89,12 @@ export default function HomeReviewRecallCard() {
           <p className="text-[14px] font-medium text-[var(--foreground)]">
             {headline}
           </p>
-          {state.activeBooks.length > 0 && (
-            <p className="mt-0.5 truncate text-[12px] text-[var(--muted-foreground)]">
-              {state.activeBooks.map((b) => b.title).join(zh ? "　" : " · ")}
-            </p>
-          )}
+          <p className="mt-0.5 truncate text-[12px] text-[var(--muted-foreground)]">
+            {sub}
+          </p>
         </div>
         <span className="shrink-0 rounded-lg bg-teal-500/10 px-3 py-1.5 text-[13px] font-medium text-teal-600 dark:text-teal-400">
-          {zh ? "继续学习" : "Resume"}
+          {zh ? (hasDue ? "去复习" : "继续学习") : hasDue ? "Review now" : "Resume"}
           <span className="ml-1 inline-block transition-transform group-hover:translate-x-0.5">→</span>
         </span>
       </Link>
