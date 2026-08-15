@@ -2,10 +2,23 @@
 
 import { useState } from "react";
 import QuestionBankSection from "@/components/space/QuestionBankSection";
+import { useAuthStatus } from "@/hooks/useAuthStatus";
+import ExamPaperAssembler from "./ExamPaperAssembler";
 import PaperReorderEditor from "./PaperReorderEditor";
 import type { QuestionsSpaceView } from "./types";
 
+function tabClass(active: boolean): string {
+  return `rounded-md px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] ${
+    active
+      ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm"
+      : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+  }`;
+}
+
 export default function SpaceQuestionsPage() {
+  const { role } = useAuthStatus();
+  // 组卷 is a teacher workflow — students keep the 题库 (错题本) + 题卷重排 tabs.
+  const canAssemble = role === "admin" || role === "teacher";
   const [view, setView] = useState<QuestionsSpaceView>("question_bank");
 
   return (
@@ -20,11 +33,7 @@ export default function SpaceQuestionsPage() {
           role="tab"
           aria-selected={view === "question_bank"}
           onClick={() => setView("question_bank")}
-          className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] ${
-            view === "question_bank"
-              ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm"
-              : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-          }`}
+          className={tabClass(view === "question_bank")}
         >
           题库
         </button>
@@ -33,17 +42,32 @@ export default function SpaceQuestionsPage() {
           role="tab"
           aria-selected={view === "paper_reorder"}
           onClick={() => setView("paper_reorder")}
-          className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] ${
-            view === "paper_reorder"
-              ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm"
-              : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-          }`}
+          className={tabClass(view === "paper_reorder")}
         >
           题卷重排
         </button>
+        {canAssemble && (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "exam_assemble"}
+            onClick={() => setView("exam_assemble")}
+            className={tabClass(view === "exam_assemble")}
+          >
+            组卷
+          </button>
+        )}
       </div>
 
-      {view === "question_bank" ? <QuestionBankSection /> : <PaperReorderEditor />}
+      {view === "question_bank" ? (
+        <QuestionBankSection />
+      ) : view === "paper_reorder" ? (
+        <PaperReorderEditor />
+      ) : canAssemble ? (
+        <ExamPaperAssembler />
+      ) : (
+        <QuestionBankSection />
+      )}
     </div>
   );
 }

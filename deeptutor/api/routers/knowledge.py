@@ -851,6 +851,100 @@ async def get_docs_by_struct(
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+def _struct_path_matches(node_path: str, query: str) -> bool:
+    """True when ``node_path`` sits at or under the ``query`` struct path.
+
+    Segment-aware prefix match: ``第1章`` matches ``第1章 集合/1.1`` and
+    ``必修一/第1章 集合``, but never ``第11章`` — continuation is only allowed
+    at a path separator ``/`` or a title-extension space, not inside a number.
+    """
+    if node_path == query:
+        return True
+    if node_path.startswith(query):
+        rest = node_path[len(query):]
+        return rest.startswith("/") or rest.startswith(" ")
+    return False
+
+
+def _node_has_doc_intel_question_mark(metadata: dict) -> bool:
+    """True when a node's metadata carries doc_intel qa_split question markers.
+
+    The qa_split pass (``deeptutor/knowledge/doc_intel/qa_split.py``) tags
+    question blocks with ``is_question=true`` plus ``q_id`` / ``q_type`` /
+    ``has_answer``, and answer/analysis blocks with the same ``q_id``. Accept
+    ``is_question``, or a bare ``q_id`` only when the node is not tagged as an
+    answer/analysis block, so a partially-annotated store still surfaces its
+    questions without leaking answer blocks into the list.
+    """
+    if metadata.get("is_question"):
+        return True
+    if metadata.get("is_answer") or metadata.get("is_analysis"):
+        return False
+    return bool(metadata.get("q_id"))
+
+
+@router.get("/{kb_name}/questions/by-struct")
+async def get_questions_by_struct(
+    kb_name: str,
+    struct_path: str = Query(..., min_length=1),
+    limit: int = Query(200, ge=1, le=1000),
+):
+    """Return doc_intel question nodes under a textbook structure path.
+
+    Question blocks carry ``is_question=true`` (plus ``q_id`` / ``q_type`` /
+    ``has_answer``) from the qa_split pass. A KB whose nodes carry no doc_intel
+    markers returns an empty list with a hint instead of an error (fail-open).
+    """
+    try:
+        resolved_name, docstore = await asyncio.to_thread(_load_kb_docstore, kb_name)
+        questions: list[dict] = []
+        has_doc_intel = False
+        if docstore is not None:
+            nodes = await asyncio.to_thread(lambda: list(docstore.docs.values()))
+            for node in nodes:
+                metadata = getattr(node, "metadata", {}) or {}
+                if not _node_has_doc_intel_question_mark(metadata):
+                    continue
+                has_doc_intel = True
+                node_struct_path = str(metadata.get("struct_path") or "")
+                if not _struct_path_matches(node_struct_path, struct_path):
+                    continue
+                questions.append(
+                    {
+                        "node_id": str(getattr(node, "node_id", "")),
+                        "q_id": str(metadata.get("q_id") or ""),
+                        "text": _node_text(node)[:500],
+                        "question_type": str(metadata.get("q_type") or ""),
+                        "difficulty": str(metadata.get("difficulty") or ""),
+                        "struct_path": node_struct_path,
+                        "has_answer": bool(metadata.get("has_answer")),
+                        "file_name": str(metadata.get("file_name") or ""),
+                    }
+                )
+                if len(questions) >= limit:
+                    break
+        hint = ""
+        if docstore is not None and not has_doc_intel:
+            hint = (
+                "该知识库没有 doc_intel 题答分离元数据（is_question / q_id），"
+                "无法按章节选题。请用带题答分离标注的文档重建索引后再组卷。"
+            )
+        elif docstore is None:
+            hint = "该知识库还没有索引（docstore 为空），请先上传并处理文档。"
+        return {
+            "kb_name": resolved_name,
+            "struct_path": struct_path,
+            "questions": questions,
+            "has_doc_intel": has_doc_intel,
+            "hint": hint,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to query questions by struct in KB '%s': %s", kb_name, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 def _load_kb_entry_or_404(manager: KnowledgeBaseManager, kb_name: str) -> dict:
     manager.config = manager._load_config()
     kb_entry = manager.config.get("knowledge_bases", {}).get(kb_name)

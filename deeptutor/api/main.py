@@ -318,6 +318,7 @@ from deeptutor.api.routers import (
     chat,
     co_writer,
     dashboard,
+    exam_paper,
     imports,
     knowledge,
     mastery_path,
@@ -373,6 +374,9 @@ app.include_router(
 )
 app.include_router(
     knowledge.router, prefix="/api/v1/knowledge", tags=["knowledge"], dependencies=_auth
+)
+app.include_router(
+    exam_paper.router, prefix="/api/v1/exam-paper", tags=["exam-paper"], dependencies=_auth
 )
 app.include_router(imports.router, prefix="/api/v1/imports", tags=["imports"], dependencies=_auth)
 app.include_router(
