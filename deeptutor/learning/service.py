@@ -202,6 +202,7 @@ class LearningService:
         scheduler: SpacedRepetitionScheduler | None = None,
         user_id: str = "",
         session_id: str = "",
+        hint_level: int | None = None,
     ) -> bool:
         """Grade one answer and fold it through the full post-answer pipeline.
 
@@ -250,6 +251,7 @@ class LearningService:
                 is_correct=is_correct,
                 cognitive_gate="retrieval",
                 error_type="" if is_correct else classify_error(user_answer).value,
+                hint_level_reached=hint_level,
             )
         )
         return is_correct
