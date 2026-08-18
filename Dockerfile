@@ -483,21 +483,3 @@ stderr_logfile=/dev/fd/2
 stderr_logfile_maxbytes=0
 environment=PYTHONPATH="/app",PYTHONUNBUFFERED="1"
 
-[program:frontend]
-command=/bin/bash -c "cd /app/web && node scripts/dev.mjs -H 0.0.0.0 -p ${FRONTEND_PORT:-3782}"
-directory=/app/web
-user=deeptutor
-autostart=true
-autorestart=true
-startsecs=5
-stdout_logfile=/dev/fd/1
-stdout_logfile_maxbytes=0
-stderr_logfile=/dev/fd/2
-stderr_logfile_maxbytes=0
-environment=NODE_ENV="development"
-EOF
-
-RUN sed -i 's/\r$//' /etc/supervisor/conf.d/programs.conf
-
-# Development ports
-EXPOSE 8001 3782
