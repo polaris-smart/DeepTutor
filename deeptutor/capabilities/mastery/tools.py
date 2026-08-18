@@ -42,7 +42,10 @@ from deeptutor.learning.models import (
     LearningModule,
     PendingQuestion,
 )
-from deeptutor.learning.pending import public_pending_question
+from deeptutor.learning.pending import (
+    pending_ask_user_questions,
+    public_pending_question,
+)
 from deeptutor.learning.policy import (
     QUALITATIVE_TYPES,
     display_mastery,
@@ -88,6 +91,27 @@ def _resolve_session_id(kwargs: dict[str, Any]) -> str:
 
 def _resolve_turn_id(kwargs: dict[str, Any]) -> str:
     return str(kwargs.get("_turn_id") or "").strip()
+
+
+def _resolve_confidence_before(raw: Any) -> int | None:
+    """Coerce the tool arg to an int in [1, 5]; anything else → None.
+
+    The confidence value is a research side-channel, never a gate: a missing
+    or out-of-range value must not fail the grade (collection is fail-open;
+    the correctness gate itself stays fail-closed). Booleans are rejected
+    explicitly so ``True``/``False`` cannot sneak in as 1/0.
+    """
+    if isinstance(raw, bool) or raw is None:
+        return None
+    if isinstance(raw, int):
+        value = raw
+    elif isinstance(raw, float) and raw.is_integer():
+        value = int(raw)
+    elif isinstance(raw, str) and raw.strip().lstrip("+-").isdigit():
+        value = int(raw.strip())
+    else:
+        return None
+    return value if 1 <= value <= 5 else None
 
 
 async def _session_hint_level(kwargs: dict[str, Any]) -> int | None:
@@ -312,11 +336,14 @@ class MasteryQuizTool(BaseTool):
                 "Pose a question for a MEMORY or PROCEDURE objective and register "
                 "its expected answer with the engine (so grading is deterministic "
                 "and you never re-state the answer later). After calling this, "
-                "present the question with the ask_user tool so the learner answers "
-                "on an interactive card (for choices, give ask_user options short "
-                "labels like A/B/C, pass every full option body here, and set the "
-                "correct label as expected_answer); "
-                "then call mastery_grade with their answer. For CONCEPT / DESIGN "
+                "present the question card with the ask_user tool so the learner "
+                "answers on an interactive card (for choices, give ask_user options "
+                "short labels like A/B/C, pass every full option body here, and set "
+                "the correct label as expected_answer); the returned card also "
+                "carries a confidence self-report tab (1-5) to collect "
+                "confidence_before. "
+                "then call mastery_grade with their answer (and the confidence "
+                "value when the learner picked one). For CONCEPT / DESIGN "
                 "objectives use mastery_assess instead."
             ),
             parameters=[
@@ -411,11 +438,14 @@ class MasteryQuizTool(BaseTool):
                 "question": question,
                 "options": options,
                 "pending_question": public_question.to_dict(),
-                "ask_user": {"questions": [public_question.to_ask_user_dict()]},
+                "ask_user": {"questions": pending_ask_user_questions(pending)},
                 "instruction": (
-                    "Pass ask_user.questions through unchanged: its question id and "
-                    "option labels are bound to the persisted question. Then call "
-                    "mastery_grade with the learner's answer and this question_id."
+                    "Pass ask_user.questions through unchanged: the first question's "
+                    "id and option labels are bound to the persisted question, and "
+                    "the second (id ending in _conf) collects the learner's "
+                    "confidence before answering (1-5). Then call mastery_grade with "
+                    "the learner's answer, this question_id, and confidence_before "
+                    "when the learner picked a value."
                 ),
             },
             meta_key="mastery_quiz",
@@ -447,6 +477,17 @@ class MasteryGradeTool(BaseTool):
                     description=(
                         "Stable question_id from mastery_quiz or mastery_status. "
                         "Optional only for legacy pending questions."
+                    ),
+                    required=False,
+                ),
+                ToolParameter(
+                    name="confidence_before",
+                    type="integer",
+                    description=(
+                        "The learner's self-reported confidence BEFORE answering, "
+                        "from the confidence tab on the question card: 1=pure "
+                        "guess, 5=very sure. Optional — omit when the learner "
+                        "skipped it; values outside 1-5 are ignored."
                     ),
                     required=False,
                 ),
@@ -498,6 +539,7 @@ class MasteryGradeTool(BaseTool):
             scheduler=scheduler,
             session_id=_resolve_session_id(kwargs),
             hint_level=await _session_hint_level(kwargs),
+            confidence_before=_resolve_confidence_before(kwargs.get("confidence_before")),
         )
         await _sync_mastery_attempt_to_question_bank(
             session_id=_resolve_session_id(kwargs),

@@ -17,13 +17,15 @@ def _bind_pending_ask_user_args(kwargs: dict[str, Any], path_id: str) -> dict[st
     """Replace model-authored quiz display data with persisted public state.
 
     Binding at this adapter boundary prevents the model from changing question
-    ids or reassigning A/B/C labels after a pause or on a later turn. Generic
+    ids or reassigning A/B/C labels after a pause or on a later turn. The
+    card is rebuilt through the same helper as ``mastery_quiz`` so the
+    confidence sub-question (``<qid>_conf``) survives the rebind. Generic
     clarification cards remain untouched when no mastery question is pending.
     """
     if not path_id:
         return kwargs
     try:
-        from deeptutor.learning.pending import public_pending_question
+        from deeptutor.learning.pending import pending_ask_user_questions
         from deeptutor.learning.storage import LearningStore
 
         progress = LearningStore().load(path_id)
@@ -35,7 +37,7 @@ def _bind_pending_ask_user_args(kwargs: dict[str, Any], path_id: str) -> dict[st
         return kwargs
 
     updated = dict(kwargs)
-    updated["questions"] = [public_pending_question(pending).to_ask_user_dict()]
+    updated["questions"] = pending_ask_user_questions(pending)
     # Remove the accepted legacy shape so it cannot compete with the canonical
     # question list in ``build_ask_user_payload``.
     updated.pop("question", None)
