@@ -13,7 +13,7 @@ export default function ThemeScript() {
       try {
         const stored = localStorage.getItem('deeptutor-theme');
 
-        document.documentElement.classList.remove('dark', 'theme-glass', 'theme-snow');
+        document.documentElement.classList.remove('dark', 'theme-glass', 'theme-snow', 'theme-yuexue');
 
         if (stored === 'dark') {
           document.documentElement.classList.add('dark');
@@ -21,17 +21,19 @@ export default function ThemeScript() {
           document.documentElement.classList.add('dark', 'theme-glass');
         } else if (stored === 'snow') {
           document.documentElement.classList.add('theme-snow');
+        } else if (stored === 'yuexue') {
+          document.documentElement.classList.add('theme-yuexue');
         } else if (stored === 'light') {
           // already clean
         } else {
-          // No stored preference: Default (snow) for light systems,
+          // No stored preference: Default (yuexue warm-paper) for light systems,
           // Dark for prefers-color-scheme: dark.
           if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
             document.documentElement.classList.add('dark');
             localStorage.setItem('deeptutor-theme', 'dark');
           } else {
-            document.documentElement.classList.add('theme-snow');
-            localStorage.setItem('deeptutor-theme', 'snow');
+            document.documentElement.classList.add('theme-yuexue');
+            localStorage.setItem('deeptutor-theme', 'yuexue');
           }
         }
       } catch (e) {

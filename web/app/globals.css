@@ -843,3 +843,46 @@ body[data-picker-open] .dt-mark-pulse {
     animation: none !important;
   }
 }
+
+/* ── 悦学暖纸（YC 08-15 规格：主题协议第五主题，零组件改动）── */
+.theme-yuexue {
+  color-scheme: light;
+
+  /* 画布：暖米纸感 */
+  --background: #FAF8F3;
+  --foreground: #2B2620;
+
+  /* 卡片：纸白 */
+  --card: #FFFFFF;
+  --card-foreground: #2B2620;
+  --popover: #FFFFFF;
+  --popover-foreground: #2B2620;
+
+  /* 主色：深朱红，只用于交互强调 */
+  --primary: #9E1A1A;
+  --primary-foreground: #FAF8F3;
+
+  /* 次级：暖沙 */
+  --secondary: #F3EEE2;
+  --secondary-foreground: #2B2620;
+
+  /* 静默：纸灰 */
+  --muted: #EFE9DC;
+  --muted-foreground: #6E665A;
+
+  /* 强调：暖阳橙 */
+  --accent: #E8943A;
+  --accent-foreground: #2B2620;
+
+  /* 危险 */
+  --destructive: #B3352C;
+  --destructive-foreground: #FAF8F3;
+
+  /* 边框：暖灰 */
+  --border: #E5DFD0;
+  --input: #E5DFD0;
+  --ring: #9E1A1A;
+
+  /* 遮罩：暖调 scrim */
+  --overlay: rgba(43, 38, 32, 0.42);
+}
