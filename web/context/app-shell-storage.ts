@@ -79,7 +79,11 @@ export function resolveResponseLanguage(
 export function readStoredLanguage(): AppLanguage {
   if (typeof window === "undefined") return "en";
   try {
-    return normalizeLanguage(window.localStorage.getItem(LANGUAGE_STORAGE_KEY));
+    const stored = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
+    if (stored !== null) return normalizeLanguage(stored);
+    // 首次访问（未做过选择）：跟随浏览器语言——悦学用户以中文为主
+    const nav = window.navigator.language || "";
+    return /^zh/i.test(nav) ? "zh" : "en";
   } catch {
     return "en";
   }
