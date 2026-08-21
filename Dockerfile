@@ -98,8 +98,7 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 COPY requirements/ ./requirements/
 COPY requirements.txt ./
 RUN pip install --upgrade pip && \
-    pip install -r requirements.txt && \
-    pip install --no-cache-dir 'deeptutor[rag-lightrag]' 'numpy<2.0'
+    pip install -r requirements.txt
 
 # ============================================
 # Stage 3: Production Image
