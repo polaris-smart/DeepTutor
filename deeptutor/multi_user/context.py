@@ -33,7 +33,7 @@ def user_from_token_payload(payload: Any | None) -> CurrentUser:
     user_id = str(getattr(payload, "user_id", "") or "")
     username = str(getattr(payload, "username", "") or "local")
     role = str(getattr(payload, "role", "user") or "user")
-    if role not in {"admin", "teacher", "student", "user"}:
+    if role not in {"admin", "user"}:
         role = "user"
     if not user_id:
         user_id = "local-admin" if role == "admin" and username == "local" else username

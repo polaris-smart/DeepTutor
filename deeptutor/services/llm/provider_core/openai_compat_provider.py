@@ -15,11 +15,13 @@ import time
 from typing import TYPE_CHECKING, Any
 import uuid
 
+from deeptutor.services.keypool import KeyPool
+
 import json_repair
 from openai import AsyncOpenAI
 
-from deeptutor.services.keypool import KeyPool
 from deeptutor.services.llm.capabilities import disable_response_format_at_runtime
+from deeptutor.services.llm.exceptions import LLMConfigError
 from deeptutor.services.llm.openai_http_client import openai_client_kwargs
 from deeptutor.services.llm.provider_core.base import LLMProvider, LLMResponse, ToolCallRequest
 from deeptutor.services.llm.provider_core.openai_responses import (
@@ -32,6 +34,8 @@ from deeptutor.services.llm.provider_core.openai_responses import (
 from deeptutor.services.llm.reasoning_params import (
     build_openai_compatible_reasoning_kwargs,
 )
+from deeptutor.services.llm.usage_frame import token_counts
+from deeptutor.services.provider_registry import model_overrides_for
 
 if TYPE_CHECKING:
     from deeptutor.services.provider_registry import ProviderSpec
@@ -120,21 +124,31 @@ class OpenAICompatProvider(LLMProvider):
         spec: Any = None,
         provider_name: str | None = None,
     ):
-        keys = api_key if isinstance(api_key, list) else [api_key]
-        keys = [str(key).strip() for key in keys if str(key or "").strip()]
-        primary_key = keys[0] if keys else None
-        super().__init__(primary_key, api_base)
-        self._key_pool = KeyPool(keys) if keys else None
+        super().__init__(api_key, api_base)
         self.default_model = default_model
         self.extra_headers = extra_headers or {}
         self._spec = spec
         self._provider_name = provider_name
 
-        if primary_key and spec and spec.env_key:
-            self._setup_env(primary_key, api_base)
+        if api_key and spec and spec.env_key:
+            self._setup_env(api_key, api_base)
 
         effective_base = api_base or (spec.default_api_base if spec else None) or None
         self._effective_base = effective_base
+        endpoint = (effective_base or "").rstrip("/")
+        keys = [str(k).strip() for k in (api_key if isinstance(api_key, list) else [api_key]) if str(k or "").strip()]
+        self._key_pool = KeyPool(keys) if len(keys) > 1 else None
+        _probe = keys[0] if keys else None
+        placeholder_key = _probe in {None, "", "no-key", "sk-no-key-required"}
+        if (
+            provider_name == "openai"
+            and (not endpoint or endpoint == "https://api.openai.com/v1")
+            and placeholder_key
+        ):
+            raise LLMConfigError(
+                "OpenAI API key is not configured. Set it in Settings > Catalog, "
+                "or select a local provider such as Ollama."
+            )
         default_headers: dict[str, str] = {"x-session-affinity": uuid.uuid4().hex}
         if _uses_openrouter(spec, effective_base):
             default_headers.update(_DEFAULT_OPENROUTER_HEADERS)
@@ -142,7 +156,7 @@ class OpenAICompatProvider(LLMProvider):
             default_headers.update(extra_headers)
 
         self._client = AsyncOpenAI(
-            api_key=primary_key or "no-key",
+            api_key=(keys[0] if keys else None) or "no-key",
             base_url=effective_base,
             default_headers=default_headers,
             max_retries=0,
@@ -317,18 +331,13 @@ class OpenAICompatProvider(LLMProvider):
         else:
             kwargs["max_tokens"] = max(1, max_tokens)
 
-        if spec:
-            model_lower = model_name.lower()
-            for pattern, overrides in spec.model_overrides:
-                if pattern in model_lower:
-                    for key, value in overrides.items():
-                        # None means "drop this parameter" — e.g. Kimi models
-                        # reject any explicit temperature and must be sent none.
-                        if value is None:
-                            kwargs.pop(key, None)
-                        else:
-                            kwargs[key] = value
-                    break
+        for key, value in model_overrides_for(model_name, spec).items():
+            # None means "drop this parameter" — e.g. Kimi models reject any
+            # explicit temperature and must be sent none.
+            if value is None:
+                kwargs.pop(key, None)
+            else:
+                kwargs[key] = value
 
         kwargs.update(
             build_openai_compatible_reasoning_kwargs(
@@ -509,27 +518,12 @@ class OpenAICompatProvider(LLMProvider):
 
     @classmethod
     def _extract_usage(cls, response: Any) -> dict[str, int]:
-        usage_obj = None
         response_map = cls._maybe_mapping(response)
         if response_map is not None:
             usage_obj = response_map.get("usage")
-        elif hasattr(response, "usage") and response.usage:
-            usage_obj = response.usage
-
-        usage_map = cls._maybe_mapping(usage_obj)
-        if usage_map is not None:
-            return {
-                "prompt_tokens": int(usage_map.get("prompt_tokens") or 0),
-                "completion_tokens": int(usage_map.get("completion_tokens") or 0),
-                "total_tokens": int(usage_map.get("total_tokens") or 0),
-            }
-        if usage_obj:
-            return {
-                "prompt_tokens": getattr(usage_obj, "prompt_tokens", 0) or 0,
-                "completion_tokens": getattr(usage_obj, "completion_tokens", 0) or 0,
-                "total_tokens": getattr(usage_obj, "total_tokens", 0) or 0,
-            }
-        return {}
+        else:
+            usage_obj = getattr(response, "usage", None)
+        return token_counts(usage_obj)
 
     def _parse(self, response: Any) -> LLMResponse:
         if isinstance(response, str):
@@ -624,6 +618,17 @@ class OpenAICompatProvider(LLMProvider):
             if not chunk.choices:
                 usage = cls._extract_usage(chunk) or usage
                 continue
+            # Some providers (CodeBuddy) attach usage to the chunk carrying the
+            # last delta rather than to a final choice-less one. Only a report
+            # with real numbers replaces what we already have: a gateway that
+            # echoes a zero-filled usage object on every delta would otherwise
+            # wipe the counts on its way past.
+            delta_usage = cls._extract_usage(chunk)
+            if delta_usage and any(
+                delta_usage.get(key)
+                for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+            ):
+                usage = delta_usage
             choice = chunk.choices[0]
             if choice.finish_reason:
                 finish_reason = choice.finish_reason
@@ -717,9 +722,7 @@ class OpenAICompatProvider(LLMProvider):
                         tool_choice,
                     )
                     body.update(adapt_chat_kwargs_to_responses(extra_kwargs))
-                    result = parse_response_output(
-                        await self._create_with_key_rotation(self._client.responses.create, body)
-                    )
+                    result = parse_response_output(await self._client.responses.create(**body))
                     self._record_responses_success(model, reasoning_effort)
                     return result
                 except Exception as responses_error:
@@ -740,11 +743,7 @@ class OpenAICompatProvider(LLMProvider):
             )
             request_kwargs.update({k: v for k, v in extra_kwargs.items() if v is not None})
             try:
-                return self._parse(
-                    await self._create_with_key_rotation(
-                        self._client.chat.completions.create, request_kwargs
-                    )
-                )
+                return self._parse(await self._create_with_key_rotation(self._client.chat.completions.create, dict(request_kwargs)))
             except Exception as exc:
                 if request_kwargs.get(
                     "response_format"
@@ -753,11 +752,7 @@ class OpenAICompatProvider(LLMProvider):
                     disable_response_format_at_runtime(binding, request_kwargs.get("model"))
                     retry_kwargs = dict(request_kwargs)
                     retry_kwargs.pop("response_format", None)
-                    return self._parse(
-                        await self._create_with_key_rotation(
-                            self._client.chat.completions.create, retry_kwargs
-                        )
-                    )
+                    return self._parse(await self._client.chat.completions.create(**retry_kwargs))
                 raise
         except Exception as e:
             if tools and self._is_tool_format_error(e):
@@ -811,9 +806,7 @@ class OpenAICompatProvider(LLMProvider):
                     )
                     body.update(adapt_chat_kwargs_to_responses(extra_kwargs))
                     body["stream"] = True
-                    stream = await self._create_with_key_rotation(
-                        self._client.responses.create, body
-                    )
+                    stream = await self._client.responses.create(**body)
 
                     async def _timed_stream():
                         stream_iter = stream.__aiter__()
@@ -856,9 +849,7 @@ class OpenAICompatProvider(LLMProvider):
             if self._spec is None or self._spec.supports_stream_options:
                 request_kwargs["stream_options"] = {"include_usage": True}
             try:
-                stream = await self._create_with_key_rotation(
-                    self._client.chat.completions.create, request_kwargs
-                )
+                stream = await self._client.chat.completions.create(**request_kwargs)
             except Exception as exc:
                 if request_kwargs.get(
                     "response_format"
@@ -867,9 +858,7 @@ class OpenAICompatProvider(LLMProvider):
                     disable_response_format_at_runtime(binding, request_kwargs.get("model"))
                     retry_kwargs = dict(request_kwargs)
                     retry_kwargs.pop("response_format", None)
-                    stream = await self._create_with_key_rotation(
-                        self._client.chat.completions.create, retry_kwargs
-                    )
+                    stream = await self._client.chat.completions.create(**retry_kwargs)
                 else:
                     raise
 

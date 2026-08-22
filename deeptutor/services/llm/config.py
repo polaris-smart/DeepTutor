@@ -59,12 +59,9 @@ def _is_openai_compatible_binding(binding: str | None) -> bool:
     return spec.backend in {"openai_compat", "azure_openai"}
 
 
-def _set_openai_env_vars(
-    api_key: str | list[str] | None, base_url: str | None, *, source: str
-) -> None:
-    primary_key = api_key[0] if isinstance(api_key, list) and api_key else api_key
-    if primary_key:
-        os.environ["OPENAI_API_KEY"] = primary_key
+def _set_openai_env_vars(api_key: str | None, base_url: str | None, *, source: str) -> None:
+    if api_key:
+        os.environ["OPENAI_API_KEY"] = api_key
         logger.debug("Set OPENAI_API_KEY env var (%s)", source)
 
     if base_url:
@@ -100,7 +97,7 @@ class LLMConfig:
     """LLM configuration dataclass."""
 
     model: str
-    api_key: str | list[str]
+    api_key: str
     base_url: str | None = None
     effective_url: str | None = None
     binding: str = "openai"
@@ -126,8 +123,6 @@ class LLMConfig:
 
     def get_api_key(self) -> str:
         """Return the API key string for provider consumers."""
-        if isinstance(self.api_key, list):
-            return self.api_key[0] if self.api_key else ""
         return self.api_key
 
 
@@ -174,6 +169,16 @@ def _get_llm_config_from_resolver() -> LLMConfig:
     if not resolved.effective_url and resolved.provider_mode != "oauth":
         raise LLMConfigError(
             "No effective LLM endpoint resolved. Please configure base_url or provider defaults."
+        )
+    is_placeholder_key = resolved.api_key in {"", "no-key", "sk-no-key-required"}
+    if (
+        resolved.provider_name == "openai"
+        and resolved.provider_mode == "standard"
+        and is_placeholder_key
+    ):
+        raise LLMConfigError(
+            "OpenAI API key is not configured. Set it in Settings > Catalog, "
+            "or select a local provider such as Ollama."
         )
     return LLMConfig(
         model=resolved.model,

@@ -4,32 +4,20 @@ import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
   AlignLeft,
-  BarChart3,
   BookOpen,
-  Box,
   ChevronRight,
-  CircleDot,
   Code2,
   FileText,
   Film,
-  Globe,
   Image as ImageIcon,
-  Languages,
   Layers,
   ListChecks,
   Loader2,
   type LucideIcon,
   MessageCircle,
   MousePointerClick,
-  PencilRuler,
-  Pi,
-  Radar,
-  Shapes,
-  Sigma,
   Sparkles,
   Sticker,
-  Thermometer,
-  Type,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -49,20 +37,6 @@ const TYPE_ICON: Record<BlockType, LucideIcon> = {
   flash_cards: Sticker,
   deep_dive: MessageCircle,
   concept_graph: Layers,
-  // YuEdu fork: 学科专属
-  poetry: Type,
-  grammar: Languages,
-  terrain: Globe,
-  climate: Thermometer,
-  // YuEdu fork: 数学交互
-  desmos: Sigma,
-  geometry: Shapes,
-  geogebra: PencilRuler,
-  three_scene: Box,
-  formula: Pi,
-  venn: CircleDot,
-  complex: Radar,
-  chart: BarChart3,
 };
 
 const TYPE_LABEL_EN: Record<BlockType, string> = {
@@ -79,20 +53,6 @@ const TYPE_LABEL_EN: Record<BlockType, string> = {
   flash_cards: "Flash cards",
   deep_dive: "Deep dive",
   concept_graph: "Concept graph",
-  // YuEdu fork: 学科专属
-  poetry: "Poetry",
-  grammar: "Grammar",
-  terrain: "Terrain",
-  climate: "Climate",
-  // YuEdu fork: 数学交互
-  desmos: "Desmos graph",
-  geometry: "Geometry board",
-  geogebra: "GeoGebra",
-  three_scene: "3D scene",
-  formula: "Formula",
-  venn: "Venn diagram",
-  complex: "Complex plane",
-  chart: "Data chart",
 };
 
 function shortLabel(block: Block, fallback: string): string {
@@ -226,6 +186,10 @@ export default function PageOutlineNav({
         <nav
           aria-label={headerText}
           aria-hidden={collapsed}
+          // Not just aria-hidden: a collapsed panel still holds one button per
+          // block, and without `inert` Tab lands inside something invisible.
+          // Mirrors the parked-drawer treatment in AppShell.
+          inert={collapsed ? true : undefined}
           className={[
             "flex w-56 flex-col text-[12.5px]",
             collapsed ? "pointer-events-none" : "pointer-events-auto",

@@ -44,7 +44,7 @@ COPY deeptutor/__version__.py /app/deeptutor/__version__.py
 # into the bundle: `apiUrl`/`wsUrl` in web/lib/api.ts are pass-throughs and
 # the actual backend host is read at request time by web/proxy.ts from
 # DEEPTUTOR_API_BASE_URL (exported by the entrypoint on every start).
-RUN printf 'NEXT_PUBLIC_APP_VERSION=\nNEXT_PUBLIC_AUTH_ENABLED=true\n' > .env.local
+RUN printf 'NEXT_PUBLIC_APP_VERSION=\n' > .env.local
 
 # Build Next.js for production with standalone output
 # This allows runtime environment variable injection
@@ -447,16 +447,24 @@ ENTRYPOINT ["/app/entrypoint.sh"]
 # ============================================
 FROM production AS development
 
-# Re-add full node_modules for development hot-reload
-# (Production uses standalone output which doesn't include full node_modules)
-COPY --from=frontend-builder /app/web/node_modules ./web/node_modules
-COPY --from=frontend-builder /app/web/package.json ./web/package.json
-COPY --from=frontend-builder /app/web/next.config.js ./web/next.config.js
+# `next dev` compiles from source, so the development image needs the whole
+# web tree. This used to cherry-pick node_modules, package.json and
+# next.config.js on top of the production stage — but that stage's ./web is
+# `.next/standalone/`, a compiled server bundle carrying no sources, no
+# tsconfig and no scripts/. So the supervisor program below launched
+# `node scripts/dev.mjs` against a path that never existed, the dev frontend
+# went FATAL, and the image looked broken (#906). Taking the builder's tree
+# wholesale also stops the list from drifting each time web/ grows a
+# top-level entry. `--chown` during the copy avoids re-layering node_modules.
+COPY --chown=deeptutor:deeptutor --from=frontend-builder /app/web ./web
 
 # `next dev` runs as the unprivileged deeptutor user (via `user=deeptutor` in
 # the supervisord config) and must create/write its build cache under
 # /app/web/.next, so give that user ownership of the web dir and the cache.
-RUN mkdir -p /app/web/.next \
+# The production build copied in above is not reusable by `next dev`, so it
+# starts from an empty cache rather than a half-valid one.
+RUN rm -rf /app/web/.next \
+    && mkdir -p /app/web/.next \
     && chown deeptutor:deeptutor /app/web /app/web/.next
 
 # Install development tools
@@ -472,3 +480,38 @@ RUN pip install --no-cache-dir \
     pre-commit \
     black \
     ruff
+
+# Development overrides only the program definitions (uvicorn --reload and
+# `next dev`); the shared daemon-level /etc/supervisor/supervisord.conf from
+# the production stage is reused as-is.
+RUN cat > /etc/supervisor/conf.d/programs.conf <<'EOF'
+[program:backend]
+command=/bin/bash -c "exec python -m uvicorn deeptutor.api.main:app --host 0.0.0.0 --port ${BACKEND_PORT:-8001} --reload --no-access-log --ws-max-size $(python -c 'from deeptutor.services.config import get_ws_max_size; print(get_ws_max_size())' 2>/dev/null || echo 16777216) --timeout-keep-alive $(python -c 'from deeptutor.services.config import HTTP_KEEP_ALIVE_TIMEOUT; print(HTTP_KEEP_ALIVE_TIMEOUT)' 2>/dev/null || echo 300)"
+directory=/app
+user=deeptutor
+autostart=true
+autorestart=true
+stdout_logfile=/dev/fd/1
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/fd/2
+stderr_logfile_maxbytes=0
+environment=PYTHONPATH="/app",PYTHONUNBUFFERED="1"
+
+[program:frontend]
+command=/bin/bash -c "cd /app/web && node scripts/dev.mjs -H 0.0.0.0 -p ${FRONTEND_PORT:-3782}"
+directory=/app/web
+user=deeptutor
+autostart=true
+autorestart=true
+startsecs=5
+stdout_logfile=/dev/fd/1
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/fd/2
+stderr_logfile_maxbytes=0
+environment=NODE_ENV="development"
+EOF
+
+RUN sed -i 's/\r$//' /etc/supervisor/conf.d/programs.conf
+
+# Development ports
+EXPOSE 8001 3782

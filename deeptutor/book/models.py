@@ -30,6 +30,10 @@ class BookStatus(str, Enum):
     DRAFT = "draft"  # ideation only, no spine yet
     SPINE_READY = "spine_ready"  # spine confirmed, compilation pending
     COMPILING = "compiling"
+    # Compilation stopped itself after repeated provider-level failures (quota
+    # exhausted, credentials revoked, provider down). Everything generated so
+    # far is intact; ``resume_book`` continues from here.
+    PAUSED = "paused"
     READY = "ready"
     ERROR = "error"
     ARCHIVED = "archived"
@@ -91,6 +95,35 @@ class BlockType(str, Enum):
     VENN = "venn"                # 维恩图（SVG）
     COMPLEX = "complex"          # 复数平面（SVG）
     CHART = "chart"              # ECharts 数据图
+
+
+class BookDepth(str, Enum):
+    """How much prose the reader wants per chapter.
+
+    Scales the ``target_words`` baked into the Section Architect's templates,
+    which were previously fixed — a reference book and a weekend primer got the
+    same 3,600 words per chapter.
+    """
+
+    BRIEF = "brief"
+    STANDARD = "standard"
+    DEEP = "deep"
+
+
+#: Multiplier applied to every template's ``target_words``.
+DEPTH_WORD_SCALE: dict[BookDepth, float] = {
+    BookDepth.BRIEF: 0.5,
+    BookDepth.STANDARD: 1.0,
+    BookDepth.DEEP: 1.6,
+}
+
+
+def depth_scale(depth: str | None) -> float:
+    """Word-count multiplier for *depth*, tolerant of unknown values."""
+    try:
+        return DEPTH_WORD_SCALE[BookDepth(str(depth or "standard"))]
+    except (ValueError, KeyError):
+        return 1.0
 
 
 class ContentType(str, Enum):
@@ -200,6 +233,7 @@ class SourceAnchor(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     kind: str = ""  # 'kb' | 'notebook' | 'chat' | 'web' | 'manual'
+    kb_name: str = ""  # populated for KB-backed anchors
     ref: str = ""  # KB doc id, notebook record id, message id…
     snippet: str = ""  # short preview (≤300 chars)
 
@@ -264,6 +298,57 @@ class ConceptGraph(BaseModel):
 
     def has_edge(self, src: str, dst: str) -> bool:
         return any(e.src == src and e.dst == dst for e in self.edges)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Learning captures (Book reader annotations)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class LearningCaptureStatus(str, Enum):
+    """Lifecycle state for one captured reading segment.
+
+    ``captured`` is the first persisted state after user action.
+    ``drafted`` is explicit editing or normalization.
+    ``pending_confirmation`` enters UI review.
+    ``approved`` is user-reviewed and ready for export.
+    ``delivered`` means export task is created.
+    ``imported`` means export task was imported/acknowledged in MN4.
+    ``rejected`` is a terminal, user-declined state.
+    """
+
+    CAPTURED = "captured"
+    DRAFTED = "drafted"
+    PENDING_CONFIRMATION = "pending_confirmation"
+    APPROVED = "approved"
+    DELIVERED = "delivered"
+    IMPORTED = "imported"
+    REJECTED = "rejected"
+
+
+class LearningCapture(BaseModel):
+    """One captured reading segment for manual review before MN4 writeback."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = Field(default_factory=lambda: _new_id("lc"))
+    book_id: str
+    page_id: str
+    block_id: str = ""
+    capture_type: str = "selection"
+    source_text: str = ""
+    context_before: str = ""
+    context_after: str = ""
+    source_locator: str = ""  # book/page/anchor for later traceability
+    book_title: str = ""
+    chapter_title: str = ""
+    user_note: str = ""
+    content_hash: str = ""
+    status: LearningCaptureStatus = LearningCaptureStatus.CAPTURED
+    version: int = 1
+    rejected_reason: str = ""
+    created_at: float = Field(default_factory=_now)
+    updated_at: float = Field(default_factory=_now)
 
 
 class Spine(BaseModel):
@@ -413,21 +498,11 @@ class QuizAttempt(BaseModel):
     page_id: str
     question_id: str = ""
     user_answer: str = ""
-    is_correct: bool = False
+    # ``None`` = revealed but ungraded. Written answers can only be graded by
+    # the reader, and folding "not graded" into "wrong" would both understate
+    # their score and mark the chapter weak on nothing but a reveal.
+    is_correct: bool | None = None
     timestamp: float = Field(default_factory=_now)
-
-
-class RecitationSummary(BaseModel):
-    """Small poetry-practice summary persisted in ``Block.metadata``."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    last_attempt_id: str = ""
-    attempt_count: int = Field(default=0, ge=0)
-    latest_accuracy: float | None = Field(default=None, ge=0.0, le=1.0)
-    best_accuracy: float | None = Field(default=None, ge=0.0, le=1.0)
-    data_state: Literal["", "scored", "stt_failed"] = ""
-    updated_at: float = 0.0
 
 
 class Progress(BaseModel):
@@ -462,6 +537,7 @@ class Book(BaseModel):
     proposal: BookProposal | None = None
     knowledge_bases: list[str] = Field(default_factory=list)
     language: str = "en"
+    depth: BookDepth = BookDepth.STANDARD
     page_count: int = 0
     chapter_count: int = 0
     created_at: float = Field(default_factory=_now)
@@ -469,12 +545,20 @@ class Book(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     # KB fingerprints captured at compile-time. Used to detect KB drift.
     kb_fingerprints: dict[str, str] = Field(default_factory=dict)
+    # Per-document content hashes captured with ``kb_fingerprints``. These let
+    # drift detection narrow stale pages to pages that cited the changed files.
+    kb_document_fingerprints: dict[str, dict[str, str]] = Field(default_factory=dict)
     # Pages whose KB content has changed since they were last compiled.
     stale_page_ids: list[str] = Field(default_factory=list)
+    # Epoch seconds when the current stale set was observed.
+    stale_detected_at: float = 0.0
 
 
 __all__ = [
     "BookStatus",
+    "BookDepth",
+    "DEPTH_WORD_SCALE",
+    "depth_scale",
     "PageStatus",
     "BlockStatus",
     "BlockType",
@@ -493,10 +577,23 @@ __all__ = [
     "SourceChunk",
     "ExplorationReport",
     "Block",
+    "LearningCaptureStatus",
+    "LearningCapture",
     "Page",
     "PageLink",
     "QuizAttempt",
-    "RecitationSummary",
     "Progress",
     "Book",
 ]
+
+class RecitationSummary(BaseModel):
+    """Small poetry-practice summary persisted in ``Block.metadata``."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    last_attempt_id: str = ""
+    attempt_count: int = Field(default=0, ge=0)
+    latest_accuracy: float | None = Field(default=None, ge=0.0, le=1.0)
+    best_accuracy: float | None = Field(default=None, ge=0.0, le=1.0)
+    data_state: Literal["", "scored", "stt_failed"] = ""
+    updated_at: float = 0.0

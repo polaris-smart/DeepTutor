@@ -78,7 +78,7 @@ class EvidenceStore:
 
     def __init__(self, db_path: Path | None = None) -> None:
         path_service = get_path_service()
-        self.db_path = db_path or (path_service.get_user_data_dir() / "learning_evidence.db")
+        self.db_path = db_path or (path_service.user_data_dir / "learning_evidence.db")
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._initialize()

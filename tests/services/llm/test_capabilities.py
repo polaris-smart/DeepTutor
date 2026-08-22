@@ -42,6 +42,11 @@ def test_effective_temperature_override() -> None:
     assert get_effective_temperature("openai", "gpt-4o", requested_temp=0.4) == 0.4
 
 
+def test_openai_codex_provider_is_vision_capable() -> None:
+    """The Codex Responses provider accepts image input for its model catalog."""
+    assert supports_vision("openai_codex", "gpt-5.6-sol") is True
+
+
 def test_moonshot_vision_models() -> None:
     """Per Kimi docs the five vision-capable IDs flip supports_vision to True;
     other Moonshot models stay at the binding default (False).
@@ -85,6 +90,12 @@ def test_custom_and_dashscope_openai_compat_support_native_tools_for_qwen() -> N
     assert has_thinking_tags("custom", "qwen3.6-plus") is True
 
 
+def test_codebuddy_capabilities_use_agent_sdk_mcp_tools() -> None:
+    assert supports_tools("codebuddy", "codebuddy/default") is True
+    assert supports_response_format("codebuddy", "codebuddy/default") is False
+    assert supports_vision("codebuddy", "codebuddy/default") is False
+
+
 def test_qwen_model_override_enables_vision() -> None:
     assert supports_vision("dashscope", "qwen-vl-plus") is True
     assert supports_vision("openai", "qwen2.5-vl-72b-instruct") is True
@@ -125,16 +136,6 @@ def test_kimi_k3_is_vision_capable() -> None:
     """Kimi K3 is natively multimodal, like the K2.5/K2.6 entries above it."""
     assert supports_vision("moonshot", "kimi-k3") is True
     assert supports_vision("custom", "kimi-k3") is True
-
-
-def test_doubao_seed_family_is_vision_capable() -> None:
-    """Volcano Ark doubao-seed-* accepts image_url content on the Agent Plan
-    endpoint (verified live). glm-5.2 on the same binding stays text-only."""
-    assert supports_vision("custom", "doubao-seed-2.0-lite") is True
-    assert supports_vision("custom", "doubao-seed-2.0-mini") is True
-    assert supports_vision("custom", "doubao-seed-2.1-turbo") is True
-    assert supports_vision("custom", "doubao-seed-evolving") is True
-    assert supports_vision("custom", "glm-5.2") is False
 
 
 def test_qwen38_max_enables_vision_without_legacy_vl_suffix() -> None:
