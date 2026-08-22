@@ -29,7 +29,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from deeptutor.api.utils.progress_broadcaster import ProgressBroadcaster
 from deeptutor.api.utils.task_id_manager import TaskIDManager
@@ -40,6 +40,7 @@ from deeptutor.knowledge.kb_types import is_connected_kb, supports_local_raw_fil
 from deeptutor.knowledge.manager import KnowledgeBaseManager
 from deeptutor.knowledge.naming import validate_knowledge_base_name
 from deeptutor.knowledge.progress_tracker import ProgressStage, ProgressTracker
+from deeptutor.logging import PROCESS_LOG_PRIVATE_ATTR
 from deeptutor.multi_user.context import get_current_user
 from deeptutor.multi_user.knowledge_access import (
     assert_writable,
@@ -57,6 +58,7 @@ from deeptutor.services.rag.factory import (
     DEFAULT_PROVIDER,
     GRAPHRAG_PROVIDER,
     LIGHTRAG_PROVIDER,
+    PAGEINDEX_OSS_PROVIDER,
     PAGEINDEX_PROVIDER,
     normalize_provider_name,
     provider_uses_embedding_versions,
@@ -66,6 +68,18 @@ from deeptutor.services.rag.linked_kb import (
     LINKABLE_PROVIDERS,
     assert_path_allowed,
     probe_linked_folder,
+)
+from deeptutor.services.rag.pipelines.ima.client import (
+    MAX_PAGE_LIMIT,
+    ImaAPIError,
+    ImaAuthError,
+    ImaClient,
+    ImaRateLimitError,
+)
+from deeptutor.services.rag.pipelines.ima.config import (
+    ImaConfig,
+    ImaCredentials,
+    get_account_credentials,
 )
 from deeptutor.utils.document_extractor import (
     MAX_EXTRACTED_CHARS_PER_DOC,
@@ -339,6 +353,7 @@ def _save_uploaded_files(
     allowed_extensions: set[str] | None = None,
     kb_name: str | None = None,
     rel_paths: list[str] | None = None,
+    dest_subdir: str = "",
 ) -> tuple[list[str], list[str]]:
     """
     Save uploaded files to the local raw/ directory.
@@ -375,7 +390,12 @@ def _save_uploaded_files(
                     if rel_paths and idx < len(rel_paths) and rel_paths[idx]
                     else ""
                 )
-                subdir = _sanitize_rel_subdir(rel.rsplit("/", 1)[0]) if "/" in rel else ""
+                own_subdir = _sanitize_rel_subdir(rel.rsplit("/", 1)[0]) if "/" in rel else ""
+                # A browser folder pick reports paths relative to the chosen
+                # directory, so its ancestors are simply not in the payload.
+                # dest_subdir is how the caller re-attaches the batch to the
+                # place it belongs inside the KB (#866).
+                subdir = "/".join(part for part in (dest_subdir, own_subdir) if part)
                 dest_dir = target_dir / subdir if subdir else target_dir
                 if subdir:
                     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -465,6 +485,7 @@ async def _save_uploaded_files_off_loop(
     allowed_extensions: set[str] | None = None,
     kb_name: str | None = None,
     rel_paths: list[str] | None = None,
+    dest_subdir: str = "",
 ) -> tuple[list[str], list[str]]:
     """:func:`_save_uploaded_files` on a worker thread.
 
@@ -484,6 +505,7 @@ async def _save_uploaded_files_off_loop(
         allowed_extensions=allowed_extensions,
         kb_name=kb_name,
         rel_paths=rel_paths,
+        dest_subdir=dest_subdir,
     )
 
 
@@ -583,9 +605,31 @@ def _task_log(task_id: str, message: str, level: str = "info") -> None:
 
     log_method = getattr(logger, level, None)
     if callable(log_method):
-        log_method(f"[{task_id}] {message}")
+        log_method(f"[{task_id}] {message}", extra={PROCESS_LOG_PRIVATE_ATTR: True})
     else:
-        logger.info(f"[{task_id}] {message}")
+        logger.info(f"[{task_id}] {message}", extra={PROCESS_LOG_PRIVATE_ATTR: True})
+
+
+def _server_task_trace(task_id: str, trace: str) -> None:
+    """Keep a traceback in server logs while excluding it from browser streams."""
+    logger.error(
+        "[%s] Stack trace:\n%s",
+        task_id,
+        trace,
+        extra={PROCESS_LOG_PRIVATE_ATTR: True},
+    )
+
+
+def _exception_failure_metadata(exc: Exception) -> dict:
+    """Extract stable, user-facing failure metadata from a typed exception."""
+    metadata = {}
+    error_code = getattr(exc, "code", None)
+    retryable = getattr(exc, "retryable", None)
+    if isinstance(error_code, str) and error_code:
+        metadata["error_code"] = error_code
+    if isinstance(retryable, bool):
+        metadata["retryable"] = retryable
+    return metadata
 
 
 def _validate_registered_provider(raw_provider: str | None) -> str:
@@ -618,6 +662,24 @@ def _assert_provider_ready(provider: str) -> None:
                 ),
             )
 
+    if provider == PAGEINDEX_OSS_PROVIDER:
+        from deeptutor.services.rag.preflight import engine_preflight
+
+        report = engine_preflight(provider)
+        failed_checks = [
+            check
+            for check in report.get("checks", [])
+            if not check.get("optional") and not check.get("ok")
+        ]
+        if failed_checks:
+            details = "; ".join(
+                str(check.get("detail") or check.get("label") or "Requirement not met")
+                for check in failed_checks
+            )
+            raise HTTPException(
+                status_code=409, detail=f"PageIndex OSS preflight failed: {details}"
+            )
+
     if provider == GRAPHRAG_PROVIDER:
         from deeptutor.services.rag.pipelines.graphrag.config import is_graphrag_available
 
@@ -629,6 +691,24 @@ def _assert_provider_ready(provider: str) -> None:
                     "`pip install 'deeptutor[graphrag]'` on the server before "
                     "creating a GraphRAG knowledge base."
                 ),
+            )
+
+        from deeptutor.services.rag.preflight import engine_preflight
+
+        report = engine_preflight(provider)
+        failed_checks = [
+            check
+            for check in report.get("checks", [])
+            if not check.get("optional") and not check.get("ok")
+        ]
+        if failed_checks:
+            failure_details = "; ".join(
+                str(check.get("detail") or check.get("label") or "Requirement not met")
+                for check in failed_checks
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=f"GraphRAG preflight failed: {failure_details}",
             )
 
     if provider == LIGHTRAG_PROVIDER:
@@ -647,19 +727,26 @@ def _assert_provider_ready(provider: str) -> None:
 
 def _enforce_provider_formats(provider: str, files: list[UploadFile]) -> None:
     """Reject files PageIndex's document endpoint does not accept, up front."""
-    if provider != PAGEINDEX_PROVIDER:
+    if provider not in {PAGEINDEX_PROVIDER, PAGEINDEX_OSS_PROVIDER}:
         return
-    from deeptutor.services.rag.pipelines.pageindex.pipeline import SUPPORTED_EXTENSIONS
+    from deeptutor.services.rag.pipelines.pageindex.pipeline import (
+        OSS_SUPPORTED_EXTENSIONS,
+        SUPPORTED_EXTENSIONS,
+    )
+
+    extensions = (
+        OSS_SUPPORTED_EXTENSIONS if provider == PAGEINDEX_OSS_PROVIDER else SUPPORTED_EXTENSIONS
+    )
 
     unsupported = [
         f.filename
         for f in files
         if f.filename
-        and not f.filename.lower().endswith(".zip")
-        and Path(f.filename).suffix.lower() not in SUPPORTED_EXTENSIONS
+        and not (provider == PAGEINDEX_PROVIDER and f.filename.lower().endswith(".zip"))
+        and Path(f.filename).suffix.lower() not in extensions
     ]
     if unsupported:
-        supported = ", ".join(sorted(SUPPORTED_EXTENSIONS))
+        supported = ", ".join(sorted(extensions))
         raise HTTPException(
             status_code=400,
             detail=(
@@ -683,266 +770,6 @@ def _resolve_registered_kb_name(manager: KnowledgeBaseManager, kb_name: str | No
         raise HTTPException(status_code=404, detail="No default knowledge base is configured")
 
     raise HTTPException(status_code=404, detail=f"Knowledge base '{requested}' not found")
-
-
-def _readable_kb(kb_name: str) -> tuple[KnowledgeBaseManager, str]:
-    """Resolve an access-checked KB for read-only index inspection."""
-    manager = _overridden_kb_manager()
-    if manager is not None:
-        return manager, _resolve_registered_kb_name(manager, kb_name)
-    resource = resolve_kb(kb_name)
-    return manager_for_resource(resource), resource.name
-
-
-def _load_kb_docstore(kb_name: str):
-    """Load the active LlamaIndex docstore, or return ``None`` for an empty KB."""
-    manager, resolved_name = _readable_kb(kb_name)
-    try:
-        storage_dir = manager.get_rag_storage_path(resolved_name)
-    except ValueError:
-        return resolved_name, None
-
-    docstore_path = storage_dir / "docstore.json"
-    if not docstore_path.is_file():
-        return resolved_name, None
-
-    from llama_index.core.storage.docstore import SimpleDocumentStore
-
-    return resolved_name, SimpleDocumentStore.from_persist_dir(str(storage_dir))
-
-
-def _node_text(node) -> str:
-    """Read display text across the LlamaIndex node API variants we support."""
-    get_content = getattr(node, "get_content", None)
-    if callable(get_content):
-        return str(get_content() or "")
-    return str(getattr(node, "text", "") or "")
-
-
-def _video_index_for_kb(kb_name: str) -> tuple[str, Path]:
-    """Resolve a registered KB, or a local video-only index awaiting registration."""
-    from deeptutor.knowledge.video_library import video_index_path
-
-    try:
-        manager, resolved_name = _readable_kb(kb_name)
-    except HTTPException as exc:
-        # A scan is intentionally zero-manual: before it becomes a full RAG KB,
-        # its metadata-only directory is still readable from the current user's
-        # own workspace. Authorization failures must never use this fallback.
-        if exc.status_code != 404:
-            raise
-        candidate = video_index_path(kb_name, kb_base_dir=current_kb_base_dir())
-        if not candidate.is_file():
-            raise
-        return kb_name, candidate
-    return resolved_name, video_index_path(resolved_name, kb_base_dir=Path(manager.base_dir))
-
-
-@router.get("/{kb_name}/videos")
-async def get_videos(
-    kb_name: str,
-    query: str = "",
-    struct_path: str = "",
-):
-    """Return locally indexed videos matched by title/KP hints or textbook structure."""
-    try:
-        from deeptutor.knowledge.video_library import (
-            load_video_index,
-            search_videos,
-        )
-
-        _, index_path = _video_index_for_kb(kb_name)
-        videos = await asyncio.to_thread(load_video_index, index_path)
-        return search_videos(videos, query=query, struct_path=struct_path, limit=20)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error("Failed to query videos for KB '%s': %s", kb_name, exc)
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@router.get("/{kb_name}/textbook-tree")
-async def get_textbook_tree(kb_name: str):
-    """Aggregate document structure trees from the active LlamaIndex docstore."""
-    try:
-        resolved_name, docstore = await asyncio.to_thread(_load_kb_docstore, kb_name)
-        if docstore is None:
-            return {"kb_name": resolved_name, "textbooks": []}
-
-        textbooks = []
-        seen_doc_ids: set[str] = set()
-        nodes = await asyncio.to_thread(lambda: list(docstore.docs.values()))
-        for node in nodes:
-            metadata = getattr(node, "metadata", {}) or {}
-            raw_tree = metadata.get("doc_tree")
-            if not raw_tree:
-                continue
-            if isinstance(raw_tree, str):
-                try:
-                    tree = json.loads(raw_tree)
-                except (TypeError, ValueError):
-                    logger.warning("Skipping malformed doc_tree metadata in KB '%s'", resolved_name)
-                    continue
-            elif isinstance(raw_tree, dict):
-                tree = raw_tree
-            else:
-                continue
-            if not isinstance(tree, dict):
-                continue
-
-            doc_id = str(
-                getattr(node, "ref_doc_id", None)
-                or metadata.get("doc_id")
-                or getattr(node, "node_id", "")
-            )
-            if doc_id in seen_doc_ids:
-                continue
-            seen_doc_ids.add(doc_id)
-            textbooks.append(
-                {
-                    "doc_id": doc_id,
-                    "file_name": str(metadata.get("file_name") or ""),
-                    "subject": str(metadata.get("doc_subject") or ""),
-                    "doc_type": str(metadata.get("doc_type") or ""),
-                    "grade": str(metadata.get("doc_grade") or ""),
-                    "tree": tree,
-                }
-            )
-        return {"kb_name": resolved_name, "textbooks": textbooks}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error("Failed to read textbook tree for KB '%s': %s", kb_name, exc)
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@router.get("/{kb_name}/docs/by-struct")
-async def get_docs_by_struct(
-    kb_name: str,
-    path: str = Query(..., min_length=1),
-    limit: int = Query(20, ge=1, le=100),
-):
-    """Return nodes whose ``struct_path`` starts with the requested path."""
-    try:
-        resolved_name, docstore = await asyncio.to_thread(_load_kb_docstore, kb_name)
-        nodes = []
-        if docstore is not None:
-            docstore_nodes = await asyncio.to_thread(lambda: list(docstore.docs.values()))
-            for node in docstore_nodes:
-                metadata = getattr(node, "metadata", {}) or {}
-                struct_path = str(metadata.get("struct_path") or "")
-                if not struct_path.startswith(path):
-                    continue
-                nodes.append(
-                    {
-                        "node_id": str(getattr(node, "node_id", "")),
-                        "struct_path": struct_path,
-                        "file_name": str(metadata.get("file_name") or ""),
-                        "preview": _node_text(node)[:200],
-                    }
-                )
-                if len(nodes) >= limit:
-                    break
-        return {"kb_name": resolved_name, "path": path, "nodes": nodes}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error("Failed to query structure path in KB '%s': %s", kb_name, exc)
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-def _struct_path_matches(node_path: str, query: str) -> bool:
-    """True when ``node_path`` sits at or under the ``query`` struct path.
-
-    Segment-aware prefix match: ``第1章`` matches ``第1章 集合/1.1`` and
-    ``必修一/第1章 集合``, but never ``第11章`` — continuation is only allowed
-    at a path separator ``/`` or a title-extension space, not inside a number.
-    """
-    if node_path == query:
-        return True
-    if node_path.startswith(query):
-        rest = node_path[len(query):]
-        return rest.startswith("/") or rest.startswith(" ")
-    return False
-
-
-def _node_has_doc_intel_question_mark(metadata: dict) -> bool:
-    """True when a node's metadata carries doc_intel qa_split question markers.
-
-    The qa_split pass (``deeptutor/knowledge/doc_intel/qa_split.py``) tags
-    question blocks with ``is_question=true`` plus ``q_id`` / ``q_type`` /
-    ``has_answer``, and answer/analysis blocks with the same ``q_id``. Accept
-    ``is_question``, or a bare ``q_id`` only when the node is not tagged as an
-    answer/analysis block, so a partially-annotated store still surfaces its
-    questions without leaking answer blocks into the list.
-    """
-    if metadata.get("is_question"):
-        return True
-    if metadata.get("is_answer") or metadata.get("is_analysis"):
-        return False
-    return bool(metadata.get("q_id"))
-
-
-@router.get("/{kb_name}/questions/by-struct")
-async def get_questions_by_struct(
-    kb_name: str,
-    struct_path: str = Query(..., min_length=1),
-    limit: int = Query(200, ge=1, le=1000),
-):
-    """Return doc_intel question nodes under a textbook structure path.
-
-    Question blocks carry ``is_question=true`` (plus ``q_id`` / ``q_type`` /
-    ``has_answer``) from the qa_split pass. A KB whose nodes carry no doc_intel
-    markers returns an empty list with a hint instead of an error (fail-open).
-    """
-    try:
-        resolved_name, docstore = await asyncio.to_thread(_load_kb_docstore, kb_name)
-        questions: list[dict] = []
-        has_doc_intel = False
-        if docstore is not None:
-            nodes = await asyncio.to_thread(lambda: list(docstore.docs.values()))
-            for node in nodes:
-                metadata = getattr(node, "metadata", {}) or {}
-                if not _node_has_doc_intel_question_mark(metadata):
-                    continue
-                has_doc_intel = True
-                node_struct_path = str(metadata.get("struct_path") or "")
-                if not _struct_path_matches(node_struct_path, struct_path):
-                    continue
-                questions.append(
-                    {
-                        "node_id": str(getattr(node, "node_id", "")),
-                        "q_id": str(metadata.get("q_id") or ""),
-                        "text": _node_text(node)[:500],
-                        "question_type": str(metadata.get("q_type") or ""),
-                        "difficulty": str(metadata.get("difficulty") or ""),
-                        "struct_path": node_struct_path,
-                        "has_answer": bool(metadata.get("has_answer")),
-                        "file_name": str(metadata.get("file_name") or ""),
-                    }
-                )
-                if len(questions) >= limit:
-                    break
-        hint = ""
-        if docstore is not None and not has_doc_intel:
-            hint = (
-                "该知识库没有 doc_intel 题答分离元数据（is_question / q_id），"
-                "无法按章节选题。请用带题答分离标注的文档重建索引后再组卷。"
-            )
-        elif docstore is None:
-            hint = "该知识库还没有索引（docstore 为空），请先上传并处理文档。"
-        return {
-            "kb_name": resolved_name,
-            "struct_path": struct_path,
-            "questions": questions,
-            "has_doc_intel": has_doc_intel,
-            "hint": hint,
-        }
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error("Failed to query questions by struct in KB '%s': %s", kb_name, exc)
-        raise HTTPException(status_code=500, detail=str(exc))
 
 
 def _load_kb_entry_or_404(manager: KnowledgeBaseManager, kb_name: str) -> dict:
@@ -1036,7 +863,7 @@ async def run_initialization_task(initializer: KnowledgeBaseInitializer, task_id
 
             initializer.progress_tracker.update(
                 ProgressStage.COMPLETED,
-                "Knowledge base initialization complete!",
+                message_key="Knowledge base initialization complete!",
                 current=1,
                 total=1,
                 indexed_count=indexed_count,
@@ -1074,9 +901,10 @@ async def run_initialization_task(initializer: KnowledgeBaseInitializer, task_id
 
             error_msg = str(e)
             trace = _tb.format_exc()
+            failure_metadata = _exception_failure_metadata(e)
 
             _task_log(task_id, f"Initialization failed: {error_msg}", level="error")
-            _task_log(task_id, f"Stack trace:\n{trace}", level="error")
+            _server_task_trace(task_id, trace)
 
             task_manager.update_task_status(task_id, "error", error=error_msg)
 
@@ -1089,6 +917,7 @@ async def run_initialization_task(initializer: KnowledgeBaseInitializer, task_id
                     "message": f"Initialization failed: {error_msg}",
                     "percent": 0,
                     "error": error_msg,
+                    **failure_metadata,
                     "task_id": task_id,
                     "timestamp": datetime.now().isoformat(),
                 },
@@ -1096,9 +925,13 @@ async def run_initialization_task(initializer: KnowledgeBaseInitializer, task_id
 
             if initializer.progress_tracker:
                 initializer.progress_tracker.update(
-                    ProgressStage.ERROR, f"Initialization failed: {error_msg}", error=error_msg
+                    ProgressStage.ERROR,
+                    message_key="Initialization failed: {{error}}",
+                    message_params={"error": error_msg},
+                    error=error_msg,
+                    **failure_metadata,
                 )
-            task_stream_manager.emit_failed(task_id, error_msg, details=trace)
+            task_stream_manager.emit_failed(task_id, error_msg, **failure_metadata)
 
 
 async def run_upload_processing_task(
@@ -1108,6 +941,7 @@ async def run_upload_processing_task(
     task_id: str,
     rag_provider: str = None,
     folder_id: str = None,
+    folder_root: str = None,
 ):
     """Background task for processing uploaded files.
 
@@ -1117,6 +951,9 @@ async def run_upload_processing_task(
         uploaded_file_paths: List of file paths to process
         rag_provider: RAG provider already matched against the KB binding
         folder_id: Optional folder ID for sync state update
+        folder_root: Linked folder's own root path, when these files came
+            from a folder sync. Preserves each file's path relative to it
+            instead of flattening to the bare filename.
     """
     task_manager = TaskIDManager.get_instance()
     task_stream_manager = get_task_stream_manager()
@@ -1130,7 +967,8 @@ async def run_upload_processing_task(
             _task_log(task_id, f"Processing {len(uploaded_file_paths)} file(s) for KB '{kb_name}'")
             progress_tracker.update(
                 ProgressStage.PROCESSING_DOCUMENTS,
-                f"Processing {len(uploaded_file_paths)} files...",
+                message_key="Validating {{count}} file(s)...",
+                message_params={"count": len(uploaded_file_paths)},
                 current=0,
                 total=len(uploaded_file_paths),
             )
@@ -1148,15 +986,25 @@ async def run_upload_processing_task(
             # *sync* callables to its threadpool — so doing this inline stalled
             # every other request for the length of the batch (#777).
             staged_files = await asyncio.to_thread(
-                adder.add_documents, uploaded_file_paths, allow_duplicates=False
+                adder.add_documents,
+                uploaded_file_paths,
+                allow_duplicates=False,
+                source_root=folder_root,
             )
             _task_log(task_id, f"Staged {len(staged_files)} new file(s)")
+            progress_tracker.update(
+                ProgressStage.PROCESSING_DOCUMENTS,
+                message_key="Staged {{count}} new file(s)",
+                message_params={"count": len(staged_files)},
+                current=0,
+                total=len(staged_files),
+            )
 
             if not staged_files:
                 _task_log(task_id, "No new files to process (all duplicates or invalid)")
                 progress_tracker.update(
                     ProgressStage.COMPLETED,
-                    "No new files to process (all duplicates or invalid)",
+                    message_key="No new files to process (all duplicates or invalid)",
                     current=0,
                     total=0,
                 )
@@ -1185,7 +1033,8 @@ async def run_upload_processing_task(
                     )
                 progress_tracker.update(
                     ProgressStage.ERROR,
-                    f"Processing failed: {error_msg}",
+                    message_key="Processing failed: {{error}}",
+                    message_params={"error": error_msg},
                     current=index_result.processed_count,
                     total=len(staged_files),
                     error=error_msg,
@@ -1203,6 +1052,12 @@ async def run_upload_processing_task(
                 )
                 return
 
+            progress_tracker.update(
+                ProgressStage.PROCESSING_DOCUMENTS,
+                message_key="Saving metadata...",
+                current=index_result.processed_count,
+                total=len(staged_files),
+            )
             adder.update_metadata(index_result.processed_count)
 
             if folder_id and processed_files:
@@ -1220,7 +1075,8 @@ async def run_upload_processing_task(
             num_processed = index_result.processed_count
             progress_tracker.update(
                 ProgressStage.COMPLETED,
-                f"Successfully processed {num_processed} files!",
+                message_key="Successfully processed {{count}} files!",
+                message_params={"count": num_processed},
                 current=num_processed,
                 total=num_processed,
                 indexed_count=num_processed,
@@ -1240,15 +1096,20 @@ async def run_upload_processing_task(
 
             error_msg = f"Upload processing failed (KB '{kb_name}'): {e}"
             trace = _tb.format_exc()
+            failure_metadata = _exception_failure_metadata(e)
             _task_log(task_id, error_msg, level="error")
-            _task_log(task_id, f"Stack trace:\n{trace}", level="error")
+            _server_task_trace(task_id, trace)
 
             task_manager.update_task_status(task_id, "error", error=error_msg)
 
             progress_tracker.update(
-                ProgressStage.ERROR, f"Processing failed: {error_msg}", error=error_msg
+                ProgressStage.ERROR,
+                message_key="Processing failed: {{error}}",
+                message_params={"error": error_msg},
+                error=error_msg,
+                **failure_metadata,
             )
-            task_stream_manager.emit_failed(task_id, error_msg, details=trace)
+            task_stream_manager.emit_failed(task_id, error_msg, **failure_metadata)
 
 
 @router.get("/health")
@@ -1330,7 +1191,6 @@ class PageIndexConfigUpdate(BaseModel):
     # Tri-state api_key: omit/None keeps the stored key, "" clears it, any other
     # value replaces it — so the masked UI never round-trips the real secret.
     api_key: str | None = None
-    api_base_url: str | None = None
 
 
 def _pageindex_config_payload() -> dict:
@@ -1339,7 +1199,6 @@ def _pageindex_config_payload() -> dict:
 
     settings = get_runtime_settings_service().load_pageindex()
     return {
-        "api_base_url": settings.get("api_base_url") or "",
         "api_key_set": bool(settings.get("api_key")),
         "configured": bool(settings.get("api_key")),
     }
@@ -1357,10 +1216,9 @@ async def get_pageindex_pipeline_config():
 
 @router.put("/rag-pipelines/pageindex/config")
 async def update_pageindex_pipeline_config(payload: PageIndexConfigUpdate):
-    """Persist the PageIndex API key / base URL for this user's account."""
+    """Persist the deployment-level PageIndex Cloud credential."""
     try:
         from deeptutor.services.config import get_runtime_settings_service
-        from deeptutor.services.rag.pipelines.pageindex.config import DEFAULT_API_BASE_URL
 
         service = get_runtime_settings_service()
         current = service.load_pageindex(include_process_overrides=False)
@@ -1369,24 +1227,67 @@ async def update_pageindex_pipeline_config(payload: PageIndexConfigUpdate):
         if payload.api_key is not None:
             api_key = payload.api_key.strip()
 
-        api_base_url = current.get("api_base_url") or DEFAULT_API_BASE_URL
-        if payload.api_base_url is not None and payload.api_base_url.strip():
-            api_base_url = payload.api_base_url.strip()
-
-        service.save_pageindex({"api_key": api_key, "api_base_url": api_base_url})
-
-        # The built-in pageindex MCP server derives its URL/Bearer header from
-        # these settings — resync connections so key changes apply immediately.
-        try:
-            from deeptutor.services.mcp import get_mcp_manager
-
-            await get_mcp_manager().reload()
-        except Exception:
-            logger.warning("MCP reload after PageIndex config change failed", exc_info=True)
+        service.save_pageindex({"api_key": api_key})
 
         return _pageindex_config_payload()
     except Exception as e:
         logger.error(f"Error updating PageIndex config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ImaConfigUpdate(BaseModel):
+    # Same tri-state as PageIndex for the secret half of the pair: omit/None
+    # keeps the stored key, "" clears it, any other value replaces it. The
+    # Client ID is not a secret and round-trips in the clear.
+    client_id: str | None = None
+    api_key: str | None = None
+
+
+def _ima_config_payload() -> dict:
+    """Account-level IMA credential state for the UI, with the key redacted."""
+    from deeptutor.services.config import get_runtime_settings_service
+
+    settings = get_runtime_settings_service().load_ima()
+    client_id = str(settings.get("client_id") or "")
+    api_key_set = bool(settings.get("api_key"))
+    return {
+        "client_id": client_id,
+        "api_key_set": api_key_set,
+        "configured": bool(client_id) and api_key_set,
+    }
+
+
+@router.get("/rag-pipelines/ima/config")
+async def get_ima_pipeline_config():
+    """Read the account-level IMA credentials (key redacted to a boolean)."""
+    try:
+        return _ima_config_payload()
+    except Exception as e:
+        logger.error(f"Error reading IMA config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/rag-pipelines/ima/config")
+async def update_ima_pipeline_config(payload: ImaConfigUpdate):
+    """Persist the account-level IMA Client ID / API key."""
+    try:
+        from deeptutor.services.config import get_runtime_settings_service
+
+        service = get_runtime_settings_service()
+        current = service.load_ima(include_process_overrides=False)
+
+        client_id = current.get("client_id", "")
+        if payload.client_id is not None:
+            client_id = payload.client_id.strip()
+
+        api_key = current.get("api_key", "")
+        if payload.api_key is not None:
+            api_key = payload.api_key.strip()
+
+        service.save_ima({"client_id": client_id, "api_key": api_key})
+        return _ima_config_payload()
+    except Exception as e:
+        logger.error(f"Error updating IMA config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1399,6 +1300,8 @@ class LlamaIndexConfigUpdate(BaseModel):
     bm25_top_k_multiplier: int | None = None
     chunk_size: int | None = None
     chunk_overlap: int | None = None
+    image_description_concurrency: int | None = None
+    image_description_timeout_seconds: int | None = None
 
 
 @router.get("/rag-pipelines/llamaindex/config")
@@ -1417,8 +1320,8 @@ async def get_llamaindex_pipeline_config():
 async def update_llamaindex_pipeline_config(payload: LlamaIndexConfigUpdate):
     """Persist the LlamaIndex engine knobs.
 
-    Retrieval knobs take effect on the next query; chunk geometry only changes
-    how documents indexed *after* the save are split.
+    Retrieval knobs take effect on the next query; indexing knobs only affect
+    documents processed after the save.
     """
     try:
         from deeptutor.services.config import get_runtime_settings_service
@@ -1469,15 +1372,18 @@ async def update_graphrag_pipeline_config(payload: GraphRagConfigUpdate):
 
 
 class LightRagConfigUpdate(BaseModel):
-    """Partial update for LightRAG query knobs (omitted fields kept)."""
+    """Partial update for LightRAG query + indexing knobs (omitted fields kept)."""
 
     top_k: int | None = None
     response_type: str | None = None
+    max_concurrent_files: int | None = None
+    llm_model_max_async: int | None = None
+    entity_extract_max_gleaning: int | None = None
 
 
 @router.get("/rag-pipelines/lightrag/config")
 async def get_lightrag_pipeline_config():
-    """Read LightRAG's query knobs (top_k, response style)."""
+    """Read LightRAG's query knobs plus its indexing concurrency/extraction knobs."""
     try:
         from deeptutor.services.config import get_runtime_settings_service
 
@@ -1489,7 +1395,12 @@ async def get_lightrag_pipeline_config():
 
 @router.put("/rag-pipelines/lightrag/config")
 async def update_lightrag_pipeline_config(payload: LightRagConfigUpdate):
-    """Persist LightRAG's query knobs. Takes effect on the next query."""
+    """Persist LightRAG's knobs.
+
+    Query knobs (``top_k``, ``response_type``) take effect on the next query;
+    the indexing knobs shape how a KB is built, so they apply to the next
+    build or rebuild.
+    """
     try:
         from deeptutor.services.config import get_runtime_settings_service
 
@@ -1576,6 +1487,37 @@ async def get_rag_model_options(kinds: str = "llm,embedding"):
     except Exception as e:
         logger.error(f"Error reading model options: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class GraphRagModelCompatibilityRequest(BaseModel):
+    """Configured chat-model candidate to test without activating it."""
+
+    profile_id: str
+    model_id: str
+
+
+async def _probe_graphrag_model_compatibility(profile_id: str, model_id: str) -> dict:
+    """Resolve and probe a configured GraphRAG chat-model candidate."""
+    from deeptutor.services.rag.pipelines.graphrag.compatibility import (
+        probe_configured_completion_model,
+    )
+
+    return await probe_configured_completion_model(profile_id, model_id)
+
+
+@router.post("/rag-pipelines/graphrag/model-compatibility")
+async def test_graphrag_model_compatibility(payload: GraphRagModelCompatibilityRequest):
+    """Test GraphRAG structured output without changing the active chat model."""
+    try:
+        return await _probe_graphrag_model_compatibility(payload.profile_id, payload.model_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("Unexpected error testing GraphRAG model compatibility")
+        raise HTTPException(
+            status_code=500,
+            detail="GraphRAG compatibility could not be tested because of an internal error.",
+        ) from e
 
 
 class ActiveModelUpdate(BaseModel):
@@ -1794,6 +1736,41 @@ async def connect_obsidian_vault(payload: ConnectObsidianRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class ConnectMarginNote4Request(BaseModel):
+    name: str
+    db_path: str = ""
+    description: str = ""
+
+
+@router.post("/connect-marginnote4")
+async def connect_marginnote4(payload: ConnectMarginNote4Request):
+    """Register a connected MarginNote 4 library as a knowledge base.
+
+    Creates a ``type: marginnote4`` pointer so the MarginNote capability can
+    bind to it on turns where the user selects this KB. When ``db_path`` is
+    omitted the capability derives a default SQLite path from the KB name.
+    """
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required.")
+    try:
+        manager = get_kb_manager()
+        entry = manager.register_marginnote4_kb(
+            name,
+            db_path=(payload.db_path or "").strip(),
+            description=(payload.description or "").strip(),
+        )
+        result = {"status": "connected", "name": name}
+        if entry.get("db_path"):
+            result["db_path"] = entry["db_path"]
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error connecting MarginNote 4 library: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 class ProbeFolderRequest(BaseModel):
     folder_path: str
     rag_provider: str = DEFAULT_PROVIDER
@@ -1953,16 +1930,82 @@ async def connect_lightrag_server_route(payload: ConnectLightRagServerRequest):
     }
 
 
+class ListImaRequest(BaseModel):
+    # Empty means "use the account-level credentials from the engine settings",
+    # so the connect flow never has to re-send what is already stored.
+    client_id: str = ""
+    api_key: str = ""
+    cursor: str = ""
+    # IMA documents this call's page size as 1..50; the picker asks for one
+    # screenful and pages for the rest.
+    limit: int = Field(default=20, ge=1, le=MAX_PAGE_LIMIT)
+
+
+class ImaKnowledgeBaseSummary(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+
+
+class ListImaResponse(BaseModel):
+    knowledge_bases: list[ImaKnowledgeBaseSummary]
+    next_cursor: str
+    is_end: bool
+
+
+def _resolve_ima_credentials(client_id: str, api_key: str) -> ImaCredentials:
+    """A request's credentials, falling back to the account-level pair.
+
+    A request that supplies only one half is not silently completed from the
+    account pair: mixing two accounts' halves would fail at IMA with a confusing
+    verdict.
+    """
+    supplied = ImaCredentials(client_id=(client_id or "").strip(), api_key=(api_key or "").strip())
+    if supplied.client_id or supplied.api_key:
+        return supplied
+    return get_account_credentials()
+
+
+@router.post("/list-ima", response_model=ListImaResponse)
+async def list_ima_route(payload: ListImaRequest):
+    """List IMA knowledge bases without storing or echoing credentials."""
+    credentials = _resolve_ima_credentials(payload.client_id, payload.api_key)
+    if not credentials.complete:
+        raise HTTPException(status_code=400, detail="Client ID and API key are required.")
+
+    client = ImaClient(
+        ImaConfig(
+            client_id=credentials.client_id,
+            api_key=credentials.api_key,
+            knowledge_base_id="",
+        )
+    )
+    try:
+        return await client.search_knowledge_bases(
+            query="",
+            cursor=payload.cursor.strip(),
+            limit=payload.limit,
+        )
+    except ImaAuthError:
+        raise HTTPException(status_code=401, detail="IMA rejected the supplied credentials.")
+    except ImaRateLimitError:
+        raise HTTPException(status_code=429, detail="IMA rate limit reached. Try again shortly.")
+    except ImaAPIError:
+        raise HTTPException(status_code=502, detail="IMA returned an invalid response.")
+    except Exception:
+        raise HTTPException(status_code=502, detail="Could not reach Tencent IMA.")
+
+
 class ProbeImaRequest(BaseModel):
-    client_id: str
-    api_key: str
+    client_id: str = ""
+    api_key: str = ""
     knowledge_base_id: str
 
 
 class ConnectImaRequest(BaseModel):
     name: str
-    client_id: str
-    api_key: str
+    client_id: str = ""
+    api_key: str = ""
     knowledge_base_id: str
 
 
@@ -1976,9 +2019,10 @@ async def probe_ima_route(payload: ProbeImaRequest):
     """
     from deeptutor.services.rag.pipelines.ima.probe import probe_knowledge_base
 
+    credentials = _resolve_ima_credentials(payload.client_id, payload.api_key)
     result = await probe_knowledge_base(
-        payload.client_id,
-        payload.api_key,
+        credentials.client_id,
+        credentials.api_key,
         payload.knowledge_base_id,
     )
     return result.to_dict()
@@ -1991,6 +2035,9 @@ async def connect_ima_route(payload: ConnectImaRequest):
     Re-probes server-side (never trusts the client's verdict), then registers a
     pointer (``type: ima``). Retrieval is offloaded to IMA's ``search_knowledge``
     OpenAPI — no copy, no local index.
+
+    Credentials the request omits come from the account-level settings and are
+    *not* copied onto the KB, so rotating them there keeps this KB working.
     """
     from deeptutor.services.rag.pipelines.ima.probe import probe_knowledge_base
 
@@ -1998,9 +2045,14 @@ async def connect_ima_route(payload: ConnectImaRequest):
     if not name:
         raise HTTPException(status_code=400, detail="Knowledge base name is required.")
 
+    overrides = ImaCredentials(
+        client_id=payload.client_id.strip(),
+        api_key=payload.api_key.strip(),
+    )
+    credentials = _resolve_ima_credentials(payload.client_id, payload.api_key)
     result = await probe_knowledge_base(
-        payload.client_id,
-        payload.api_key,
+        credentials.client_id,
+        credentials.api_key,
         payload.knowledge_base_id,
     )
     if not result.ok:
@@ -2013,8 +2065,8 @@ async def connect_ima_route(payload: ConnectImaRequest):
         manager = get_kb_manager()
         entry = manager.register_ima_kb(
             name,
-            payload.client_id,
-            payload.api_key,
+            overrides.client_id,
+            overrides.api_key,
             payload.knowledge_base_id,
             description=result.description or "",
         )
@@ -2022,9 +2074,11 @@ async def connect_ima_route(payload: ConnectImaRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error connecting IMA knowledge base: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        # Never echo or log an upstream message from this credential-bearing
+        # flow. The exception class is enough for server-side diagnosis.
+        logger.error("Error connecting IMA knowledge base (%s)", type(exc).__name__)
+        raise HTTPException(status_code=500, detail="Could not connect the IMA knowledge base.")
 
     return {
         "status": "connected",
@@ -2434,10 +2488,19 @@ async def delete_kb_file(kb_name: str, filename: str):
     whether a re-index is needed to purge the file from retrieval.
     """
     manager, kb_name, _ = _writable_kb(kb_name)
-    _assert_kb_writable_or_409(kb_name, _load_kb_entry_or_404(manager, kb_name))
+    kb_entry = _load_kb_entry_or_404(manager, kb_name)
+    _assert_kb_writable_or_409(kb_name, kb_entry)
     target = _resolve_kb_raw_file_or_404(kb_name, filename)
 
     kb_dir = manager.get_knowledge_base_path(kb_name)
+    provider = _validate_registered_provider(kb_entry.get("rag_provider") or DEFAULT_PROVIDER)
+    if provider in {PAGEINDEX_PROVIDER, PAGEINDEX_OSS_PROVIDER}:
+        from deeptutor.services.rag.factory import get_pipeline
+
+        await get_pipeline(provider, kb_base_dir=str(manager.base_dir)).remove_document(
+            kb_name,
+            target.name,
+        )
     removal = remove_raw_document(Path(kb_dir), target)
     return {
         "status": "ok",
@@ -2481,8 +2544,16 @@ async def upload_files(
     files: list[UploadFile] = File(...),
     rag_provider: str = Form(None),
     rel_paths: list[str] = Form(None),
+    dest_subdir: str = Form(None),
 ):
-    """Upload files to a knowledge base and process them in background."""
+    """Upload files to a knowledge base and process them in background.
+
+    ``dest_subdir`` places the whole batch under that folder inside the KB.
+    A browser folder pick reports each file's path relative to the chosen
+    directory, so the directory's own ancestors never reach the server; this
+    is how a caller adding one subtree at a time re-attaches it where it
+    belongs instead of piling every batch at the root (#866).
+    """
     try:
         manager, kb_name, kb_base_dir = _writable_kb(kb_name)
         requested_provider = None
@@ -2514,7 +2585,11 @@ async def upload_files(
         upload_extensions = allowed_extensions | {".zip"}
         _validate_upload_batch(files, allowed_extensions=upload_extensions, rel_paths=rel_paths)
         uploaded_files, uploaded_file_paths = await _save_uploaded_files_off_loop(
-            files, raw_dir, allowed_extensions=upload_extensions, rel_paths=rel_paths
+            files,
+            raw_dir,
+            allowed_extensions=upload_extensions,
+            rel_paths=rel_paths,
+            dest_subdir=_sanitize_rel_subdir(dest_subdir),
         )
         task_id = _build_unique_task_id("kb_upload", kb_name)
         get_task_stream_manager().ensure_task(task_id)
@@ -2558,6 +2633,7 @@ async def create_knowledge_base(
     name: str = Form(...),
     files: list[UploadFile] = File(...),
     rag_provider: str = Form(DEFAULT_PROVIDER),
+    pageindex_mode: str = Form(""),
     rel_paths: list[str] = Form(None),
 ):
     """Create a new knowledge base and initialize it with files."""
@@ -2573,6 +2649,16 @@ async def create_knowledge_base(
             raise HTTPException(status_code=400, detail=f"Knowledge base '{name}' already exists")
 
         rag_provider = _validate_registered_provider(rag_provider)
+        pageindex_mode = str(pageindex_mode or "").strip().lower()
+        if rag_provider == PAGEINDEX_OSS_PROVIDER and pageindex_mode not in {
+            "",
+            "flash",
+            "standard",
+        }:
+            raise HTTPException(
+                status_code=400,
+                detail="PageIndex OSS mode must be 'flash', 'standard', or omitted.",
+            )
         _assert_provider_ready(rag_provider)
         _enforce_provider_formats(rag_provider, files)
         allowed_extensions = FileTypeRouter.get_supported_extensions()
@@ -2601,6 +2687,8 @@ async def create_knowledge_base(
         if name in manager.config.get("knowledge_bases", {}):
             manager.config["knowledge_bases"][name]["rag_provider"] = rag_provider
             manager.config["knowledge_bases"][name]["needs_reindex"] = False
+            if rag_provider == PAGEINDEX_OSS_PROVIDER and pageindex_mode:
+                manager.config["knowledge_bases"][name]["pageindex_mode"] = pageindex_mode
             manager._save_config()
 
         progress_tracker = ProgressTracker(name, kb_base_dir)
@@ -2626,7 +2714,8 @@ async def create_knowledge_base(
 
         progress_tracker.update(
             ProgressStage.PROCESSING_DOCUMENTS,
-            f"Saved {len(uploaded_files)} files, preparing to process...",
+            message_key="Saved {{count}} files, preparing to process...",
+            message_params={"count": len(uploaded_files)},
             current=0,
             total=len(uploaded_files),
         )
@@ -2685,7 +2774,8 @@ async def run_reindex_task(kb_name: str, base_dir: str, task_id: str, signature_
             progress_tracker.task_id = task_id
             progress_tracker.update(
                 ProgressStage.PROCESSING_DOCUMENTS,
-                f"Re-indexing {len(file_paths)} document(s) with the active embedding model...",
+                message_key="Re-indexing {{count}} document(s) with the active embedding model...",
+                message_params={"count": len(file_paths)},
                 current=0,
                 total=len(file_paths),
             )
@@ -2700,7 +2790,8 @@ async def run_reindex_task(kb_name: str, base_dir: str, task_id: str, signature_
             def _on_progress(batch_num: int, total_batches: int) -> None:
                 progress_tracker.update(
                     ProgressStage.PROCESSING_DOCUMENTS,
-                    f"Embedding batches: {batch_num}/{total_batches}",
+                    message_key="Embedding batches: {{current}}/{{total}}",
+                    message_params={"current": batch_num, "total": total_batches},
                     current=batch_num,
                     total=total_batches,
                 )
@@ -3221,6 +3312,7 @@ async def sync_folder(kb_name: str, folder_id: str, background_tasks: Background
             task_id=task_id,
             rag_provider=kb_provider,
             folder_id=folder_id,  # Pass folder_id to update state on success
+            folder_root=folder_path,  # Preserve each file's path relative to this root
         )
 
         return {
@@ -3237,3 +3329,592 @@ async def sync_folder(kb_name: str, folder_id: str, background_tasks: Background
         raise HTTPException(status_code=404, detail=f"Knowledge base '{kb_name}' not found")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/{kb_name}/videos")
+async def get_videos(
+    kb_name: str,
+    query: str = "",
+    struct_path: str = "",
+):
+    """Return locally indexed videos matched by title/KP hints or textbook structure."""
+    try:
+        from deeptutor.knowledge.video_library import (
+            load_video_index,
+            search_videos,
+        )
+
+        _, index_path = _video_index_for_kb(kb_name)
+        videos = await asyncio.to_thread(load_video_index, index_path)
+        return search_videos(videos, query=query, struct_path=struct_path, limit=20)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to query videos for KB '%s': %s", kb_name, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+@router.get("/{kb_name}/textbook-tree")
+async def get_textbook_tree(kb_name: str):
+    """Aggregate document structure trees from the active LlamaIndex docstore."""
+    try:
+        resolved_name, docstore = await asyncio.to_thread(_load_kb_docstore, kb_name)
+        if docstore is None:
+            return {"kb_name": resolved_name, "textbooks": []}
+
+        textbooks = []
+        seen_doc_ids: set[str] = set()
+        nodes = await asyncio.to_thread(lambda: list(docstore.docs.values()))
+        for node in nodes:
+            metadata = getattr(node, "metadata", {}) or {}
+            raw_tree = metadata.get("doc_tree")
+            if not raw_tree:
+                continue
+            if isinstance(raw_tree, str):
+                try:
+                    tree = json.loads(raw_tree)
+                except (TypeError, ValueError):
+                    logger.warning("Skipping malformed doc_tree metadata in KB '%s'", resolved_name)
+                    continue
+            elif isinstance(raw_tree, dict):
+                tree = raw_tree
+            else:
+                continue
+            if not isinstance(tree, dict):
+                continue
+
+            doc_id = str(
+                getattr(node, "ref_doc_id", None)
+                or metadata.get("doc_id")
+                or getattr(node, "node_id", "")
+            )
+            if doc_id in seen_doc_ids:
+                continue
+            seen_doc_ids.add(doc_id)
+            textbooks.append(
+                {
+                    "doc_id": doc_id,
+                    "file_name": str(metadata.get("file_name") or ""),
+                    "subject": str(metadata.get("doc_subject") or ""),
+                    "doc_type": str(metadata.get("doc_type") or ""),
+                    "grade": str(metadata.get("doc_grade") or ""),
+                    "tree": tree,
+                }
+            )
+        return {"kb_name": resolved_name, "textbooks": textbooks}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to read textbook tree for KB '%s': %s", kb_name, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+@router.get("/{kb_name}/docs/by-struct")
+async def get_docs_by_struct(
+    kb_name: str,
+    path: str = Query(..., min_length=1),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Return nodes whose ``struct_path`` starts with the requested path."""
+    try:
+        resolved_name, docstore = await asyncio.to_thread(_load_kb_docstore, kb_name)
+        nodes = []
+        if docstore is not None:
+            docstore_nodes = await asyncio.to_thread(lambda: list(docstore.docs.values()))
+            for node in docstore_nodes:
+                metadata = getattr(node, "metadata", {}) or {}
+                struct_path = str(metadata.get("struct_path") or "")
+                if not struct_path.startswith(path):
+                    continue
+                nodes.append(
+                    {
+                        "node_id": str(getattr(node, "node_id", "")),
+                        "struct_path": struct_path,
+                        "file_name": str(metadata.get("file_name") or ""),
+                        "preview": _node_text(node)[:200],
+                    }
+                )
+                if len(nodes) >= limit:
+                    break
+        return {"kb_name": resolved_name, "path": path, "nodes": nodes}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to query structure path in KB '%s': %s", kb_name, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+def _struct_path_matches(node_path: str, query: str) -> bool:
+    """True when ``node_path`` sits at or under the ``query`` struct path.
+
+    Segment-aware prefix match: ``第1章`` matches ``第1章 集合/1.1`` and
+    ``必修一/第1章 集合``, but never ``第11章`` — continuation is only allowed
+    at a path separator ``/`` or a title-extension space, not inside a number.
+    """
+    if node_path == query:
+        return True
+    if node_path.startswith(query):
+        rest = node_path[len(query):]
+        return rest.startswith("/") or rest.startswith(" ")
+    return False
+
+
+def _node_has_doc_intel_question_mark(metadata: dict) -> bool:
+    """True when a node's metadata carries doc_intel qa_split question markers.
+
+    The qa_split pass (``deeptutor/knowledge/doc_intel/qa_split.py``) tags
+    question blocks with ``is_question=true`` plus ``q_id`` / ``q_type`` /
+    ``has_answer``, and answer/analysis blocks with the same ``q_id``. Accept
+    ``is_question``, or a bare ``q_id`` only when the node is not tagged as an
+    answer/analysis block, so a partially-annotated store still surfaces its
+    questions without leaking answer blocks into the list.
+    """
+    if metadata.get("is_question"):
+        return True
+    if metadata.get("is_answer") or metadata.get("is_analysis"):
+        return False
+    return bool(metadata.get("q_id"))
+
+@router.get("/{kb_name}/questions/by-struct")
+async def get_questions_by_struct(
+    kb_name: str,
+    struct_path: str = Query(..., min_length=1),
+    limit: int = Query(200, ge=1, le=1000),
+):
+    """Return doc_intel question nodes under a textbook structure path.
+
+    Question blocks carry ``is_question=true`` (plus ``q_id`` / ``q_type`` /
+    ``has_answer``) from the qa_split pass. A KB whose nodes carry no doc_intel
+    markers returns an empty list with a hint instead of an error (fail-open).
+    """
+    try:
+        resolved_name, docstore = await asyncio.to_thread(_load_kb_docstore, kb_name)
+        questions: list[dict] = []
+        has_doc_intel = False
+        if docstore is not None:
+            nodes = await asyncio.to_thread(lambda: list(docstore.docs.values()))
+            for node in nodes:
+                metadata = getattr(node, "metadata", {}) or {}
+                if not _node_has_doc_intel_question_mark(metadata):
+                    continue
+                has_doc_intel = True
+                node_struct_path = str(metadata.get("struct_path") or "")
+                if not _struct_path_matches(node_struct_path, struct_path):
+                    continue
+                questions.append(
+                    {
+                        "node_id": str(getattr(node, "node_id", "")),
+                        "q_id": str(metadata.get("q_id") or ""),
+                        "text": _node_text(node)[:500],
+                        "question_type": str(metadata.get("q_type") or ""),
+                        "difficulty": str(metadata.get("difficulty") or ""),
+                        "struct_path": node_struct_path,
+                        "has_answer": bool(metadata.get("has_answer")),
+                        "file_name": str(metadata.get("file_name") or ""),
+                    }
+                )
+                if len(questions) >= limit:
+                    break
+        hint = ""
+        if docstore is not None and not has_doc_intel:
+            hint = (
+                "该知识库没有 doc_intel 题答分离元数据（is_question / q_id），"
+                "无法按章节选题。请用带题答分离标注的文档重建索引后再组卷。"
+            )
+        elif docstore is None:
+            hint = "该知识库还没有索引（docstore 为空），请先上传并处理文档。"
+        return {
+            "kb_name": resolved_name,
+            "struct_path": struct_path,
+            "questions": questions,
+            "has_doc_intel": has_doc_intel,
+            "hint": hint,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to query questions by struct in KB '%s': %s", kb_name, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+def _load_kb_entry_or_404(manager: KnowledgeBaseManager, kb_name: str) -> dict:
+    manager.config = manager._load_config()
+    kb_entry = manager.config.get("knowledge_bases", {}).get(kb_name)
+    if kb_entry is None:
+        raise HTTPException(status_code=404, detail=f"Knowledge base '{kb_name}' not found")
+    return kb_entry
+
+
+def _assert_not_connected_kb(kb_name: str, kb_entry: dict) -> None:
+    """Block writes to connected KBs (Obsidian vaults, linked indexes).
+
+    They are read-only pointers to the user's external files — we never write
+    into or re-index them.
+    """
+    if is_connected_kb(kb_entry):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Knowledge base '{kb_name}' is connected to an external resource and is "
+                "read-only. Local file operations and re-indexing are not available for it."
+            ),
+        )
+
+
+def _assert_kb_writable_or_409(kb_name: str, kb_entry: dict) -> None:
+    _assert_not_connected_kb(kb_name, kb_entry)
+    if bool(kb_entry.get("needs_reindex", False)):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Knowledge base '{kb_name}' uses legacy index format and needs reindex "
+                "before accepting incremental uploads."
+            ),
+        )
+
+
+def _matching_index_is_valid(kb_name: str, matching_version: dict | None) -> bool:
+    """Return whether a matching active index can safely satisfy retrieval."""
+    if not matching_version:
+        return False
+    try:
+        from deeptutor.services.rag.index_probe import inspect_provider_version
+        from deeptutor.services.rag.pipelines.llamaindex.storage import (
+            validate_storage_embeddings,
+        )
+
+        probe = inspect_provider_version(matching_version, DEFAULT_PROVIDER)
+        if not probe.ready:
+            logger.warning(
+                "Matching index for KB '%s' is not provider-ready; forcing re-index: %s",
+                kb_name,
+                probe.failure_summary or probe.diagnostics,
+            )
+            return False
+        validate_storage_embeddings(Path(str(matching_version["storage_path"])))
+        return True
+    except Exception as exc:
+        logger.warning(
+            "Matching index for KB '%s' is invalid; forcing re-index: %s",
+            kb_name,
+            exc,
+        )
+        return False
+
+
+async def run_initialization_task(initializer: KnowledgeBaseInitializer, task_id: str):
+    """Background task for knowledge base initialization"""
+    task_manager = TaskIDManager.get_instance()
+    task_stream_manager = get_task_stream_manager()
+    task_stream_manager.ensure_task(task_id)
+
+    with capture_task_logs(task_id):
+        try:
+            if not initializer.progress_tracker:
+                initializer.progress_tracker = ProgressTracker(
+                    initializer.kb_name, initializer.base_dir
+                )
+
+            initializer.progress_tracker.task_id = task_id
+
+            _task_log(task_id, f"Initializing knowledge base '{initializer.kb_name}'")
+
+            await initializer.process_documents()
+            _task_log(task_id, "Document processing complete")
+            _task_log(task_id, "Finalizing initialization")
+            indexed_count = len(
+                FileTypeRouter.collect_supported_files(initializer.raw_dir, recursive=True)
+            )
+
+            initializer.progress_tracker.update(
+                ProgressStage.COMPLETED,
+                message_key="Knowledge base initialization complete!",
+                current=1,
+                total=1,
+                indexed_count=indexed_count,
+                index_changed=True,
+                index_action="create",
+            )
+
+            manager = get_kb_manager()
+            manager.update_kb_status(
+                name=initializer.kb_name,
+                status="ready",
+                progress={
+                    "stage": "completed",
+                    "message": "Knowledge base initialization complete!",
+                    "percent": 100,
+                    "current": 1,
+                    "total": 1,
+                    "task_id": task_id,
+                    "timestamp": datetime.now().isoformat(),
+                    "indexed_count": indexed_count,
+                    "index_changed": True,
+                    "index_action": "create",
+                },
+            )
+
+            _task_log(
+                task_id, f"Knowledge base '{initializer.kb_name}' initialized", level="success"
+            )
+            task_manager.update_task_status(task_id, "completed")
+            task_stream_manager.emit_complete(
+                task_id, f"Knowledge base '{initializer.kb_name}' initialization complete"
+            )
+        except Exception as e:
+            import traceback as _tb
+
+            error_msg = str(e)
+            trace = _tb.format_exc()
+
+            _task_log(task_id, f"Initialization failed: {error_msg}", level="error")
+            _task_log(task_id, f"Stack trace:\n{trace}", level="error")
+
+            task_manager.update_task_status(task_id, "error", error=error_msg)
+
+            manager = get_kb_manager()
+            manager.update_kb_status(
+                name=initializer.kb_name,
+                status="error",
+                progress={
+                    "stage": "error",
+                    "message": f"Initialization failed: {error_msg}",
+                    "percent": 0,
+                    "error": error_msg,
+                    "task_id": task_id,
+                    "timestamp": datetime.now().isoformat(),
+                },
+            )
+
+            if initializer.progress_tracker:
+                initializer.progress_tracker.update(
+                    ProgressStage.ERROR,
+                    message_key="Initialization failed: {{error}}",
+                    message_params={"error": error_msg},
+                    error=error_msg,
+                    **failure_metadata,
+                )
+            task_stream_manager.emit_failed(task_id, error_msg, details=trace)
+
+
+async def run_upload_processing_task(
+    kb_name: str,
+    base_dir: str,
+    uploaded_file_paths: list[str],
+    task_id: str,
+    rag_provider: str = None,
+    folder_id: str = None,
+    folder_root: str = None,
+):
+    """Background task for processing uploaded files.
+
+    Args:
+        kb_name: Knowledge base name
+        base_dir: Base directory for knowledge bases
+        uploaded_file_paths: List of file paths to process
+        rag_provider: RAG provider already matched against the KB binding
+        folder_id: Optional folder ID for sync state update
+        folder_root: Linked folder's own root path, when these files came
+            from a folder sync. Preserves each file's path relative to it
+            instead of flattening to the bare filename.
+    """
+    task_manager = TaskIDManager.get_instance()
+    task_stream_manager = get_task_stream_manager()
+    task_stream_manager.ensure_task(task_id)
+
+    progress_tracker = ProgressTracker(kb_name, Path(base_dir))
+    progress_tracker.task_id = task_id
+
+    with capture_task_logs(task_id):
+        try:
+            _task_log(task_id, f"Processing {len(uploaded_file_paths)} file(s) for KB '{kb_name}'")
+            progress_tracker.update(
+                ProgressStage.PROCESSING_DOCUMENTS,
+                message_key="Validating {{count}} file(s)...",
+                message_params={"count": len(uploaded_file_paths)},
+                current=0,
+                total=len(uploaded_file_paths),
+            )
+
+            adder = DocumentAdder(
+                kb_name=kb_name,
+                base_dir=base_dir,
+                progress_tracker=progress_tracker,
+                rag_provider=rag_provider,
+            )
+
+            # Staging blocks: a full-content hash per file, plus a copy for
+            # anything not already under raw/. A BackgroundTasks entry declared
+            # ``async def`` is awaited ON the event loop — starlette only routes
+            # *sync* callables to its threadpool — so doing this inline stalled
+            # every other request for the length of the batch (#777).
+            staged_files = await asyncio.to_thread(
+                adder.add_documents,
+                uploaded_file_paths,
+                allow_duplicates=False,
+                source_root=folder_root,
+            )
+            _task_log(task_id, f"Staged {len(staged_files)} new file(s)")
+            progress_tracker.update(
+                ProgressStage.PROCESSING_DOCUMENTS,
+                message_key="Staged {{count}} new file(s)",
+                message_params={"count": len(staged_files)},
+                current=0,
+                total=len(staged_files),
+            )
+
+            if not staged_files:
+                _task_log(task_id, "No new files to process (all duplicates or invalid)")
+                progress_tracker.update(
+                    ProgressStage.COMPLETED,
+                    message_key="No new files to process (all duplicates or invalid)",
+                    current=0,
+                    total=0,
+                )
+                task_manager.update_task_status(task_id, "completed")
+                task_stream_manager.emit_complete(
+                    task_id, "No new files to process (all duplicates or invalid)"
+                )
+                return
+
+            index_result = await adder.process_new_documents(staged_files)
+            processed_files = index_result.processed_files
+            _task_log(task_id, f"Indexed {index_result.processed_count} file(s)")
+
+            if index_result.has_failures:
+                failure_summary = index_result.failure_summary()
+                error_msg = (
+                    f"Indexed {index_result.processed_count}/{len(staged_files)} file(s); "
+                    f"{index_result.failed_count} failed: {failure_summary}"
+                )
+                _task_log(task_id, error_msg, level="error")
+                for failure in index_result.failures:
+                    _task_log(
+                        task_id,
+                        f"Failed to index {failure.file_path.name}: {failure.error}",
+                        level="error",
+                    )
+                progress_tracker.update(
+                    ProgressStage.ERROR,
+                    message_key="Processing failed: {{error}}",
+                    message_params={"error": error_msg},
+                    current=index_result.processed_count,
+                    total=len(staged_files),
+                    error=error_msg,
+                    indexed_count=index_result.processed_count,
+                    index_changed=index_result.processed_count > 0,
+                    index_action="upload",
+                )
+                task_manager.update_task_status(task_id, "error", error=error_msg)
+                task_stream_manager.emit_failed(
+                    task_id,
+                    error_msg,
+                    details="\n".join(
+                        f"{failure.file_path}: {failure.error}" for failure in index_result.failures
+                    ),
+                )
+                return
+
+            progress_tracker.update(
+                ProgressStage.PROCESSING_DOCUMENTS,
+                message_key="Saving metadata...",
+                current=index_result.processed_count,
+                total=len(staged_files),
+            )
+            adder.update_metadata(index_result.processed_count)
+
+            if folder_id and processed_files:
+                try:
+                    manager = get_kb_manager()
+                    manager.update_folder_sync_state(
+                        kb_name, folder_id, [str(f) for f in processed_files]
+                    )
+                    _task_log(task_id, f"Updated folder sync state: {folder_id}")
+                except Exception as sync_err:
+                    _task_log(
+                        task_id, f"Folder sync state update failed: {sync_err}", level="warning"
+                    )
+
+            num_processed = index_result.processed_count
+            progress_tracker.update(
+                ProgressStage.COMPLETED,
+                message_key="Successfully processed {{count}} files!",
+                message_params={"count": num_processed},
+                current=num_processed,
+                total=num_processed,
+                indexed_count=num_processed,
+                index_changed=num_processed > 0,
+                index_action="upload",
+            )
+
+            _task_log(
+                task_id, f"Processed {num_processed} file(s) for '{kb_name}'", level="success"
+            )
+            task_manager.update_task_status(task_id, "completed")
+            task_stream_manager.emit_complete(
+                task_id, f"Successfully processed {num_processed} files for '{kb_name}'"
+            )
+        except Exception as e:
+            import traceback as _tb
+
+            error_msg = f"Upload processing failed (KB '{kb_name}'): {e}"
+            trace = _tb.format_exc()
+            _task_log(task_id, error_msg, level="error")
+            _task_log(task_id, f"Stack trace:\n{trace}", level="error")
+
+            task_manager.update_task_status(task_id, "error", error=error_msg)
+
+            progress_tracker.update(
+                ProgressStage.ERROR,
+                message_key="Processing failed: {{error}}",
+                message_params={"error": error_msg},
+                error=error_msg,
+                **failure_metadata,
+            )
+            task_stream_manager.emit_failed(task_id, error_msg, details=trace)
+
+def _load_kb_docstore(kb_name: str):
+    """Load the active LlamaIndex docstore, or return ``None`` for an empty KB."""
+    manager, resolved_name = _readable_kb(kb_name)
+    try:
+        storage_dir = manager.get_rag_storage_path(resolved_name)
+    except ValueError:
+        return resolved_name, None
+
+    docstore_path = storage_dir / "docstore.json"
+    if not docstore_path.is_file():
+        return resolved_name, None
+
+    from llama_index.core.storage.docstore import SimpleDocumentStore
+
+    return resolved_name, SimpleDocumentStore.from_persist_dir(str(storage_dir))
+
+def _node_text(node) -> str:
+    """Read display text across the LlamaIndex node API variants we support."""
+    get_content = getattr(node, "get_content", None)
+    if callable(get_content):
+        return str(get_content() or "")
+    return str(getattr(node, "text", "") or "")
+
+def _readable_kb(kb_name: str) -> tuple[KnowledgeBaseManager, str]:
+    """Resolve an access-checked KB for read-only index inspection."""
+    manager = _overridden_kb_manager()
+    if manager is not None:
+        return manager, _resolve_registered_kb_name(manager, kb_name)
+    resource = resolve_kb(kb_name)
+    return manager_for_resource(resource), resource.name
+
+def _video_index_for_kb(kb_name: str) -> tuple[str, Path]:
+    """Resolve a registered KB, or a local video-only index awaiting registration."""
+    from deeptutor.knowledge.video_library import video_index_path
+
+    try:
+        manager, resolved_name = _readable_kb(kb_name)
+    except HTTPException as exc:
+        # A scan is intentionally zero-manual: before it becomes a full RAG KB,
+        # its metadata-only directory is still readable from the current user's
+        # own workspace. Authorization failures must never use this fallback.
+        if exc.status_code != 404:
+            raise
+        candidate = video_index_path(kb_name, kb_base_dir=current_kb_base_dir())
+        if not candidate.is_file():
+            raise
+        return kb_name, candidate
+    return resolved_name, video_index_path(resolved_name, kb_base_dir=Path(manager.base_dir))

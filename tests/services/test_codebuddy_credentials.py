@@ -69,7 +69,9 @@ def test_load_credentials_rejects_file_without_token(tmp_path, monkeypatch) -> N
     assert load_credentials() is None
 
 
-def test_resolve_api_base_follows_account_domain() -> None:
+def test_resolve_api_base_follows_account_domain(monkeypatch, tmp_path) -> None:
+    # 本机装过 CodeBuddy CLI 时家目录缓存会带出部署 endpoint，隔离掉再测
+    monkeypatch.setattr(codebuddy_credentials, "_local_storage_dir", lambda: tmp_path)
     assert resolve_api_base("www.codebuddy.cn") == INTERNAL_ENDPOINT + "/v2"
     assert resolve_api_base("www.codebuddy.ai") == OVERSEAS_ENDPOINT + "/v2"
 

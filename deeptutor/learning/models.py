@@ -1,10 +1,25 @@
 from __future__ import annotations
-
 from enum import Enum
 import time
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+SixDimensionKey = Literal[
+    "knowledge",
+    "procedure",
+    "understanding",
+    "transfer",
+    "retention",
+    "habit",
+]
+SixDimensionDataState = Literal["scored", "insufficient"]
+SixDimensionEvidenceKind = Literal["attempt", "error", "review", "route_task"]
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    model_validator,
+)
 
 _KNOWLEDGE_TYPE_LEGACY: dict[str, str] = {
     "记忆型": "memory",
@@ -45,75 +60,6 @@ class ErrorType(str, Enum):
         return cls(mapped) if mapped else None
 
 
-SixDimensionKey = Literal[
-    "knowledge",
-    "procedure",
-    "understanding",
-    "transfer",
-    "retention",
-    "habit",
-]
-SixDimensionDataState = Literal["scored", "insufficient"]
-SixDimensionEvidenceKind = Literal["attempt", "error", "review", "route_task"]
-
-
-class SixDimensionEvidenceRef(BaseModel):
-    """Stable pointer to one item of evidence behind a dimension score."""
-
-    kind: SixDimensionEvidenceKind
-    id: str = Field(min_length=1)
-
-
-class SixDimensionResult(BaseModel):
-    """One explainable dimension in a :class:`SixDimensionSnapshot`."""
-
-    key: SixDimensionKey
-    score: float | None = Field(default=None, ge=0, le=100)
-    data_state: SixDimensionDataState
-    confidence: float = Field(ge=0, le=1)
-    evidence_count: int = Field(ge=0)
-    evidence_refs: list[SixDimensionEvidenceRef] = Field(default_factory=list)
-    explanation: str
-    next_action: str
-
-    @model_validator(mode="after")
-    def _validate_score_and_evidence(self) -> SixDimensionResult:
-        if self.evidence_count != len(self.evidence_refs):
-            raise ValueError("evidence_count must match evidence_refs")
-        if self.data_state == "scored":
-            if self.score is None:
-                raise ValueError("scored dimensions require a score")
-            if not self.evidence_refs:
-                raise ValueError("scored dimensions require traceable evidence")
-        elif self.score is not None:
-            raise ValueError("insufficient dimensions must use a null score")
-        return self
-
-
-class SixDimensionSnapshot(BaseModel):
-    """A point-in-time, evidence-backed learner profile for one book."""
-
-    book_id: str
-    generated_at: float = Field(default_factory=time.time)
-    dimensions: list[SixDimensionResult]
-    overall: float | None = Field(default=None, ge=0, le=100)
-
-    @model_validator(mode="after")
-    def _validate_complete_dimension_set(self) -> SixDimensionSnapshot:
-        expected = {
-            "knowledge",
-            "procedure",
-            "understanding",
-            "transfer",
-            "retention",
-            "habit",
-        }
-        keys = [dimension.key for dimension in self.dimensions]
-        if len(keys) != 6 or set(keys) != expected:
-            raise ValueError("dimensions must contain each six-dimension key exactly once")
-        return self
-
-
 # Stages removed in the Mastery Path simplification are mapped onto the nearest
 # surviving stage so progress persisted by the older engine still deserializes.
 _STAGE_LEGACY: dict[str, str] = {
@@ -147,19 +93,14 @@ class LearningStage(str, Enum):
 
 
 class KnowledgePoint(BaseModel):
+    struct_path: str = ""
+    textbook_node_id: str = ""
     model_config = ConfigDict(extra="ignore")
 
     id: str
     name: str
     type: KnowledgeType
     module_id: str
-    # Stable bridge to the doc-intel textbook-tree node this KP was derived
-    # from: the "/"-joined heading chain (``struct_path``) and the node's
-    # stable id. Both default to "" so paths built before the bridge existed
-    # (and KPs the model authored without a textbook anchor) keep working —
-    # matching falls back to names exactly as before.
-    struct_path: str = ""
-    textbook_node_id: str = ""
 
 
 class LearningModule(BaseModel):
@@ -255,7 +196,74 @@ class PendingQuestion(BaseModel):
     question_type: str = "short"
     expected_answer: str = ""
     options: list[str] = Field(default_factory=list)
+    # Reference explanation and difficulty, captured when the question is
+    # posed. Server-side like ``expected_answer`` — ``public_pending_question``
+    # never projects them, so an explanation cannot leak the answer into the
+    # card the learner is about to answer. They travel with the attempt into
+    # the question bank, which is what makes a mastery mistake reviewable
+    # later instead of a bare right/wrong.
+    explanation: str = ""
+    difficulty: str = ""
     created_at: float = Field(default_factory=time.time)
+
+
+class InteractionStatus(str, Enum):
+    """Durable lifecycle for one learner-facing mastery interaction.
+
+    The chat runtime may disappear at any point; this state is the source of
+    truth for whether a question still needs an answer or has already been
+    graded.  Terminal interactions are retained for idempotent retries and
+    audit history.
+    """
+
+    REGISTERED = "registered"
+    AWAITING_INPUT = "awaiting_input"
+    ANSWERED = "answered"
+    GRADED = "graded"
+    ABANDONED = "abandoned"
+
+
+class MasteryInteraction(BaseModel):
+    """A persisted question/answer transaction for a mastery path."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    interaction_id: str
+    path_id: str
+    question: PendingQuestion
+    status: InteractionStatus = InteractionStatus.REGISTERED
+    session_id: str = ""
+    turn_id: str = ""
+    user_answer: str = ""
+    result: dict[str, Any] = Field(default_factory=dict)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class MasteryEvent(BaseModel):
+    """Committed path event consumed by recovery and future live UIs."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: int = 0
+    path_id: str
+    revision: int
+    event_type: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    session_id: str = ""
+    turn_id: str = ""
+    created_at: float = Field(default_factory=time.time)
+
+
+class MasteryPathLease(BaseModel):
+    """The one active mutating turn allowed for a mastery path."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    path_id: str
+    session_id: str
+    turn_id: str
+    acquired_at: float = Field(default_factory=time.time)
 
 
 class LearningProgress(BaseModel):
@@ -289,6 +297,26 @@ class LearningProgress(BaseModel):
     updated_at: float = Field(default_factory=time.time)
 
 
+__all__ = [
+    "KnowledgeType",
+    "ErrorType",
+    "LearningStage",
+    "KnowledgePoint",
+    "LearningModule",
+    "DiagnosticResult",
+    "QuizAttempt",
+    "RetryAttempt",
+    "ErrorRecord",
+    "RepetitionState",
+    "ReviewTask",
+    "PendingQuestion",
+    "InteractionStatus",
+    "MasteryInteraction",
+    "MasteryEvent",
+    "MasteryPathLease",
+    "LearningProgress",
+]
+
 class LearningEvidence(BaseModel):
     """One immutable row of learner evidence (collection-side payload).
 
@@ -320,26 +348,69 @@ class LearningEvidence(BaseModel):
     error_type: str = ""
     detail_json: dict[str, Any] = Field(default_factory=dict)
 
+class SixDimensionEvidenceRef(BaseModel):
+    """Stable pointer to one item of evidence behind a dimension score."""
 
-__all__ = [
-    "KnowledgeType",
-    "ErrorType",
-    "SixDimensionKey",
-    "SixDimensionDataState",
-    "SixDimensionEvidenceKind",
-    "SixDimensionEvidenceRef",
-    "SixDimensionResult",
-    "SixDimensionSnapshot",
-    "LearningStage",
-    "KnowledgePoint",
-    "LearningModule",
-    "DiagnosticResult",
-    "QuizAttempt",
-    "RetryAttempt",
-    "ErrorRecord",
-    "RepetitionState",
-    "ReviewTask",
-    "PendingQuestion",
-    "LearningProgress",
-    "LearningEvidence",
-]
+    kind: SixDimensionEvidenceKind
+    id: str = Field(min_length=1)
+
+class SixDimensionResult(BaseModel):
+    """One explainable dimension in a :class:`SixDimensionSnapshot`."""
+
+    key: SixDimensionKey
+    score: float | None = Field(default=None, ge=0, le=100)
+    data_state: SixDimensionDataState
+    confidence: float = Field(ge=0, le=1)
+    evidence_count: int = Field(ge=0)
+    evidence_refs: list[SixDimensionEvidenceRef] = Field(default_factory=list)
+    explanation: str
+    next_action: str
+
+    @model_validator(mode="after")
+    def _validate_score_and_evidence(self) -> SixDimensionResult:
+        if self.evidence_count != len(self.evidence_refs):
+            raise ValueError("evidence_count must match evidence_refs")
+        if self.data_state == "scored":
+            if self.score is None:
+                raise ValueError("scored dimensions require a score")
+            if not self.evidence_refs:
+                raise ValueError("scored dimensions require traceable evidence")
+        elif self.score is not None:
+            raise ValueError("insufficient dimensions must use a null score")
+        return self
+
+class SixDimensionSnapshot(BaseModel):
+    """A point-in-time, evidence-backed learner profile for one book."""
+
+    book_id: str
+    generated_at: float = Field(default_factory=time.time)
+    dimensions: list[SixDimensionResult]
+    overall: float | None = Field(default=None, ge=0, le=100)
+
+    @model_validator(mode="after")
+    def _validate_complete_dimension_set(self) -> SixDimensionSnapshot:
+        expected = {
+            "knowledge",
+            "procedure",
+            "understanding",
+            "transfer",
+            "retention",
+            "habit",
+        }
+        keys = [dimension.key for dimension in self.dimensions]
+        if len(keys) != 6 or set(keys) != expected:
+            raise ValueError("dimensions must contain each six-dimension key exactly once")
+        return self
+
+
+# Stages removed in the Mastery Path simplification are mapped onto the nearest
+# surviving stage so progress persisted by the older engine still deserializes.
+_STAGE_LEGACY: dict[str, str] = {
+    "diagnostic_phase1": "diagnostic",
+    "diagnostic_phase2": "diagnostic",
+    "metacognitive_intro": "explain",
+    "plan": "explain",
+    "pretest": "explain",
+    "practice_quiz": "practice",
+    "module_test": "review",
+}

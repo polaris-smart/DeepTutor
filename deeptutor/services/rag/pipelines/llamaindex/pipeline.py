@@ -19,7 +19,6 @@ from deeptutor.services.rag.index_versioning import (
     write_version_meta,
 )
 from deeptutor.services.rag.kb_paths import resolve_kb_dir
-from deeptutor.services.rag.result_enricher import enrich_search_results
 
 from . import storage
 from .config import default_top_k
@@ -75,6 +74,7 @@ class LlamaIndexPipeline:
 
     async def initialize(self, kb_name: str, file_paths: List[str], **kwargs) -> bool:
         progress_callback = kwargs.get("progress_callback")
+        image_progress_callback = kwargs.get("image_progress_callback")
         self._configure_settings()
 
         self.logger.info(
@@ -87,7 +87,9 @@ class LlamaIndexPipeline:
 
         try:
             await self._verify_embedding_connectivity()
-            documents = await self.document_loader.load(file_paths)
+            documents = await self.document_loader.load(
+                file_paths, image_progress_callback=image_progress_callback
+            )
             if not documents:
                 self.logger.error("No valid documents found")
                 return False
@@ -162,7 +164,7 @@ class LlamaIndexPipeline:
                 lambda: storage.retrieve_nodes(storage_dir, query, top_k=top_k),
             )
 
-            result = self._nodes_to_result(query, nodes, kb_name=kb_name)
+            result = self._nodes_to_result(query, nodes)
             if embedding_mismatch_warning:
                 result["warning"] = embedding_mismatch_warning
             return result
@@ -197,9 +199,7 @@ class LlamaIndexPipeline:
         except Exception:
             return ""
 
-    def _nodes_to_result(
-        self, query: str, nodes: list[Any], *, kb_name: str = ""
-    ) -> Dict[str, Any]:
+    def _nodes_to_result(self, query: str, nodes: list[Any]) -> Dict[str, Any]:
         context_parts: list[str] = []
         sources: list[dict[str, Any]] = []
         for i, node in enumerate(nodes):
@@ -222,12 +222,12 @@ class LlamaIndexPipeline:
             "answer": content,
             "content": content,
             "sources": sources,
-            "enriched": enrich_search_results([node.node for node in nodes], kb_name),
             "provider": "llamaindex",
         }
 
     async def add_documents(self, kb_name: str, file_paths: List[str], **kwargs) -> bool:
         progress_callback = kwargs.get("progress_callback")
+        image_progress_callback = kwargs.get("image_progress_callback")
         self._configure_settings()
 
         self.logger.info(f"Adding {len(file_paths)} documents to KB '{kb_name}' using LlamaIndex")
@@ -241,7 +241,9 @@ class LlamaIndexPipeline:
             if progress_callback:
                 set_progress_callback(progress_callback)
 
-            documents = await self.document_loader.load(file_paths)
+            documents = await self.document_loader.load(
+                file_paths, image_progress_callback=image_progress_callback
+            )
             if not documents:
                 self.logger.warning("No valid documents to add")
                 return False

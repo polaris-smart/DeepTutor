@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-Role = Literal["admin", "teacher", "student", "user"]
-ScopeKind = Literal["admin", "teacher", "student", "user"]
+Role = Literal["admin", "user"]
+ScopeKind = Literal["admin", "user"]
 
 
 @dataclass(frozen=True, slots=True)

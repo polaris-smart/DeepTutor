@@ -90,11 +90,11 @@ class TestExists:
 
 class TestDelete:
     def test_removes_progress_file(self, store, tmp_path):
+        # v1.5.16: 存储升级 SQLite（legacy json 惰性导入归档），按 API 语义断言
         store.save(LearningProgress(book_id="book1"))
-        assert (tmp_path / "book1.json").exists()
+        assert store.load("book1") is not None
         store.delete("book1")
         assert store.load("book1") is None
-        assert not (tmp_path / "book1.json").exists()
 
     def test_delete_nonexistent_no_error(self, store):
         store.delete("nonexistent")  # should not raise

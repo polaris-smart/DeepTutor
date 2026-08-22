@@ -25,6 +25,7 @@ from openai import AsyncAzureOpenAI, AsyncOpenAI
 from deeptutor.services.config import load_system_settings
 from deeptutor.services.keypool import KeyPool
 from deeptutor.services.llm import get_token_limit_kwargs, supports_tools
+from deeptutor.services.llm.openai_http_client import sanitize_invalid_ssl_env
 from deeptutor.services.llm.reasoning_params import (
     build_openai_compatible_reasoning_kwargs,
 )
@@ -88,6 +89,10 @@ def _build_openai_client(
     disable_ssl_verify: bool,
     sdk_max_retries: int | None = None,
 ) -> Any:
+    # A stale SSL_CERT_FILE (common with cloned conda envs) makes httpx's
+    # create_ssl_context raise FileNotFoundError mid-__init__, aborting client
+    # construction. Drop broken CA paths first so TLS uses its default CA config.
+    sanitize_invalid_ssl_env()
     if isinstance(config.api_key, list):
         keys = [str(key).strip() for key in config.api_key if str(key).strip()]
         clients = {
