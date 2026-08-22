@@ -21,15 +21,18 @@
     "build:brand-icons": "tsx ./scripts/build-brand-icons.mts"
   },
   "dependencies": {
+    "@types/three": "^0.185.4",
     "chart.js": "^4.5.1",
     "clsx": "^2.1.1",
     "cytoscape": "^3.33.1",
     "docx-preview": "^0.3.7",
+    "echarts": "^6.1.0",
     "exceljs": "^4.4.0",
     "framer-motion": "^12.24.0",
     "html2canvas": "^1.4.1",
     "i18next": "^25.8.0",
     "jspdf": "^4.2.0",
+    "jsxgraph": "^1.13.2",
     "lucide-react": "^0.562.0",
     "mermaid": "^11.14.0",
     "next": "^16.2.3",
@@ -44,7 +47,8 @@
     "rehype-raw": "^7.0.0",
     "remark-gfm": "^4.0.0",
     "remark-math": "^6.0.0",
-    "tailwind-merge": "^3.4.0"
+    "tailwind-merge": "^3.4.0",
+    "three": "^0.185.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.53.2",
