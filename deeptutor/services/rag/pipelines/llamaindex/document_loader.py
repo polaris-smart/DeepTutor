@@ -17,6 +17,7 @@ from dataclasses import dataclass
 import logging
 import mimetypes
 from pathlib import Path
+import re
 from typing import Any, Callable, Iterable
 
 from llama_index.core import Document
@@ -45,6 +46,18 @@ IMAGE_DESCRIPTION_PROMPT = (
     "and cite it later. Include visible text/OCR if present, the main subject, "
     "and any educational or technical meaning. Keep the answer under 180 words."
 )
+
+# Markdown local-image inlining (upstream PR #525 + ZC hardening).
+# Resolve `![alt](relative/path.png)` to data URIs so images that arrive in a
+# zip upload survive indexing without broken links. Security rails — a
+# markdown file must never become an arbitrary-file-read primitive:
+#   1. absolute paths are rejected outright;
+#   2. the resolved path must stay inside the markdown file's own directory
+#      (traversal like `../../user/settings/model_catalog.json` is dropped);
+#   3. only image extensions are inlined (defense in depth).
+_MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+_MAX_EMBED_IMAGE_SIZE = 500 * 1024  # 500 KB
+_MD_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
 # Volcano Ark embedding `input` strings cap at 100000 bytes; keep the base64
 # image data comfortably below that (headroom for the data-URI prefix).
@@ -498,8 +511,58 @@ class LlamaIndexDocumentLoader:
             img.save(out, format="JPEG", quality=quality, optimize=True)
             return out.getvalue()
 
+    def _resolve_markdown_images(self, text: str, md_file_path: Path) -> str:
+        """Inline local image references in Markdown as base64 data URIs.
+
+        Hardened variant of upstream PR #525: absolute paths and references
+        that escape the markdown file's directory are left untouched (never
+        inlined), and only image extensions are eligible.
+        """
+        base_dir = md_file_path.parent.resolve()
+
+        def _replace(m: re.Match) -> str:
+            alt_text = m.group(1)
+            img_path = m.group(2).strip()
+            # Skip external URLs and existing data URIs
+            if img_path.startswith(("http://", "https://", "data:")):
+                return m.group(0)
+            # Rail 1: absolute paths never resolve against the md directory
+            if Path(img_path).is_absolute():
+                return m.group(0)
+            resolved = (base_dir / img_path).resolve()
+            # Rail 2: the file must live inside the md's own directory tree
+            try:
+                resolved.relative_to(base_dir)
+            except ValueError:
+                return m.group(0)
+            # Rail 3: images only — no config/credential files by extension
+            if resolved.suffix.lower() not in _MD_IMAGE_EXTS:
+                return m.group(0)
+            if not resolved.exists() or not resolved.is_file():
+                return m.group(0)
+            try:
+                img_bytes = resolved.read_bytes()
+                if len(img_bytes) > _MAX_EMBED_IMAGE_SIZE:
+                    self.logger.debug(
+                        f"Image too large to embed ({len(img_bytes)}B): {img_path}"
+                    )
+                    return m.group(0)
+                mime = mimetypes.guess_type(resolved.name)[0] or "application/octet-stream"
+                b64 = base64.b64encode(img_bytes).decode("ascii")
+                self.logger.info(f"Embedded image: {img_path} ({len(img_bytes)}B) as data URI")
+                return f"![{alt_text}](data:{mime};base64,{b64})"
+            except OSError:
+                return m.group(0)
+
+        return _MD_IMAGE_RE.sub(_replace, text)
+
     def _append_if_nonempty(self, documents: list[Any], file_path: Path, text: str) -> None:
         if text.strip():
+            # Markdown local-image inlining must run BEFORE the doc_intel
+            # enrich pass below — enrich derives block_meta from this text.
+            is_markdown = file_path.suffix.lower() in (".md", ".markdown")
+            if is_markdown:
+                text = self._resolve_markdown_images(text, file_path)
             metadata = {
                 "file_name": file_path.name,
                 "file_path": str(file_path),
@@ -609,6 +672,8 @@ class LlamaIndexDocumentLoader:
                     metadata=metadata,
                 )
             )
-            self.logger.info(f"Loaded: {file_path.name} ({len(text)} chars)")
+            self.logger.info(
+                f"Loaded: {file_path.name} ({len(text)} chars)"
+            )
         else:
             self.logger.warning(f"Skipped empty document: {file_path.name}")
