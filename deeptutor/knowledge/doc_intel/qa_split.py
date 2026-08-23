@@ -20,14 +20,20 @@ from dataclasses import dataclass, field
 import re
 from typing import Any
 
-Q_NUM_RE = re.compile(r"^(\d{1,3})\s*[.、．)]\s*")
+Q_NUM_RE = re.compile(r"^(\d{1,3})\s*[.、．)·]\s*")
 Q_NUM_PAREN_RE = re.compile(r"^[(（](\d{1,3})[)）]\s*")
 ANSWER_MARK_RE = re.compile(r"^【?答案】?\s*[:：]?\s*(.*)$")
-ANALYSIS_MARK_RE = re.compile(r"^【?详解|解析|点评|思路】?")
+ANALYSIS_MARK_RE = re.compile(r"^[\[【]?(详解|解析|点评|思路)[\]）)】]?")
 ANSWER_SECTION_RE = re.compile(r"^参考答案|答案速查|答案与解析|试题解析$")
 Q_TYPE_RE = re.compile(r"选择题|填空题|解答题|单选|多选|判断题|计算题|证明题|应用题")
 
 CHOICE_HINT_RE = re.compile(r"[ABCD][.、．]\s*\S|\(?[ABCD]\)?\s*$|（\s*）|\(\s*\)")
+
+# Inline answer at stem tail — common in 教辅-style markdown where the chosen
+# option is embedded in the question line itself, e.g. "…的取值范围是（D）".
+# Full-width parens with a single A–D letter (possibly followed by options or
+# whitespace). Bare "(B)" half-width form included.
+INLINE_ANSWER_RE = re.compile(r"[（(]\s*([A-D])\s*[)）]")
 
 
 def _text_v1(block: dict) -> str:
@@ -166,6 +172,13 @@ def split_qa(blocks: list[dict], *, text_fn=_text_v1, page_key: str = "page_idx"
             questions[qid] = {"page": current_page, "num": num, "q_block_idx": idx,
                               "answer_block_idx": None, "analysis_block_idx": None,
                               "q_type": q_type_context or ("choice" if CHOICE_HINT_RE.search(text) else "")}
+            # Inline answer "（D）" at stem tail: the chosen option is embedded
+            # in the question line itself (教辅-style markdown). Record it as a
+            # virtual answer on the same block so has_answer lights up.
+            ia = INLINE_ANSWER_RE.search(text)
+            if ia:
+                questions[qid]["answer_block_idx"] = idx
+                questions[qid]["inline_answer"] = ia.group(1)
             roles[idx] = "question"
             continue
 
