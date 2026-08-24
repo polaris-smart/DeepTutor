@@ -2,9 +2,76 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from types import SimpleNamespace
 
 import pytest
+
+
+def test_custom_embedding_aligns_outer_batch_with_provider_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LlamaIndex grouping must not create an avoidable short provider request."""
+    from deeptutor.services.rag.pipelines.llamaindex import (
+        embedding_adapter as embedding_module,
+    )
+
+    client = SimpleNamespace(
+        config=SimpleNamespace(binding="custom", batch_size=4),
+    )
+    monkeypatch.setattr(
+        embedding_module,
+        "get_embedding_client",
+        lambda config=None: client,
+    )
+
+    embedding = embedding_module.CustomEmbedding()
+
+    assert embedding.embed_batch_size == 256
+
+
+def test_custom_embedding_reports_global_monotonic_batch_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nested client batches must not reset the KB progress bar to 0."""
+    from deeptutor.services.rag.pipelines.llamaindex import (
+        embedding_adapter as embedding_module,
+    )
+
+    class _FakeClient:
+        config = SimpleNamespace(
+            binding="custom",
+            model="test-embed",
+            dim=2,
+            effective_url="https://example.test/v1/embeddings",
+            base_url="https://example.test/v1/embeddings",
+            api_version=None,
+            send_dimensions=None,
+            batch_size=4,
+        )
+
+        async def embed(self, texts, progress_callback=None, *, input_type=None):
+            del input_type
+            total = math.ceil(len(texts) / self.config.batch_size)
+            if progress_callback:
+                for current in range(1, total + 1):
+                    progress_callback(current, total)
+            return [[1.0, 0.0] for _ in texts]
+
+    client = _FakeClient()
+    monkeypatch.setattr(
+        embedding_module,
+        "get_embedding_client",
+        lambda config=None: client,
+    )
+    embedding = embedding_module.CustomEmbedding(embed_batch_size=10)
+    events: list[tuple[int, int]] = []
+    embedding.set_progress_callback(lambda current, total: events.append((current, total)))
+
+    vectors = embedding.get_text_embedding_batch([str(i) for i in range(25)])
+
+    assert len(vectors) == 25
+    assert events == [(current, 8) for current in range(1, 9)]
 
 
 def test_custom_embedding_rejects_null_coordinates(monkeypatch: pytest.MonkeyPatch) -> None:

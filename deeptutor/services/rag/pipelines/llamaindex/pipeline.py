@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+import time
 import traceback
 from typing import Any, Callable, Dict, List, Optional
 
@@ -32,7 +33,62 @@ from .errors import search_error_result
 
 DEFAULT_KB_BASE_DIR = str(get_runtime_data_root() / "knowledge_bases")
 
+_INDEX_STALL_TIMEOUT_SECONDS = 600.0
+_INDEX_STALL_POLL_SECONDS = 5.0
+
 SignatureProvider = Callable[[], EmbeddingSignature | None]
+
+
+class IndexingStallError(RuntimeError):
+    """Raised when an indexing operation stops reporting progress."""
+
+
+async def _run_with_stall_guard(
+    fn: Callable[[], Any],
+    *,
+    progress_callback: Optional[Callable[..., Any]] = None,
+    stall_timeout: Optional[float] = None,
+) -> Any:
+    """Run synchronous indexing and fail bounded when its heartbeat stops.
+
+    Python cannot interrupt an arbitrary executor thread, so a stalled worker
+    may finish later. The caller nevertheless receives an actionable error
+    instead of waiting forever on a provider request that never completes.
+    """
+    if stall_timeout is None:
+        stall_timeout = _INDEX_STALL_TIMEOUT_SECONDS
+
+    last_progress = {"at": time.monotonic()}
+
+    def _heartbeat(*args: Any, **kwargs: Any) -> None:
+        last_progress["at"] = time.monotonic()
+        if progress_callback is not None:
+            progress_callback(*args, **kwargs)
+
+    set_progress_callback(_heartbeat)
+    future = asyncio.get_running_loop().run_in_executor(None, fn)
+
+    def _consume_terminal_exception(fut: "asyncio.Future[Any]") -> None:
+        if not fut.cancelled():
+            fut.exception()
+
+    while True:
+        done, _ = await asyncio.wait({future}, timeout=_INDEX_STALL_POLL_SECONDS)
+        if done:
+            return future.result()
+
+        # The active adapter has one process-global callback slot. Re-arm it
+        # in case a concurrent indexing job replaced this job's heartbeat.
+        set_progress_callback(_heartbeat)
+        stalled_for = time.monotonic() - last_progress["at"]
+        if stalled_for > stall_timeout:
+            future.add_done_callback(_consume_terminal_exception)
+            raise IndexingStallError(
+                f"Indexing made no progress for {stalled_for:.0f}s while "
+                "embedding documents. The embedding provider may be accepting "
+                "requests without completing them; check the embedding endpoint "
+                "and retry."
+            )
 
 
 class LlamaIndexPipeline:
@@ -99,13 +155,9 @@ class LlamaIndexPipeline:
                 f"(chunking + embedding)..."
             )
 
-            if progress_callback:
-                set_progress_callback(progress_callback)
-
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                None,
+            await _run_with_stall_guard(
                 lambda: storage.create_index(documents, storage_dir, show_progress=True),
+                progress_callback=progress_callback,
             )
 
             self.logger.info(f"Index persisted to {storage_dir}")
@@ -238,9 +290,6 @@ class LlamaIndexPipeline:
 
         try:
             await self._verify_embedding_connectivity()
-            if progress_callback:
-                set_progress_callback(progress_callback)
-
             documents = await self.document_loader.load(
                 file_paths, image_progress_callback=image_progress_callback
             )
@@ -248,15 +297,13 @@ class LlamaIndexPipeline:
                 self.logger.warning("No valid documents to add")
                 return False
 
-            loop = asyncio.get_running_loop()
-
             if plan.existing_storage is not None:
                 self.logger.info(f"Loading existing index from {plan.existing_storage}...")
-                num_added = await loop.run_in_executor(
-                    None,
+                num_added = await _run_with_stall_guard(
                     lambda: storage.insert_documents(
                         plan.existing_storage, plan.storage_dir, documents
                     ),
+                    progress_callback=progress_callback,
                 )
                 self.logger.info(f"Added {num_added} documents to existing index")
                 if signature is not None and plan.storage_dir != plan.existing_storage:
@@ -264,9 +311,9 @@ class LlamaIndexPipeline:
             else:
                 self.logger.info(f"Creating new index with {len(documents)} documents...")
                 plan.storage_dir.mkdir(parents=True, exist_ok=True)
-                num_added = await loop.run_in_executor(
-                    None,
+                num_added = await _run_with_stall_guard(
                     lambda: storage.create_index(documents, plan.storage_dir, show_progress=True),
+                    progress_callback=progress_callback,
                 )
                 self.logger.info(f"Created new index with {num_added} documents")
                 if signature is not None:
