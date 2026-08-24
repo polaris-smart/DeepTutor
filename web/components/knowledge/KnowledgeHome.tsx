@@ -32,8 +32,10 @@ import {
 } from "@/lib/knowledge-helpers";
 import type { RagProviderSummary } from "@/lib/knowledge-api";
 
+type GroupedKnowledgeBase = KnowledgeBase & { group?: string };
+
 interface KnowledgeHomeProps {
-  kbs: KnowledgeBase[];
+  kbs: GroupedKnowledgeBase[];
   providers: RagProviderSummary[];
   onOpenKb: (name: string) => void;
   onOpenEngine: (id: string) => void;
@@ -126,6 +128,21 @@ export default function KnowledgeHome({
     if (!q) return kbs;
     return kbs.filter((kb) => kb.name.toLowerCase().includes(q));
   }, [kbs, query]);
+
+  const groupedKbs = useMemo(() => {
+    const groups = new Map<string, GroupedKnowledgeBase[]>();
+    for (const kb of filteredKbs) {
+      const group = kb.group?.trim() ?? "";
+      const items = groups.get(group) ?? [];
+      items.push(kb);
+      groups.set(group, items);
+    }
+    return Array.from(groups.entries()).sort(([left], [right]) => {
+      if (!left) return 1;
+      if (!right) return -1;
+      return left.localeCompare(right);
+    });
+  }, [filteredKbs]);
 
   return (
     <div className="flex-1 overflow-y-auto bg-[var(--background)]">
@@ -328,41 +345,50 @@ export default function KnowledgeHome({
               {t("No matches")}
             </div>
           ) : (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {filteredKbs.map((kb) => {
-                const docs = kbDocCount(kb);
-                return (
-                  <button
-                    key={kb.name}
-                    type="button"
-                    onClick={() => onOpenKb(kb.name)}
-                    className="group flex flex-col gap-2 rounded-2xl border border-[var(--border)] p-4 text-left transition-colors hover:border-[var(--ring)]"
-                  >
-                    <div className="flex items-center gap-2">
-                      <StatusDot kb={kb} />
-                      <span className="truncate text-[13.5px] font-medium text-[var(--foreground)]">
-                        {kb.name}
-                      </span>
-                      {kb.is_default && (
-                        <Star
-                          className="h-3 w-3 shrink-0 text-amber-500"
-                          fill="currentColor"
-                        />
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2 text-[11px] text-[var(--muted-foreground)]">
-                      <span className="rounded-full border border-[var(--border)] px-1.5 py-0.5">
-                        {providerName(kbProvider(kb))}
-                      </span>
-                      {docs !== null && (
-                        <span>
-                          {docs} {t("docs")}
-                        </span>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
+            <div className="space-y-5">
+              {groupedKbs.map(([group, groupKbs]) => (
+                <section key={group || "uncategorized"}>
+                  <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wide text-[var(--muted-foreground)]">
+                    {group || t("Uncategorized")}
+                  </h3>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    {groupKbs.map((kb) => {
+                      const docs = kbDocCount(kb);
+                      return (
+                        <button
+                          key={kb.name}
+                          type="button"
+                          onClick={() => onOpenKb(kb.name)}
+                          className="group flex flex-col gap-2 rounded-2xl border border-[var(--border)] p-4 text-left transition-colors hover:border-[var(--ring)]"
+                        >
+                          <div className="flex items-center gap-2">
+                            <StatusDot kb={kb} />
+                            <span className="truncate text-[13.5px] font-medium text-[var(--foreground)]">
+                              {kb.name}
+                            </span>
+                            {kb.is_default && (
+                              <Star
+                                className="h-3 w-3 shrink-0 text-amber-500"
+                                fill="currentColor"
+                              />
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 text-[11px] text-[var(--muted-foreground)]">
+                            <span className="rounded-full border border-[var(--border)] px-1.5 py-0.5">
+                              {providerName(kbProvider(kb))}
+                            </span>
+                            {docs !== null && (
+                              <span>
+                                {docs} {t("docs")}
+                              </span>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+              ))}
             </div>
           )}
         </section>

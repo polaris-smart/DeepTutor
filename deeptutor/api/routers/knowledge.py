@@ -158,6 +158,7 @@ def _writable_kb(kb_name: str) -> tuple[KnowledgeBaseManager, str, Path]:
 class KnowledgeBaseInfo(BaseModel):
     id: str | None = None
     name: str
+    group: str = ""
     is_default: bool
     statistics: dict
     metadata: dict | None = None
@@ -2089,7 +2090,7 @@ async def connect_ima_route(payload: ConnectImaRequest):
 
 
 @router.get("/list", response_model=list[KnowledgeBaseInfo])
-async def list_knowledge_bases():
+async def list_knowledge_bases(group: str | None = Query(default=None)):
     """List all available knowledge bases with their details."""
     try:
         manager = get_kb_manager()
@@ -2116,6 +2117,7 @@ async def list_knowledge_bases():
                     KnowledgeBaseInfo(
                         id=f"{own_prefix}{info['name']}",
                         name=info["name"],
+                        group=info.get("group", ""),
                         is_default=info["is_default"],
                         statistics=info.get("statistics", {}),
                         metadata=info.get("metadata"),
@@ -2147,6 +2149,7 @@ async def list_knowledge_bases():
                             KnowledgeBaseInfo(
                                 id=f"{own_prefix}{name}",
                                 name=name,
+                                group="",
                                 is_default=name == default_name,
                                 statistics={
                                     "raw_documents": 0,
@@ -2186,6 +2189,7 @@ async def list_knowledge_bases():
                         KnowledgeBaseInfo(
                             id=str(access.get("id") or ""),
                             name=str(access.get("name") or ""),
+                            group="",
                             is_default=False,
                             statistics={},
                             metadata={},
@@ -2218,6 +2222,7 @@ async def list_knowledge_bases():
                         KnowledgeBaseInfo(
                             id=resource.id,
                             name=info["name"],
+                            group=info.get("group", ""),
                             is_default=False,
                             statistics=info.get("statistics", {}),
                             metadata=info.get("metadata"),
@@ -2236,6 +2241,7 @@ async def list_knowledge_bases():
                         KnowledgeBaseInfo(
                             id=resource.id,
                             name=resource.name,
+                            group="",
                             is_default=False,
                             statistics={},
                             metadata={"name": resource.name, "last_error": error_msg},
@@ -2251,6 +2257,9 @@ async def list_knowledge_bases():
                             provenance_label=str(access.get("provenance_label") or ""),
                         )
                     )
+        if group is not None:
+            requested_group = group.strip()
+            result = [item for item in result if item.group == requested_group]
         return result
     except HTTPException:
         raise
@@ -2632,6 +2641,7 @@ async def create_knowledge_base(
     background_tasks: BackgroundTasks,
     name: str = Form(...),
     files: list[UploadFile] = File(...),
+    group: str = Form(""),
     rag_provider: str = Form(DEFAULT_PROVIDER),
     pageindex_mode: str = Form(""),
     rel_paths: list[str] = Form(None),
@@ -2647,6 +2657,8 @@ async def create_knowledge_base(
         kb_base_dir = _current_kb_base_dir()
         if name in manager.list_knowledge_bases():
             raise HTTPException(status_code=400, detail=f"Knowledge base '{name}' already exists")
+
+        group = str(group or "").strip()
 
         rag_provider = _validate_registered_provider(rag_provider)
         pageindex_mode = str(pageindex_mode or "").strip().lower()
@@ -2685,6 +2697,7 @@ async def create_knowledge_base(
         # Also store rag_provider in config (reload and update)
         manager.config = manager._load_config()
         if name in manager.config.get("knowledge_bases", {}):
+            manager.config["knowledge_bases"][name]["group"] = group
             manager.config["knowledge_bases"][name]["rag_provider"] = rag_provider
             manager.config["knowledge_bases"][name]["needs_reindex"] = False
             if rag_provider == PAGEINDEX_OSS_PROVIDER and pageindex_mode:

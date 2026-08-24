@@ -684,7 +684,13 @@ class KnowledgeBaseManager:
 
         logger.info(f"Auto-registered KB '{name}' to kb_config.json")
 
-    def register_knowledge_base(self, name: str, description: str = "", set_default: bool = False):
+    def register_knowledge_base(
+        self,
+        name: str,
+        description: str = "",
+        set_default: bool = False,
+        group: str = "",
+    ):
         """Register a knowledge base"""
         kb_dir = self.base_dir / name
         if not kb_dir.exists():
@@ -693,7 +699,11 @@ class KnowledgeBaseManager:
         if "knowledge_bases" not in self.config:
             self.config["knowledge_bases"] = {}
 
-        self.config["knowledge_bases"][name] = {"path": name, "description": description}
+        self.config["knowledge_bases"][name] = {
+            "path": name,
+            "description": description,
+            "group": str(group or "").strip(),
+        }
 
         # Only set default if explicitly requested
         if set_default:
@@ -1349,6 +1359,7 @@ class KnowledgeBaseManager:
 
         info = {
             "name": kb_name,
+            "group": str(kb_config.get("group", "") or "").strip(),
             "path": str(kb_dir),
             "is_default": kb_name == resolved_default,
             "metadata": metadata,
