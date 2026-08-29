@@ -20,6 +20,7 @@ const PROVIDER_ICONS: Record<string, { file: string; mono?: boolean }> = {
   siliconflow: { file: "siliconcloud-color.svg" },
   volcengine: { file: "volcengine-color.svg" },
   volcengine_coding_plan: { file: "volcengine-color.svg" },
+  volcengine_agent_plan: { file: "volcengine-color.svg" },
   byteplus: { file: "bytedance-color.svg" },
   byteplus_coding_plan: { file: "bytedance-color.svg" },
   github_copilot: { file: "githubcopilot.svg", mono: true },
