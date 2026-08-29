@@ -249,6 +249,8 @@ EMBEDDING_PROVIDERS: dict[str, EmbeddingProviderSpec] = {
         is_local=False,
         default_model="doubao-embedding-vision",
         default_dim=2048,
+        # Ark embeddings API rejects `input` arrays longer than 10.
+        max_batch_items=10,
         multimodal=True,
     ),
     "custom": EmbeddingProviderSpec(
