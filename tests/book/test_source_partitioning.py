@@ -12,6 +12,7 @@ over HTTP. Excluding every "connected" KB silently dropped those sources.
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -147,3 +148,30 @@ async def test_pageindex_is_read_by_source_explorer_agent_not_rag(monkeypatch) -
     assert chunks[0].kb_name == "reports"
     assert chunks[0].text == "Evidence from pages 3 and 7."
     assert chunks[0].metadata["sources"][0]["page"] == 3
+
+
+@pytest.mark.asyncio
+async def test_rag_retrieval_failure_is_visible_and_keeps_empty_result(
+    fake_metadata, monkeypatch, caplog
+) -> None:
+    fake_metadata["broken-kb"] = {"type": "local"}
+
+    async def fail_retrieval(**_kwargs):
+        raise RuntimeError("backend unavailable")
+
+    monkeypatch.setattr("deeptutor.tools.rag_tool.rag_search", fail_retrieval)
+
+    with caplog.at_level(logging.WARNING, logger="deeptutor.book.agents.source_explorer"):
+        chunks = await SourceExplorer(language="en")._retrieve_kb_chunks(
+            ["constitutional law"], ["broken-kb"]
+        )
+
+    assert chunks == []
+    visible_failures = [
+        record
+        for record in caplog.records
+        if record.levelno >= logging.WARNING
+        and "broken-kb" in record.getMessage()
+        and "backend unavailable" in record.getMessage()
+    ]
+    assert visible_failures
