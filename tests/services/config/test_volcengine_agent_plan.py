@@ -14,6 +14,7 @@ from deeptutor.services.config.provider_runtime import (
     VIDEOGEN_PROVIDERS,
     _canonical_embedding_provider_name,
     _canonical_generation_provider,
+    resolve_llm_runtime_config,
 )
 from deeptutor.services.provider_registry import (
     PROVIDERS,
@@ -104,3 +105,37 @@ def test_generation_canonical_resolution() -> None:
     assert _canonical_generation_provider("ark_plan", VIDEOGEN_PROVIDERS) == (
         "volcengine_agent_plan"
     )
+
+
+def test_llm_runtime_resolution_for_agent_plan_profile() -> None:
+    catalog = {
+        "version": 1,
+        "services": {
+            "llm": {
+                "active_profile_id": "p1",
+                "active_model_id": "m1",
+                "profiles": [
+                    {
+                        "id": "p1",
+                        "name": "agent plan llm",
+                        "binding": "volcengine_agent_plan",
+                        "base_url": PLAN_BASE,
+                        "api_key": "ark-test",
+                        "api_version": "",
+                        "extra_headers": {},
+                        "models": [
+                            {
+                                "id": "m1",
+                                "name": "seed",
+                                "model": "doubao-seed-2.1-turbo",
+                            }
+                        ],
+                    }
+                ],
+            }
+        },
+    }
+    resolved = resolve_llm_runtime_config(catalog=catalog)
+    assert resolved.binding == "volcengine_agent_plan"
+    assert resolved.binding_hint == "volcengine_agent_plan"
+    assert resolved.base_url == PLAN_BASE
