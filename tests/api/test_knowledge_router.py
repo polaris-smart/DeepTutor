@@ -1820,6 +1820,49 @@ def test_create_pageindex_oss_rejects_non_pdf(monkeypatch, tmp_path: Path) -> No
     assert "kb-oss-docx" not in manager.config["knowledge_bases"]
 
 
+def test_upload_processing_failure_finishes_error_handling(monkeypatch, tmp_path: Path) -> None:
+    base_dir = _write_upload_task_kb(tmp_path)
+
+    class _FailingDocumentAdder:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def add_documents(self, *_args, **_kwargs):
+            raise RuntimeError("index backend unavailable")
+
+    class _RecordingTaskManager:
+        def __init__(self) -> None:
+            self.updates: list[tuple[str, str, dict]] = []
+
+        def update_task_status(self, task_id: str, status: str, **details) -> None:
+            self.updates.append((task_id, status, details))
+
+    task_manager = _RecordingTaskManager()
+    monkeypatch.setattr(knowledge_router_module, "DocumentAdder", _FailingDocumentAdder)
+    monkeypatch.setattr(
+        knowledge_router_module.TaskIDManager,
+        "get_instance",
+        lambda: task_manager,
+    )
+
+    asyncio.run(
+        knowledge_router_module.run_upload_processing_task(
+            kb_name="kb",
+            base_dir=str(base_dir),
+            uploaded_file_paths=["broken.pdf"],
+            task_id="upload-failure-test",
+            rag_provider="llamaindex",
+        )
+    )
+
+    assert task_manager.updates[-1][1] == "error"
+    config = json.loads((base_dir / "kb_config.json").read_text(encoding="utf-8"))
+    entry = config["knowledge_bases"]["kb"]
+    assert entry["status"] == "error"
+    assert entry["progress"]["index_action"] == "upload"
+    assert "index backend unavailable" in entry["progress"]["error"]
+
+
 def test_upload_progress_counts_completed_files_and_reports_reliable_stages(
     monkeypatch, tmp_path: Path
 ) -> None:

@@ -24,6 +24,7 @@ from typing import Any
 # Heading patterns for Chinese K12 textbooks / workbooks.
 _UNIT_RE = re.compile(r"^第\s*[一二三四五六七八九十\d]+\s*(单元|部分|章)([　\s.、:：]*(.*))?$")
 _LESSON_RE = re.compile(r"^第\s*[一二三四五六七八九十\d]+\s*课([　\s.、:：-]*(.*))?$")
+_FRAME_RE = re.compile(r"^第\s*[一二三四五六七八九十\d]+\s*(?:节\s*)?框([　\s.、:：-]*(.*))?$")
 _SECTION_RE = re.compile(r"^(\d+[.．]\d*[　\s]*.{0,30})$|^[一二三四五六七八九十]+[、.．]\s*(.{1,20})$")
 _CHAPTER_NUM_RE = re.compile(r"^第\s*(\d+)\s*章")
 _PART_RE = re.compile(r"^(必修|选择性必修|选修)\s*([一二三123])")
@@ -77,6 +78,8 @@ def _block_level(block: dict, text: str) -> int | None:
         return 1
     if _LESSON_RE.match(text) or _CHAPTER_NUM_RE.match(text):
         return 2
+    if _FRAME_RE.match(text):
+        return 3
     if _TITLED_SECTION_RE.match(text) and len(text) <= 34 and not re.search(r"[。？?！!,，：:]", text):
         return 3
     return None
@@ -99,7 +102,7 @@ def _content_level(text: str, mineru_level: int) -> int | None:
         return 1
     if _LESSON_RE.match(text) or _CHAPTER_NUM_RE.match(text):
         return 2
-    if _TITLED_SECTION_RE.match(text):
+    if _FRAME_RE.match(text) or _TITLED_SECTION_RE.match(text):
         return 3
     # MinerU L1 on the cover ("普通高中教科书") is book furniture when it
     # appears before any real unit; treat generic L1 as lesson-level.

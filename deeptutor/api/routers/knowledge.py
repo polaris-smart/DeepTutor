@@ -3869,6 +3869,11 @@ async def run_upload_processing_task(
 
             error_msg = f"Upload processing failed (KB '{kb_name}'): {e}"
             trace = _tb.format_exc()
+            failure_metadata = {
+                "error": error_msg,
+                "index_action": "upload",
+                **_exception_failure_metadata(e),
+            }
             _task_log(task_id, error_msg, level="error")
             _task_log(task_id, f"Stack trace:\n{trace}", level="error")
 
@@ -3878,7 +3883,6 @@ async def run_upload_processing_task(
                 ProgressStage.ERROR,
                 message_key="Processing failed: {{error}}",
                 message_params={"error": error_msg},
-                error=error_msg,
                 **failure_metadata,
             )
             task_stream_manager.emit_failed(task_id, error_msg, details=trace)

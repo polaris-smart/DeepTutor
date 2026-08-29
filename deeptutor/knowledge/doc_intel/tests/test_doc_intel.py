@@ -58,6 +58,27 @@ def test_struct_path_prefix():
     assert any(p.startswith("第1章") for p in nonempty)
 
 
+@pytest.mark.parametrize("frame_title", ["第一框", "第2框", "第三节框"])
+def test_politics_frame_headings_are_nested_below_lessons(frame_title: str) -> None:
+    r = enrich(
+        [
+            {"type": "text", "text": "第一课 人民民主专政"},
+            {"type": "text", "text": frame_title},
+            {"type": "text", "text": "人民民主是社会主义的生命。"},
+        ],
+        "",
+        "思想政治.pdf",
+    )
+
+    lesson = r["tree"]["children"][0]
+    frame = lesson["children"][0]
+    expected_path = f"第一课 人民民主专政/{frame_title}"
+    assert lesson["level"] == 2
+    assert frame["level"] == 3
+    assert frame["struct_path"] == expected_path
+    assert r["paths"][2] == expected_path
+
+
 def test_practice_headers_are_not_sections():
     r = enrich(V1_TEXTBOOK_TOC, "", "苏教必修1_1-200.pdf")
     tree = r["tree"]
