@@ -37,6 +37,7 @@ const TYPE_ICON: Record<BlockType, LucideIcon> = {
   flash_cards: Sticker,
   deep_dive: MessageCircle,
   concept_graph: Layers,
+  reading: BookOpen,
 };
 
 const TYPE_LABEL_EN: Record<BlockType, string> = {
@@ -53,6 +54,7 @@ const TYPE_LABEL_EN: Record<BlockType, string> = {
   flash_cards: "Flash cards",
   deep_dive: "Deep dive",
   concept_graph: "Concept graph",
+  reading: "Reading",
 };
 
 function shortLabel(block: Block, fallback: string): string {
