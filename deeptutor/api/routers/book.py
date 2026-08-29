@@ -28,7 +28,15 @@ from deeptutor.book import (
 )
 from deeptutor.book.estimate import chapter_basis
 from deeptutor.book.export import export_filename, render_book_markdown
-from deeptutor.book.models import ContentType, LearningCapture, LearningCaptureStatus
+from deeptutor.book.importer import TocImportError, toc_to_spine
+from deeptutor.book.models import (
+    BlockStatus,
+    ContentType,
+    LearningCapture,
+    LearningCaptureStatus,
+    Page,
+    PageStatus,
+)
 from deeptutor.book.recitation import (
     resolve_target_lines,
     score_recitation,
@@ -70,6 +78,30 @@ class ConfirmSpineRequest(BaseModel):
     book_id: str
     spine: dict[str, Any] | None = None
     auto_compile: bool = True
+
+
+class SpineImportRequest(BaseModel):
+    """Import a textbook TOC as the spine (deterministic, no SpineAgent)."""
+
+    book_id: str
+    toc: list[dict[str, Any]]  # recursive: [{title, content_type?, summary?, children?}]
+    auto_compile: bool = False
+
+
+class ImportedPageSpec(BaseModel):
+    """One page of a bulk pages-import: title + verbatim blocks."""
+
+    title: str
+    blocks: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class PagesImportRequest(BaseModel):
+    """Bulk-import verbatim pages under one chapter (zero-LLM canon channel)."""
+
+    book_id: str
+    chapter_id: str
+    pages: list[ImportedPageSpec]
+    mark_ready: bool = True  # pages whose blocks are all READY become READY
 
 
 class CompilePageRequest(BaseModel):
@@ -597,6 +629,104 @@ async def confirm_spine(req: ConfirmSpineRequest) -> dict[str, Any]:
         logger.error(f"confirm_spine failed: {exc}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
     return {"pages": [p.model_dump(mode="json") for p in pages]}
+
+
+@router.post("/books/{book_id}/spine/import")
+async def import_spine(book_id: str, req: SpineImportRequest) -> dict[str, Any]:
+    """Import a textbook TOC as the book's spine (deterministic canon path).
+
+    Complements the generated-spine flow: chapter titles come from the
+    textbook's own table of contents instead of SpineAgent invention, then the
+    confirmed-spine machinery (overview injection, page shells) runs unchanged.
+    """
+    engine = get_book_engine()
+    if req.book_id != book_id:
+        raise HTTPException(status_code=400, detail="book_id mismatch between path and body")
+    try:
+        spine = toc_to_spine(book_id, req.toc)
+    except TocImportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        pages = await engine.confirm_spine(
+            book_id=book_id,
+            edited_spine=spine,
+            auto_compile=req.auto_compile,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"spine import failed: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+    saved = engine.load_spine(book_id)
+    return {
+        "pages": [p.model_dump(mode="json") for p in pages],
+        "spine": saved.model_dump(mode="json") if saved else None,
+    }
+
+
+@router.post("/books/{book_id}/pages/import")
+async def import_pages(book_id: str, req: PagesImportRequest) -> dict[str, Any]:
+    """Bulk-import verbatim pages under one chapter (zero-LLM canon channel).
+
+    Blocks are inserted through the standard insert-block machinery with
+    ``compile_now=False``; verbatim generators (reading/user_note) materialize
+    immediately, so pages whose blocks are all READY are marked READY without
+    ever invoking the compiler.
+    """
+    engine = get_book_engine()
+    spine = engine.load_spine(book_id)
+    if spine is None:
+        raise HTTPException(status_code=404, detail=f"No spine for book {book_id}")
+    chapter = spine.chapter_by_id(req.chapter_id)
+    if chapter is None:
+        raise HTTPException(status_code=404, detail=f"Chapter {req.chapter_id} not found")
+
+    created: list[Page] = []
+    try:
+        for spec in req.pages:
+            page = Page(
+                book_id=book_id,
+                chapter_id=chapter.id,
+                title=spec.title,
+                content_type=chapter.content_type,
+                order=chapter.order,
+                status=PageStatus.PENDING,
+            )
+            engine.storage.save_page(page)
+            chapter.page_ids.append(page.id)
+            engine.storage.save_spine(spine)
+            all_ready = True
+            for blk in spec.blocks:
+                block = await engine.insert_block(
+                    book_id=book_id,
+                    page_id=page.id,
+                    block_type=_coerce_block_type(str(blk.get("block_type") or "")),
+                    params=blk.get("params") or {},
+                    compile_now=False,
+                )
+                if block is None:
+                    raise ValueError(f"failed to insert block into page {page.id}")
+                if block.status != BlockStatus.READY:
+                    all_ready = False
+            if req.mark_ready and all_ready and spec.blocks:
+                # Reload before promoting: insert_block persisted blocks onto
+                # the stored page — the in-memory shell is stale now.
+                saved = engine.storage.load_page(book_id, page.id)
+                if saved is not None:
+                    saved.status = PageStatus.READY
+                    saved.updated_at = time.time()
+                    engine.storage.save_page(saved)
+                    created.append(saved)
+                    continue
+            created.append(page)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"pages import failed: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"pages": [p.model_dump(mode="json") for p in created]}
 
 
 @router.post("/books/compile-page")

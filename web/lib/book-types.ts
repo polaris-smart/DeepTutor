@@ -44,6 +44,7 @@ export type BlockType =
   | "flash_cards"
   | "deep_dive"
   | "section"
+  | "reading"
   | "concept_graph";
 
 export type ContentType =

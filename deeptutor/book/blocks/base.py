@@ -199,6 +199,7 @@ def _build_default_registry() -> BlockGeneratorRegistry:
     from .flash_cards import FlashCardsGenerator
     from .interactive import InteractiveGenerator
     from .quiz import QuizGenerator
+    from .reading import ReadingGenerator
     from .section import SectionGenerator
     from .text import TextGenerator
     from .timeline import TimelineGenerator
@@ -218,6 +219,7 @@ def _build_default_registry() -> BlockGeneratorRegistry:
         DeepDiveGenerator,
         ConceptGraphGenerator,
         SectionGenerator,
+        ReadingGenerator,
     ):
         registry.register(cls())
     return registry

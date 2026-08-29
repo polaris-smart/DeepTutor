@@ -17,6 +17,7 @@ import MarkdownRenderer from "@/components/common/MarkdownRenderer";
 
 import BlockBodyEditor from "./BlockBodyEditor";
 import TextBlock from "./TextBlock";
+import ReadingBlock from "./ReadingBlock";
 import CalloutBlock from "./CalloutBlock";
 import QuizBlock, { type QuizAttemptArgs } from "./QuizBlock";
 import UserNoteBlock from "./UserNoteBlock";
@@ -159,6 +160,10 @@ export default function BlockRenderer({
       break;
     case "section":
       body = <SectionBlock block={block} />;
+      break;
+    case "reading":
+      // Verbatim textbook canon — never an editor target, never regenerated.
+      body = <ReadingBlock block={block} />;
       break;
     case "callout":
       body = <CalloutBlock block={block} />;

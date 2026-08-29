@@ -74,6 +74,9 @@ class BlockType(str, Enum):
     # Phase 4 (BookEngine v2)
     SECTION = "section"  # long-form chapter section (multi-subsection)
     CONCEPT_GRAPH = "concept_graph"  # rendered overview / TOC graph
+    # Textbook import (YuEdu proposal): verbatim canon block — zero-LLM path
+    # (like user_note) but rendered as textbook prose, not a note card.
+    READING = "reading"
     # Guided Learning
     DIAGNOSTIC = "diagnostic"
     PRETEST = "pretest"
