@@ -126,3 +126,56 @@ def assign_page_ranges(chapters: list[Chapter], *, page_count: int) -> list[Chap
             chapters[i + 1].page_idx if i + 1 < len(chapters) else max(page_count - 1, chapter.page_idx)
         )
     return chapters
+
+
+# ── v0.3: 框级/综合探究检测（页中 title 块，无页顶带约束）────────────────
+# 实测（必修1）：框标题 h=22-24，综合探究 h≈27，小节行 h≈21，课标题残留 h≈28。
+# 栏目名走黑名单；出版社页眉漏网走 PUBLISHER_NOISE。
+
+PUBLISHER_NOISE = frozenset({"人民教育出版社", "出版社", "思想政治", "目录", "后记"})
+
+
+def detect_frames(
+    layout: dict,
+    *,
+    height_range: tuple[float, float] = (20.0, 25.0),
+    extras_range: tuple[float, float] = (26.0, 29.0),
+    first_lesson_page_idx: int | None = None,
+    lesson_titles: list[str] = (),
+) -> tuple[list[dict], list[dict]]:
+    """Detect 框-level headings (and chapter-level extras like 综合探究).
+
+    Returns ``(frames, extras)`` — each item ``{title, page_idx, bbox, height}``.
+    框 = mid-page title blocks in the frame height band; extras (综合探究/后记)
+    sit in the slightly taller band. Blacklist + publisher noise + 课 regex
+    filtered out.
+    """
+    frames: list[dict] = []
+    extras: list[dict] = []
+    for page in layout.get("pdf_info", []):
+        for block in page.get("para_blocks", []):
+            if block.get("type") != "title":
+                continue
+            text = block_text(block)
+            if not text or text in COLUMN_BLACKLIST or text in PUBLISHER_NOISE:
+                continue
+            if CHAPTER_RE.match(text):
+                continue  # 课级走页脚法
+            height = block["bbox"][3] - block["bbox"][1]
+            item = {
+                "title": text,
+                "page_idx": page["page_idx"],
+                "bbox": list(block["bbox"]),
+                "height": round(height, 1),
+            }
+            if height_range[0] <= height <= height_range[1]:
+                if len(text) >= 6:
+                    # 封面/前置页噪音 + 课标题换行残留（是某课标题的子串）
+                    if first_lesson_page_idx is not None and item["page_idx"] < first_lesson_page_idx:
+                        continue
+                    if any(text in lt for lt in lesson_titles):
+                        continue
+                    frames.append(item)
+            elif extras_range[0] <= height <= extras_range[1] and len(text) >= 3:
+                extras.append(item)
+    return frames, extras
