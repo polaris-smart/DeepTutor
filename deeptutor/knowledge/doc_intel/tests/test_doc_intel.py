@@ -149,3 +149,55 @@ def test_block_meta_shape():
     assert len(r["block_meta"]) == len(V1_TEACHER_EDITION)
     for md in r["block_meta"]:
         assert isinstance(md, dict)
+
+
+from deeptutor.knowledge.doc_intel.structure import build_tree
+
+
+# ── 页脚法门卫（v0.4）：footer 课名登记表 + printed_page 锚定 ────────────
+
+
+def test_footer_register_gates_false_lesson_titles():
+    """必修1 假阳性回归：目录页/伪标题不得开课，只有页脚登记过的课才开。"""
+    blocks = [
+        # 页脚登记：全书只有两课（页脚出现在各课首页，页码随行）
+        {"type": "footer", "text": "第一课 社会主义从空想到科学、从理论到实践的发展", "page_number": "1"},
+        {"type": "page_number", "text": "1"},
+        {"type": "title", "text": "第一课 社会主义从空想到科学、从理论到实践的发展"},
+        {"type": "text", "text": "原始社会是人类社会发展的最初阶段。"},
+        # 伪标题：目录页行 / 未登记的课（无页脚登记）
+        {"type": "title", "text": "第二课 只有社会主义才能救中国"},
+        {"type": "footer", "text": "第二课 只有社会主义才能救中国", "page_number": "21"},
+        {"type": "title", "text": "第二课 只有社会主义才能救中国"},
+    ]
+    tree, _ = build_tree(blocks, doc_id="bk_test")
+    assert tree is not None
+    lessons = [n for n in tree["children"] if n["level"] == 2]
+    assert len(lessons) == 2, [n["title"] for n in lessons]
+    assert lessons[0]["title"].startswith("第一课")
+    assert lessons[1]["title"].startswith("第二课")
+    # 无页脚登记的伪课标题（如"第三课"未被任何页脚宣布）不得开课
+    assert not any(n["title"].startswith("第三课") for n in tree["children"])
+
+
+def test_footer_printed_page_anchored_to_node():
+    blocks = [
+        {"type": "page_number", "text": "1"},
+        {"type": "footer", "text": "第一课 社会主义从空想到科学、从理论到实践的发展"},
+        {"type": "title", "text": "第一课 社会主义从空想到科学、从理论到实践的发展"},
+        {"type": "text", "text": "正文。"},
+    ]
+    tree, _ = build_tree(blocks, doc_id="bk_test")
+    lesson = tree["children"][0]
+    assert lesson.get("printed_page") == 1
+
+
+def test_no_footer_register_keeps_legacy_behavior():
+    """无页脚块时（旧引擎产物），门卫不激活，行为与旧版一致。"""
+    blocks = [
+        {"type": "title", "text": "第一课 测试课"},
+        {"type": "text", "text": "正文。"},
+    ]
+    tree, _ = build_tree(blocks, doc_id="bk_legacy")
+    assert tree is not None
+    assert tree["children"][0]["title"] == "第一课 测试课"

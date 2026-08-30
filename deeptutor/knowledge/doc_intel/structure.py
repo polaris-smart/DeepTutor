@@ -132,15 +132,21 @@ class StructureNode:
     # textbook tree and knowledge points / questions derived from this node.
     struct_path: str = ""
     node_id: str = ""
+    # 印刷页码（页脚 page_number 直读；None=页脚法未覆盖该课）。随 to_dict 落盘，
+    # 供阅读器"跳教材页"与坐标校验使用。
+    printed_page: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "title": self.title,
             "level": self.level,
             "struct_path": self.struct_path,
             "node_id": self.node_id,
             "children": [c.to_dict() for c in self.children],
         }
+        if self.printed_page is not None:
+            d["printed_page"] = self.printed_page
+        return d
 
 
 def build_tree(blocks: list[dict], *, text_fn=_block_text_v1, doc_id: str = "") -> tuple[dict | None, list[str]]:
@@ -165,6 +171,26 @@ def build_tree(blocks: list[dict], *, text_fn=_block_text_v1, doc_id: str = "") 
     # chapters in order and the body restarts at chapter 1.
     in_toc = False
     toc_seen_entries = 0
+
+    # ── Running-header lesson register (页脚法, v0.4) ────────────────────
+    # Footer blocks repeat the current chapter title with the printed page
+    # number nearby. They form an authoritative lesson register: when present,
+    # a lesson-level title block may only open a lesson if the running headers
+    # also announce it — otherwise it is TOC-page noise / a false heading
+    # (必修1: body lesson headings were dropped to discarded_blocks, leaving
+    # only TOC rows as title blocks, which fabricated wrong chapter starts).
+    footer_register: dict[str, int | None] = {}  # norm_title -> printed_page
+    last_page_number: int | None = None
+    for block in blocks:
+        btype = block.get("type")
+        text = text_fn(block)
+        if btype == "page_number" and text.isdigit():
+            last_page_number = int(text)
+        elif btype == "footer" and re.match(
+            r"^第\s*[一二三四五六七八九十百\d]+\s*课", text
+        ):
+            footer_register[_norm(text)] = last_page_number
+    footer_register_active = bool(footer_register)
 
     for i, block in enumerate(blocks):
         text = text_fn(block)
@@ -228,6 +254,12 @@ def build_tree(blocks: list[dict], *, text_fn=_block_text_v1, doc_id: str = "") 
                 stack.pop()
             while node_stack and node_stack[-1].level >= level:
                 node_stack.pop()
+            # 页脚法门卫：running headers 已登记课名时，只有登记在册的课标题
+            # 才能开课——目录页行/伪标题在此被拒（必修1 v0.1 假阳性的解）。
+            if footer_register_active and level == 2:
+                if _norm(text) not in footer_register:
+                    paths.append("")
+                    continue
             stack.append((level, text))
             struct_path = "/".join(t for _, t in stack)
             node = StructureNode(
@@ -236,6 +268,7 @@ def build_tree(blocks: list[dict], *, text_fn=_block_text_v1, doc_id: str = "") 
                 block_span=(i, i + 1),
                 struct_path=struct_path,
                 node_id=stable_node_id(doc_id, struct_path),
+                printed_page=footer_register.get(_norm(text)),
             )
             if node_stack:
                 node_stack[-1].children.append(node)
