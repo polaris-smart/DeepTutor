@@ -44,7 +44,7 @@ _NATIVE_TOOL_BLOCKED_BINDINGS: frozenset[str] = frozenset(
 # backend needs an adapter branch, or tool schemas would be attached to a plain
 # AsyncOpenAI client pointed at a non-OpenAI wire format. github_copilot is
 # adapter-routed but deliberately excluded from this set.
-_NATIVE_TOOL_BACKENDS: frozenset[str] = frozenset({"anthropic", "openai_codex"})
+_NATIVE_TOOL_BACKENDS: frozenset[str] = frozenset({"anthropic", "openai_codex", "codebuddy"})
 _AGENTIC_CLIENT_POOL_MAXSIZE = 2
 _agentic_client_pool: "OrderedDict[tuple[Any, ...], Any]" = OrderedDict()
 _agentic_client_pool_lock = threading.RLock()
@@ -302,6 +302,7 @@ _NATIVE_ADAPTER_BUILDERS: dict[str, Callable[[LLMClientConfig, Any], Any]] = {
     "anthropic": _build_anthropic_adapter,
     "openai_codex": _build_codex_adapter,
     "github_copilot": _build_copilot_adapter,
+    "codebuddy": _build_codebuddy_adapter,
 }
 
 
@@ -390,7 +391,9 @@ class _ProviderOpenAIAdapter:
                         ],
                         provider_specific_fields=response.provider_specific_fields,
                     ),
-                    finish_reason=response.finish_reason or "stop",
+                    finish_reason=(
+                        "tool_calls" if response.tool_calls else response.finish_reason or "stop"
+                    ),
                 )
             ],
             usage=response.usage or None,
@@ -471,7 +474,9 @@ class _ProviderOpenAIStream:
                 await self._queue.put(_openai_stream_chunk(tool_call=tool_call, index=index))
             await self._queue.put(
                 _openai_stream_chunk(
-                    finish_reason=response.finish_reason or "stop",
+                    finish_reason=(
+                        "tool_calls" if response.tool_calls else response.finish_reason or "stop"
+                    ),
                     usage=response.usage or None,
                     provider_specific_fields=response.provider_specific_fields,
                 )

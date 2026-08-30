@@ -58,10 +58,7 @@ from deeptutor.learning.policy import (
     path_display_name,
 )
 
-from deeptutor.learning.pending import (
-    pending_ask_user_questions,
-    public_pending_question,
-)
+from deeptutor.learning.pending import public_pending_question
 
 if TYPE_CHECKING:
     from deeptutor.learning.models import LearningProgress
@@ -589,7 +586,7 @@ class MasteryQuizTool(BaseTool):
                 "question": pending.prompt,
                 "options": pending.options,
                 "pending_question": public_question.to_dict(),
-                "ask_user": {"questions": pending_ask_user_questions(pending)},
+                "ask_user": {"questions": [public_question.to_ask_user_dict()]},
                 "instruction": (
                     "Pass ask_user.questions through unchanged: its question id and "
                     "option labels are bound to the persisted question. Then call "
