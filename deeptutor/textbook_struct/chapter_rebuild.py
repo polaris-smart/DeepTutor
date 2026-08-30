@@ -179,3 +179,60 @@ def detect_frames(
             elif extras_range[0] <= height <= extras_range[1] and len(text) >= 3:
                 extras.append(item)
     return frames, extras
+
+
+# ── v0.4: 级别感知边界 + 偏移恒定校验（P0 方案 §4.5/§6）────────────────
+from .page_headers import page_facts
+
+UNIT_RE_MAP = {
+    "课": re.compile(r"^第\s*[一二三四五六七八九十百\d]+\s*课"),
+    "章": re.compile(r"^第\s*[一二三四五六七八九十百\d]+\s*章"),
+    "节": re.compile(r"^第\s*[一二三四五六七八九十百\d]+\s*节"),
+    "单元": re.compile(r"^第\s*[一二三四五六七八九十百\d]+\s*单元"),
+}
+
+
+def rebuild_from_headers_level(layout: dict, unit: str = "课") -> list[Chapter]:
+    """级别感知页脚法：只认目标级别（如"课"）的页眉变化为章界。
+
+    双级页眉教材（地理"第X章/第Y节"同页眉轮换）中，非目标级别的页眉变化
+    不构成边界——否则会误切出伪章节（P0 方案反例 #7）。
+    """
+    unit_re = UNIT_RE_MAP.get(unit)
+    if unit_re is None:
+        raise ValueError(f"unknown unit: {unit}")
+    chapters: list[Chapter] = []
+    seen: set[str] = set()
+    page_count = len(layout.get("pdf_info", []))
+    for page in layout.get("pdf_info", []):
+        footers, printed = page_facts(page)
+        for title in footers:
+            if not unit_re.match(title):
+                continue
+            if title in seen:
+                continue
+            seen.add(title)
+            chapters.append(
+                Chapter(
+                    title=title,
+                    page_idx=page["page_idx"],
+                    bbox=[],
+                    meta={"printed_page": int(printed) if printed.isdigit() else None},
+                )
+            )
+    return assign_page_ranges(chapters, page_count=page_count)
+
+
+def verify_offset(chapters: list[Chapter]) -> dict:
+    """偏移恒定校验：物理页(1-based) − 印刷页码 应全书恒定。
+
+    偏移不一致 = 页脚法误判了章节边界（P0 方案 §6 校验逻辑）。
+    """
+    offsets = sorted(
+        {c.page_idx + 1 - c.meta["printed_page"] for c in chapters if c.meta.get("printed_page")}
+    )
+    return {
+        "offsets": offsets,
+        "consistent": len(offsets) <= 1,
+        "ok": bool(offsets) and len(offsets) == 1,
+    }
