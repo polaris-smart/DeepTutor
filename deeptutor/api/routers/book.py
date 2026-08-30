@@ -28,7 +28,7 @@ from deeptutor.book import (
 )
 from deeptutor.book.estimate import chapter_basis
 from deeptutor.book.export import export_filename, render_book_markdown
-from deeptutor.book.importer import TocImportError, toc_to_spine
+from deeptutor.book.importer import TocImportError, layout_to_spine, toc_to_spine
 from deeptutor.book.models import (
     BlockStatus,
     ContentType,
@@ -84,7 +84,9 @@ class SpineImportRequest(BaseModel):
     """Import a textbook TOC as the spine (deterministic, no SpineAgent)."""
 
     book_id: str
-    toc: list[dict[str, Any]]  # recursive: [{title, content_type?, summary?, children?}]
+    toc: list[dict[str, Any]] | None = None  # recursive: [{title, children?}]
+    layout: dict[str, Any] | None = None  # MinerU layout.json → 页脚法重建
+    source: str = "toc_json"  # "toc_json" | "layout_json"
     auto_compile: bool = False
 
 
@@ -643,7 +645,14 @@ async def import_spine(book_id: str, req: SpineImportRequest) -> dict[str, Any]:
     if req.book_id != book_id:
         raise HTTPException(status_code=400, detail="book_id mismatch between path and body")
     try:
-        spine = toc_to_spine(book_id, req.toc)
+        if req.source == "layout_json" or req.layout is not None:
+            if req.layout is None:
+                raise HTTPException(status_code=400, detail="source=layout_json requires layout")
+            spine = layout_to_spine(book_id, req.layout)
+        else:
+            if not req.toc:
+                raise HTTPException(status_code=400, detail="toc is required for source=toc_json")
+            spine = toc_to_spine(book_id, req.toc)
     except TocImportError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     try:

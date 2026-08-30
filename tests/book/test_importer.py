@@ -72,3 +72,35 @@ def test_summary_and_objectives_carried_through() -> None:
     )
     assert spine.chapters[0].summary == "社会主义发展史"
     assert spine.chapters[0].learning_objectives == ["理解空想社会主义的局限"]
+
+
+def test_layout_to_spine_rebuilds_from_running_headers() -> None:
+    from deeptutor.book.importer import layout_to_spine
+
+    layout = {
+        "pdf_info": [
+            {"page_idx": 0, "para_blocks": [], "discarded_blocks": [
+                {"type": "footer", "lines": [{"spans": [{"content": "第一课 社会主义从空想到科学、从理论到实践的发展"}]}]},
+                {"type": "page_number", "lines": [{"spans": [{"content": "1"}]}]},
+            ]},
+            {"page_idx": 19, "para_blocks": [], "discarded_blocks": [
+                {"type": "footer", "lines": [{"spans": [{"content": "第二课 只有社会主义才能救中国"}]}]},
+                {"type": "page_number", "lines": [{"spans": [{"content": "15"}]}]},
+            ]},
+        ]
+    }
+    spine = layout_to_spine("bk_layout", layout)
+    assert [c.title for c in spine.chapters] == [
+        "第一课 社会主义从空想到科学、从理论到实践的发展",
+        "第二课 只有社会主义才能救中国",
+    ]
+    assert spine.chapters[0].meta["printed_page"] == 1
+    assert spine.chapters[1].meta["printed_page"] == 15
+
+
+def test_layout_to_spine_rejects_empty_layout() -> None:
+    from deeptutor.book.importer import layout_to_spine
+
+    import pytest
+    with pytest.raises(Exception):
+        layout_to_spine("bk_layout", {"pdf_info": []})
