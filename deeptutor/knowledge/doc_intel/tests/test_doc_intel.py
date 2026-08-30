@@ -201,3 +201,20 @@ def test_no_footer_register_keeps_legacy_behavior():
     tree, _ = build_tree(blocks, doc_id="bk_legacy")
     assert tree is not None
     assert tree["children"][0]["title"] == "第一课 测试课"
+
+
+def test_footer_register_covers_chapter_style_books():
+    """章体系教材（数学/地理"第X章"）同样受益于页脚门卫。"""
+    blocks = [
+        {"type": "page_number", "text": "1"},
+        {"type": "footer", "text": "第一章 集合与常用逻辑用语"},
+        {"type": "title", "text": "第一章 集合与常用逻辑用语"},
+        {"type": "text", "text": "集合是数学中的基础概念。"},
+        {"type": "title", "text": "第二章 不等式"},  # 未登记 → 伪标题拒之门外
+        {"type": "footer", "text": "第二章 不等式", "page_number": "40"},
+        {"type": "title", "text": "第二章 不等式"},
+    ]
+    tree, _ = build_tree(blocks, doc_id="bk_ch")
+    chapters = [n for n in tree["children"] if "第" in n["title"]]
+    assert [n["title"][:3] for n in chapters] == ["第一章", "第二章"]
+    assert chapters[0].get("printed_page") == 1

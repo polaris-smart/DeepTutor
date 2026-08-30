@@ -187,7 +187,7 @@ def build_tree(blocks: list[dict], *, text_fn=_block_text_v1, doc_id: str = "") 
         if btype == "page_number" and text.isdigit():
             last_page_number = int(text)
         elif btype == "footer" and re.match(
-            r"^第\s*[一二三四五六七八九十百\d]+\s*课", text
+            r"^第\s*[一二三四五六七八九十百\d]+\s*(?:课|章)", text
         ):
             footer_register[_norm(text)] = last_page_number
     footer_register_active = bool(footer_register)
@@ -254,9 +254,12 @@ def build_tree(blocks: list[dict], *, text_fn=_block_text_v1, doc_id: str = "") 
                 stack.pop()
             while node_stack and node_stack[-1].level >= level:
                 node_stack.pop()
-            # 页脚法门卫：running headers 已登记课名时，只有登记在册的课标题
-            # 才能开课——目录页行/伪标题在此被拒（必修1 v0.1 假阳性的解）。
-            if footer_register_active and level == 2:
+            # 页脚法门卫：running headers 已登记课/章名时，只有登记在册的
+            # 课/章标题才能开课——目录页行/伪标题在此被拒（必修1 v0.1 假阳性
+            # 的解）。按标题模式把关而非层级，兼容课制与章制教材。
+            if footer_register_active and re.match(
+                r"^第\s*[一二三四五六七八九十百\d]+\s*(?:课|章)", text
+            ):
                 if _norm(text) not in footer_register:
                     paths.append("")
                     continue
