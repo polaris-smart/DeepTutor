@@ -330,6 +330,14 @@ TTS_PROVIDERS: dict[str, VoiceProviderSpec] = {
         default_model="openai/gpt-4o-mini-tts",
         default_voice="alloy",
     ),
+    "volc_plan": VoiceProviderSpec(
+        label="Volcano Agent Plan (Seed TTS 2.0)",
+        # Agent-Plan exclusive endpoint; the public /api/v3/tts line bills extra.
+        default_api_base="https://openspeech.bytedance.com/api/v3/plan/tts/unidirectional",
+        adapter="volc_plan_tts",
+        default_model="seed-tts-2.0",
+        default_voice="",  # required: pick a speaker from the seed-tts-2.0 catalog
+    ),
     "groq": VoiceProviderSpec(
         label="Groq",
         default_api_base="https://api.groq.com/openai/v1",
