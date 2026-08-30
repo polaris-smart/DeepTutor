@@ -9,32 +9,82 @@ and grading, so all three boundaries use the same immutable label/body map.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 import re
 from typing import TYPE_CHECKING, Any
+
+from deeptutor.utils.text_display import decode_escaped_unicode_for_display
 
 if TYPE_CHECKING:
     from deeptutor.learning.models import PendingQuestion
 
 
-OPTION_PREFIX_RE = re.compile(r"^\s*([A-Z])\s*[.:：、)）-]\s*(.+)$", re.IGNORECASE)
+OPTION_PREFIX_RE = re.compile(r"^\s*([A-Z])\s*[.:：、)）-]\s*(.+)$", re.IGNORECASE | re.DOTALL)
+
+
+def positional_label(index: int) -> str:
+    """The label an option carries by its position: A, B, C, … then 27, 28, …"""
+    return chr(ord("A") + index) if index < 26 else str(index + 1)
+
+
+def _option_texts(options: list[str]) -> list[str]:
+    return [text for text in (str(raw or "").strip() for raw in options) if text]
+
+
+def _split_labelled(texts: list[str]) -> tuple[list[str], list[str]] | None:
+    """``(labels, bodies)`` when every option carries a single-letter prefix."""
+    labels: list[str] = []
+    bodies: list[str] = []
+    for text in texts:
+        if len(text) == 1 and text.isalnum():
+            # Legacy rows persisted the bare labels themselves.
+            labels.append(text.upper())
+            bodies.append(text)
+            continue
+        match = OPTION_PREFIX_RE.match(text)
+        if match is None:
+            return None
+        labels.append(match.group(1).upper())
+        bodies.append(match.group(2).strip())
+    return labels, bodies
+
+
+def option_label_intent(options: list[str]) -> list[str] | None:
+    """The A/B/C labels the caller *meant* to give, or ``None`` if unlabelled.
+
+    "Meant to" is decided by two things together: every option carries a
+    single-letter prefix, and the first one is ``A``. A leading letter alone is
+    not evidence — ``"x - 1 = 0"`` matches the prefix pattern and would
+    otherwise register as option ``X`` with the body ``"1 = 0"``, which is how
+    a maths question ended up with mislabelled and (once two options collided
+    on one letter) duplicated choices.
+
+    The returned labels may still be malformed — repeated or skipping a letter.
+    :func:`parse_options` reads those positionally so nothing is lost, and
+    registration rejects them so the model fixes the question instead.
+    """
+    split = _split_labelled(_option_texts(options))
+    if split is None:
+        return None
+    labels, _ = split
+    return labels if labels and labels[0] == "A" else None
+
+
+def canonical_labels(count: int) -> set[str]:
+    """The label set a well-formed *count*-option question must carry."""
+    return {positional_label(index) for index in range(count)}
 
 
 def parse_options(options: list[str]) -> dict[str, str]:
     """Map persisted option strings to their stable ``{label: body}`` form."""
-    result: dict[str, str] = {}
-    for idx, raw in enumerate(options):
-        text = str(raw or "").strip()
-        if not text:
-            continue
-        match = OPTION_PREFIX_RE.match(text)
-        if match:
-            result[match.group(1).upper()] = match.group(2).strip()
-        elif len(text) == 1 and text.isalnum():
-            result[text.upper()] = text
-        else:
-            result[chr(ord("A") + idx) if idx < 26 else str(idx + 1)] = text
-    return result
+    texts = _option_texts(options)
+    split = _split_labelled(texts)
+    if split is not None:
+        labels, bodies = split
+        if labels[:1] == ["A"] and set(labels) == canonical_labels(len(labels)):
+            return dict(zip(labels, bodies, strict=True))
+    return {positional_label(index): text for index, text in enumerate(texts)}
 
 
 def has_option_bodies(options: dict[str, str]) -> bool:
@@ -71,12 +121,38 @@ def resolve_answer(answer: str, options: dict[str, str]) -> str:
     return contained[0] if len(contained) == 1 else ""
 
 
-def resolve_choice_submission(answer: str, options: dict[str, str]) -> str:
-    """Resolve a learner submission by label or one exact, unique option body.
+def _squeezed(value: str) -> str:
+    """Case-folded with all whitespace removed, for comparing formulas."""
+    return "".join(str(value or "").split()).casefold()
 
-    Registration remains forgiving of a model-supplied body fragment through
-    :func:`resolve_answer`; grading is intentionally stricter so a partial word
-    cannot accidentally count as a correct learner answer.
+
+def _mentioned_labels(text: str, labels: Iterable[str]) -> list[str]:
+    """Labels named in *text* as standalone tokens, not inside another word.
+
+    ``\\b`` is useless here: Chinese is word-character too, so ``"选C"`` has no
+    word boundary before the ``C``. The guard is therefore "not glued to
+    another latin letter or digit", which accepts ``选C`` / ``答案是 C`` /
+    ``C。`` and rejects the ``C`` inside ``ABC``.
+    """
+    return [
+        label
+        for label in labels
+        if re.search(rf"(?<![0-9A-Za-z]){re.escape(label)}(?![0-9A-Za-z])", text, re.IGNORECASE)
+    ]
+
+
+def resolve_choice_submission(answer: str, options: dict[str, str]) -> str:
+    """Resolve a learner submission to the option label it picked, or ``""``.
+
+    A learner typing into the composer instead of tapping the card writes
+    ``"选C"``, ``"答案是 C"`` or the option body itself — none of which the
+    label-only comparison could read, so a correct answer was graded wrong.
+    Every form that identifies exactly ONE option is accepted; anything
+    ambiguous (two labels named, a body fragment matching several) resolves to
+    nothing, which the caller must treat as "unreadable", never as wrong.
+
+    Registration stays separately forgiving of a model-supplied body fragment
+    through :func:`resolve_answer`.
     """
     candidate = str(answer or "").strip()
     if not candidate:
@@ -87,9 +163,58 @@ def resolve_choice_submission(answer: str, options: dict[str, str]) -> str:
     prefix_match = OPTION_PREFIX_RE.match(candidate)
     if prefix_match and prefix_match.group(1).upper() in options:
         return prefix_match.group(1).upper()
-    needle = candidate.casefold()
-    exact = [label for label, body in options.items() if body.casefold() == needle]
-    return exact[0] if len(exact) == 1 else ""
+    needle = _squeezed(candidate)
+    exact = [label for label, body in options.items() if _squeezed(body) == needle]
+    if len(exact) == 1:
+        return exact[0]
+    mentioned = _mentioned_labels(candidate, options)
+    return mentioned[0] if len(mentioned) == 1 else ""
+
+
+def is_readable_choice_answer(answer: str, options: list[str] | dict[str, str]) -> bool:
+    """Whether *answer* identifies exactly one option on a choice question.
+
+    Composer text that is a clarifying question (or otherwise unmappable) must
+    not be treated as a committed pick — see mastery gate stall #1004.
+    """
+    option_map = parse_options(options) if isinstance(options, list) else options
+    if not option_map:
+        return False
+    candidate = str(answer or "").strip()
+    resolved = resolve_choice_submission(candidate, option_map)
+    if not resolved:
+        return False
+
+    # Exact labels (optionally followed by declarative punctuation), labelled
+    # answers, and exact option bodies are unambiguous without extra wording.
+    if re.fullmatch(rf"{re.escape(resolved)}[。.!！]?", candidate, re.IGNORECASE):
+        return True
+    prefix_match = OPTION_PREFIX_RE.match(candidate)
+    if prefix_match and prefix_match.group(1).upper() == resolved:
+        return True
+    if _squeezed(candidate) == _squeezed(option_map[resolved]):
+        return True
+
+    # Merely mentioning one label is not an answer. In particular, questions
+    # such as "why is B wrong?" used to resolve to B and freeze the gate.
+    if re.search(
+        r"[?？]|\b(?:why|what|how|can|could|would|explain)\b|"
+        r"(?:为什么|为何|怎么|如何|什么|解释一下|请解释)",
+        candidate,
+        re.IGNORECASE,
+    ):
+        return False
+
+    label = re.escape(resolved)
+    return bool(
+        re.search(
+            rf"(?:\b(?:answer(?:\s+is)?|choose|pick|select|"
+            rf"think(?:\s+it(?:'s|\s+is))?|go\s+with)\s*(?:option\s*)?{label}\b|"
+            rf"(?:答案(?:是|为)?|我?选(?:择)?|应该是|我觉得是)\s*{label})",
+            candidate,
+            re.IGNORECASE,
+        )
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,64 +272,30 @@ def public_pending_question(pending: PendingQuestion) -> PublicPendingQuestion:
     )
     return PublicPendingQuestion(
         question_id=pending.question_id,
-        prompt=pending.prompt,
+        prompt=decode_escaped_unicode_for_display(pending.prompt),
         question_type=pending.question_type,
-        options=options,
+        options=tuple(
+            PublicPendingOption(
+                id=option.id,
+                label=decode_escaped_unicode_for_display(option.label),
+                body=decode_escaped_unicode_for_display(option.body),
+            )
+            for option in options
+        ),
     )
-
-
-#: Id suffix for the confidence sub-question on a mastery question card.
-CONFIDENCE_QUESTION_ID_SUFFIX = "_conf"
-#: Fixed prompt for the confidence sub-question (教研审计 confidence_before
-#: 采集). One shared prompt keeps the zh/en cards byte-identical, so the value
-#: the tutor reads back maps to the same 1-5 scale everywhere.
-CONFIDENCE_QUESTION_PROMPT = "你有多大把握？(1=纯猜, 5=非常确定)"
-CONFIDENCE_OPTIONS: tuple[dict[str, str | None], ...] = tuple(
-    {"label": str(i), "description": None} for i in range(1, 6)
-)
-
-
-def confidence_ask_user_question(question_id: str) -> dict[str, Any]:
-    """The Likert sub-question appended to one mastery question's card.
-
-    id is the main question id plus ``_conf``; options are the fixed 1-5
-    scale. Free text stays off so the answer is a clean integer the tutor can
-    pass straight back as ``mastery_grade.confidence_before``.
-    """
-    return {
-        "id": f"{question_id}{CONFIDENCE_QUESTION_ID_SUFFIX}",
-        "prompt": CONFIDENCE_QUESTION_PROMPT,
-        "options": list(CONFIDENCE_OPTIONS),
-        "multi_select": False,
-        "allow_free_text": False,
-    }
-
-
-def pending_ask_user_questions(pending: PendingQuestion) -> list[dict[str, Any]]:
-    """The full two-tab card for a pending mastery question.
-
-    Shared by ``mastery_quiz``'s returned payload and the loop's ask_user
-    binding, so the confidence tab survives pause/resume turns and the tutor
-    always sees both questions on the card.
-    """
-    return [
-        public_pending_question(pending).to_ask_user_dict(),
-        confidence_ask_user_question(pending.question_id),
-    ]
 
 
 __all__ = [
     "OPTION_PREFIX_RE",
-    "CONFIDENCE_OPTIONS",
-    "CONFIDENCE_QUESTION_ID_SUFFIX",
-    "CONFIDENCE_QUESTION_PROMPT",
+    "canonical_labels",
     "PublicPendingOption",
     "PublicPendingQuestion",
-    "confidence_ask_user_question",
     "format_options",
     "has_option_bodies",
+    "is_readable_choice_answer",
+    "option_label_intent",
     "parse_options",
-    "pending_ask_user_questions",
+    "positional_label",
     "public_pending_question",
     "resolve_answer",
     "resolve_choice_submission",

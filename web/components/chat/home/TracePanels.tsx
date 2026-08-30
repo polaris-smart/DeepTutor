@@ -355,6 +355,15 @@ function describeToolCall(
         chip: null,
         mono: false,
       };
+    case "invoke_other":
+      return {
+        Icon: SpeechMark,
+        verb: t("Proposing a Partner follow-up"),
+        chip: str(a.target_partner_id)
+          ? `@${str(a.target_partner_id).replace(/^@/, "")}`
+          : null,
+        mono: false,
+      };
     case "github":
       return {
         Icon: ToolMark,
@@ -2367,8 +2376,9 @@ export function StreamingStatus({
     </>
   );
 
-  // Disclosure-header flavor: clickable, with a trailing chevron that points
-  // down when the nested trace is open and right when it's folded.
+  // Disclosure-header flavor: clickable to fold/unfold the nested trace,
+  // but with no chevron affordance — the row's hover color shift is the
+  // only hint that it's interactive.
   if (expandable) {
     return (
       <button
@@ -2379,13 +2389,6 @@ export function StreamingStatus({
         className={`group/act flex w-full items-center gap-2.5 text-[14px] font-semibold leading-none transition-colors hover:text-[var(--foreground)] ${textColor} ${className}`}
       >
         {rowInner}
-        <ChevronDown
-          size={14}
-          strokeWidth={2}
-          className={`ml-0.5 shrink-0 text-[var(--muted-foreground)]/45 transition-[transform,color] duration-200 group-hover/act:text-[var(--muted-foreground)] ${
-            expanded ? "" : "-rotate-90"
-          }`}
-        />
       </button>
     );
   }
@@ -2454,6 +2457,26 @@ export function TraceFlow({
 }
 
 /**
+ * Trace rows hanging from the guide line that aligns them under the activity
+ * mark, so they read as "nested below" whatever they belong to. Shared by the
+ * status header's own trace and by the resumed-round trace the chat surface
+ * renders under an ``ask_user`` card.
+ */
+export function NestedTraceFlow({
+  events,
+  isStreaming,
+}: {
+  events: StreamEvent[];
+  isStreaming?: boolean;
+}) {
+  return (
+    <div className="ml-[11px] border-l border-[var(--border)]/45 pl-[13px] pt-2 [&>div]:mb-0">
+      <TraceFlow events={events} isStreaming={isStreaming} />
+    </div>
+  );
+}
+
+/**
  * Has the turn entered its final-answer phase? Used to auto-collapse the
  * reasoning trace once DeepTutor stops working and starts (or has finished)
  * its answer.
@@ -2461,30 +2484,42 @@ export function TraceFlow({
  *  - turn complete (``!isStreaming``)                    → final
  *  - a pipeline streaming its final write (solve/research) → final
  *    (``detectStreamingMode`` → responding / responded)
- *  - chat single loop: the tool-less round's ``finish`` marker landed
+ *  - chat single loop: the latest completed round settled as terminal
  *
  * The chat loop streams its final answer as ``agent_loop_round`` content
- * (which ``detectStreamingMode`` reads as "exploring"), so the ``finish``
- * marker — emitted when that round completes — is the chat-path signal.
+ * (which ``detectStreamingMode`` reads as "exploring"), so a round's own
+ * completion marker — emitted when it lands — is the chat-path signal.
  */
-function hasFinishMarker(events: StreamEvent[]): boolean {
-  for (let idx = events.length - 1; idx >= 0; idx -= 1) {
-    const meta = getTraceMeta(events[idx]);
-    if (
-      meta.trace_kind === "call_status" &&
-      meta.call_state === "complete" &&
-      meta.call_role === "finish"
-    ) {
+function isChatLoopTurn(events: StreamEvent[]): boolean {
+  for (const event of events) {
+    if (String(getTraceMeta(event).call_kind || "") === "agent_loop_round") {
       return true;
     }
   }
   return false;
 }
 
-function isChatLoopTurn(events: StreamEvent[]): boolean {
-  for (const event of events) {
-    if (String(getTraceMeta(event).call_kind || "") === "agent_loop_round") {
-      return true;
+/**
+ * Whether the most recently *completed* round settled the turn: either a
+ * genuinely tool-less ``finish`` round, or a round the backend explicitly
+ * marked ``answer_visible`` — mastery's teaching-plus-status-check rounds, a
+ * DSML-fallback round, a token-truncated-but-visible round (see
+ * ``agent_loop.py``'s completion metadata) all combine tool calls with
+ * learner-facing text in the same round, so ``call_role`` never reaches
+ * ``"finish"`` for them even though the round is exactly what the trace
+ * should collapse for.
+ *
+ * Looks at only the LATEST completed round, not "has one ever appeared" —
+ * a token-truncated round is explicitly non-terminal (the loop keeps
+ * writing), so once ITS OWN next round completes, that round's marker
+ * supersedes this one and correctly reopens the trace if fresh tool calls
+ * are still coming.
+ */
+function lastRoundSettledFinal(events: StreamEvent[]): boolean {
+  for (let idx = events.length - 1; idx >= 0; idx -= 1) {
+    const meta = getTraceMeta(events[idx]);
+    if (meta.trace_kind === "call_status" && meta.call_state === "complete") {
+      return meta.call_role === "finish" || meta.answer_visible === true;
     }
   }
   return false;
@@ -2496,12 +2531,12 @@ function isFinalAnswerPhase(
   hasFinalContent: boolean,
 ): boolean {
   if (!isStreaming) return true;
-  if (hasFinishMarker(events)) return true;
+  if (lastRoundSettledFinal(events)) return true;
   const mode = detectStreamingMode(events, hasFinalContent, true);
   if (mode === "responding" || mode === "responded") {
     // Chat's single loop streams narration text mid-loop, which also reads
-    // as "responding" — there only the finish marker (above) settles the
-    // phase; trusting the mode would flap the trace shut on every
+    // as "responding" — there only a settled round marker (above) settles
+    // the phase; trusting the mode would flap the trace shut on every
     // narration line and open again on the next tool call.
     return !isChatLoopTurn(events);
   }
@@ -2520,6 +2555,7 @@ function isFinalAnswerPhase(
  */
 export function AssistantActivity({
   events,
+  traceEvents,
   isStreaming,
   content,
   className = "",
@@ -2528,6 +2564,15 @@ export function AssistantActivity({
   headerClassName = "",
 }: {
   events: StreamEvent[];
+  /**
+   * The subset of ``events`` whose trace rows belong under this header.
+   * Defaults to all of them. The chat surface narrows it to the rounds
+   * before the first ``ask_user`` card, because the rounds after one render
+   * below that card instead — this block is pinned to the top of the
+   * message, so anything appended here after the user answers lands above
+   * content they have already read.
+   */
+  traceEvents?: StreamEvent[];
   isStreaming?: boolean;
   content?: string;
   className?: string;
@@ -2539,7 +2584,11 @@ export function AssistantActivity({
    *  vertically centers against an adjacent avatar). */
   headerClassName?: string;
 }) {
-  const hasTrace = useMemo(() => hasRenderableCallTrace(events), [events]);
+  const shownTraceEvents = traceEvents ?? events;
+  const hasTrace = useMemo(
+    () => hasRenderableCallTrace(shownTraceEvents),
+    [shownTraceEvents],
+  );
   const hasFinalContent = Boolean(content && content.trim().length > 0);
   const finalPhase = useMemo(
     () => isFinalAnswerPhase(events, Boolean(isStreaming), hasFinalContent),
@@ -2580,9 +2629,10 @@ export function AssistantActivity({
                 below the header when open; [&>div]:mb-0 strips
                 CallTracePanel's own bottom margin so the single gap to the
                 body comes from this block's outer ``mb-3`` in both states. */}
-            <div className="ml-[11px] border-l border-[var(--border)]/45 pl-[13px] pt-2 [&>div]:mb-0">
-              <TraceFlow events={events} isStreaming={isStreaming} />
-            </div>
+            <NestedTraceFlow
+              events={shownTraceEvents}
+              isStreaming={isStreaming}
+            />
           </div>
         </div>
       ) : null}

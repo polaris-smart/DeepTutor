@@ -145,6 +145,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to start cron service: {e}")
 
+    try:
+        from deeptutor.services.github_source.sync_service import get_sync_service
+
+        await get_sync_service().start()
+    except Exception as e:
+        logger.warning(f"Failed to start GitHub source sync: {e}")
+
     # Ping PocketBase if configured — logs a warning (not an error) if unreachable
     try:
         from deeptutor.services.pocketbase_client import ping_pocketbase
@@ -182,6 +189,13 @@ async def lifespan(app: FastAPI):
         await get_cron_service().stop()
     except Exception as e:
         logger.warning(f"Failed to stop cron service: {e}")
+
+    try:
+        from deeptutor.services.github_source.sync_service import get_sync_service
+
+        await get_sync_service().stop()
+    except Exception as e:
+        logger.warning(f"Failed to stop GitHub source sync: {e}")
 
     # Stop partners
     try:
@@ -347,10 +361,12 @@ from deeptutor.api.routers import (
     attachments,
     auth,
     book,
+    capabilities,
     capabilities_settings,
     chat,
     class_insights,
     co_writer,
+    courses,
     dashboard,
     exam_paper,
     imports,
@@ -361,6 +377,7 @@ from deeptutor.api.routers import (
     memory,
     notebook,
     outputs,
+    partner_groups,
     partners,
     personas,
     plugins_api,
@@ -368,6 +385,7 @@ from deeptutor.api.routers import (
     question_notebook,
     quiz_judge,
     reading,
+    reading_extensions,
     sessions,
     settings,
     skills,
@@ -432,6 +450,12 @@ app.include_router(
 )
 app.include_router(book.router, prefix="/api/v1/book", tags=["book"], dependencies=_auth)
 app.include_router(reading.router, prefix="/api/v1/reading", tags=["reading"], dependencies=_auth)
+app.include_router(
+    reading_extensions.router,
+    prefix="/api/v1/reading",
+    tags=["reading-extensions"],
+    dependencies=_auth,
+)
 app.include_router(memory.router, prefix="/api/v1/memory", tags=["memory"], dependencies=_auth)
 app.include_router(
     capabilities_settings.router,
@@ -440,8 +464,15 @@ app.include_router(
     dependencies=_auth,
 )
 app.include_router(
+    capabilities.router,
+    prefix="/api/v1/capabilities",
+    tags=["capabilities"],
+    dependencies=_auth,
+)
+app.include_router(
     sessions.router, prefix="/api/v1/sessions", tags=["sessions"], dependencies=_auth
 )
+app.include_router(courses.router, prefix="/api/v1/courses", tags=["courses"], dependencies=_auth)
 app.include_router(
     question_notebook.router,
     prefix="/api/v1/question-notebook",
@@ -502,8 +533,19 @@ app.include_router(
 app.include_router(
     agent_config.router, prefix="/api/v1/agent-config", tags=["agent-config"], dependencies=_auth
 )
+# Partners are per-user resources now: anyone may build their own, and an admin
+# may assign theirs to others. Only ``_auth`` here — every route in the router
+# declares whether it needs *use* or *manage* rights on the partner it names
+# (see ``multi_user.partner_access``), which a blanket admin gate could not
+# express.
 app.include_router(
-    partners.router, prefix="/api/v1/partners", tags=["partners"], dependencies=_admin
+    partners.router, prefix="/api/v1/partners", tags=["partners"], dependencies=_auth
+)
+app.include_router(
+    partner_groups.router,
+    prefix="/api/v1/partner-groups",
+    tags=["partner-groups"],
+    dependencies=_auth,
 )
 # Class insights: the overview route carries its own admin/teacher gate
 # (require_admin_or_teacher); router-level _auth keeps the module consistent

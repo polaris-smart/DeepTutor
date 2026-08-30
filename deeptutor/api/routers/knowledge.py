@@ -1097,7 +1097,13 @@ async def run_upload_processing_task(
 
             error_msg = f"Upload processing failed (KB '{kb_name}'): {e}"
             trace = _tb.format_exc()
-            failure_metadata = _exception_failure_metadata(e)
+            # yuexue fix: attach task context (error/index_action) alongside the
+            # typed-exception metadata so the web log box can render richer failures.
+            failure_metadata = {
+                "error": error_msg,
+                "index_action": "upload",
+                **_exception_failure_metadata(e),
+            }
             _task_log(task_id, error_msg, level="error")
             _server_task_trace(task_id, trace)
 
@@ -1108,9 +1114,17 @@ async def run_upload_processing_task(
                 message_key="Processing failed: {{error}}",
                 message_params={"error": error_msg},
                 error=error_msg,
-                **failure_metadata,
+                index_action=failure_metadata.get("index_action"),
+                error_code=failure_metadata.get("error_code"),
+                retryable=failure_metadata.get("retryable"),
             )
-            task_stream_manager.emit_failed(task_id, error_msg, **failure_metadata)
+            task_stream_manager.emit_failed(
+                task_id,
+                error_msg,
+                details=trace,
+                error_code=failure_metadata.get("error_code"),
+                retryable=failure_metadata.get("retryable"),
+            )
 
 
 @router.get("/health")
@@ -2640,7 +2654,7 @@ async def upload_files(
 async def create_knowledge_base(
     background_tasks: BackgroundTasks,
     name: str = Form(...),
-    files: list[UploadFile] = File(...),
+    files: list[UploadFile] = File(default=[]),
     group: str = Form(""),
     rag_provider: str = Form(DEFAULT_PROVIDER),
     pageindex_mode: str = Form(""),
@@ -2720,6 +2734,37 @@ async def create_knowledge_base(
         if name not in manager.list_knowledge_bases():
             logger.warning(f"KB {name} not found in config, registering manually")
             initializer._register_to_config()
+
+        # Fast path: no files uploaded — create an empty KB ready for web
+        # sources, GitHub sources, or later document uploads.
+        if not files:
+            progress_tracker.update(
+                ProgressStage.COMPLETED,
+                "Knowledge base created (no documents yet).",
+                current=0,
+                total=0,
+            )
+            manager.update_kb_status(
+                name=name,
+                status="ready",
+                progress={
+                    "stage": "completed",
+                    "message": "Knowledge base created (no documents yet).",
+                    "percent": 100,
+                    "current": 0,
+                    "total": 0,
+                    "timestamp": datetime.now().isoformat(),
+                    "index_changed": True,
+                    "index_action": "create",
+                },
+            )
+            logger.info(f"KB '{name}' created (no documents yet)")
+            return {
+                "message": f"Knowledge base '{name}' created (no documents yet).",
+                "name": name,
+                "files": [],
+                "task_id": None,
+            }
 
         uploaded_files, _ = await _save_uploaded_files_off_loop(
             files, initializer.raw_dir, allowed_extensions=allowed_extensions, rel_paths=rel_paths
@@ -3599,345 +3644,7 @@ async def get_questions_by_struct(
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-def _load_kb_entry_or_404(manager: KnowledgeBaseManager, kb_name: str) -> dict:
-    manager.config = manager._load_config()
-    kb_entry = manager.config.get("knowledge_bases", {}).get(kb_name)
-    if kb_entry is None:
-        raise HTTPException(status_code=404, detail=f"Knowledge base '{kb_name}' not found")
-    return kb_entry
 
-
-def _assert_not_connected_kb(kb_name: str, kb_entry: dict) -> None:
-    """Block writes to connected KBs (Obsidian vaults, linked indexes).
-
-    They are read-only pointers to the user's external files — we never write
-    into or re-index them.
-    """
-    if is_connected_kb(kb_entry):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Knowledge base '{kb_name}' is connected to an external resource and is "
-                "read-only. Local file operations and re-indexing are not available for it."
-            ),
-        )
-
-
-def _assert_kb_writable_or_409(kb_name: str, kb_entry: dict) -> None:
-    _assert_not_connected_kb(kb_name, kb_entry)
-    if bool(kb_entry.get("needs_reindex", False)):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Knowledge base '{kb_name}' uses legacy index format and needs reindex "
-                "before accepting incremental uploads."
-            ),
-        )
-
-
-def _matching_index_is_valid(kb_name: str, matching_version: dict | None) -> bool:
-    """Return whether a matching active index can safely satisfy retrieval."""
-    if not matching_version:
-        return False
-    try:
-        from deeptutor.services.rag.index_probe import inspect_provider_version
-        from deeptutor.services.rag.pipelines.llamaindex.storage import (
-            validate_storage_embeddings,
-        )
-
-        probe = inspect_provider_version(matching_version, DEFAULT_PROVIDER)
-        if not probe.ready:
-            logger.warning(
-                "Matching index for KB '%s' is not provider-ready; forcing re-index: %s",
-                kb_name,
-                probe.failure_summary or probe.diagnostics,
-            )
-            return False
-        validate_storage_embeddings(Path(str(matching_version["storage_path"])))
-        return True
-    except Exception as exc:
-        logger.warning(
-            "Matching index for KB '%s' is invalid; forcing re-index: %s",
-            kb_name,
-            exc,
-        )
-        return False
-
-
-async def run_initialization_task(initializer: KnowledgeBaseInitializer, task_id: str):
-    """Background task for knowledge base initialization"""
-    task_manager = TaskIDManager.get_instance()
-    task_stream_manager = get_task_stream_manager()
-    task_stream_manager.ensure_task(task_id)
-
-    with capture_task_logs(task_id):
-        try:
-            if not initializer.progress_tracker:
-                initializer.progress_tracker = ProgressTracker(
-                    initializer.kb_name, initializer.base_dir
-                )
-
-            initializer.progress_tracker.task_id = task_id
-
-            _task_log(task_id, f"Initializing knowledge base '{initializer.kb_name}'")
-
-            await initializer.process_documents()
-            _task_log(task_id, "Document processing complete")
-            _task_log(task_id, "Finalizing initialization")
-            indexed_count = len(
-                FileTypeRouter.collect_supported_files(initializer.raw_dir, recursive=True)
-            )
-
-            initializer.progress_tracker.update(
-                ProgressStage.COMPLETED,
-                message_key="Knowledge base initialization complete!",
-                current=1,
-                total=1,
-                indexed_count=indexed_count,
-                index_changed=True,
-                index_action="create",
-            )
-
-            manager = get_kb_manager()
-            manager.update_kb_status(
-                name=initializer.kb_name,
-                status="ready",
-                progress={
-                    "stage": "completed",
-                    "message": "Knowledge base initialization complete!",
-                    "percent": 100,
-                    "current": 1,
-                    "total": 1,
-                    "task_id": task_id,
-                    "timestamp": datetime.now().isoformat(),
-                    "indexed_count": indexed_count,
-                    "index_changed": True,
-                    "index_action": "create",
-                },
-            )
-
-            _task_log(
-                task_id, f"Knowledge base '{initializer.kb_name}' initialized", level="success"
-            )
-            task_manager.update_task_status(task_id, "completed")
-            task_stream_manager.emit_complete(
-                task_id, f"Knowledge base '{initializer.kb_name}' initialization complete"
-            )
-        except Exception as e:
-            import traceback as _tb
-
-            error_msg = str(e)
-            trace = _tb.format_exc()
-
-            _task_log(task_id, f"Initialization failed: {error_msg}", level="error")
-            _task_log(task_id, f"Stack trace:\n{trace}", level="error")
-
-            task_manager.update_task_status(task_id, "error", error=error_msg)
-
-            manager = get_kb_manager()
-            manager.update_kb_status(
-                name=initializer.kb_name,
-                status="error",
-                progress={
-                    "stage": "error",
-                    "message": f"Initialization failed: {error_msg}",
-                    "percent": 0,
-                    "error": error_msg,
-                    "task_id": task_id,
-                    "timestamp": datetime.now().isoformat(),
-                },
-            )
-
-            if initializer.progress_tracker:
-                initializer.progress_tracker.update(
-                    ProgressStage.ERROR,
-                    message_key="Initialization failed: {{error}}",
-                    message_params={"error": error_msg},
-                    error=error_msg,
-                    **failure_metadata,
-                )
-            task_stream_manager.emit_failed(task_id, error_msg, details=trace)
-
-
-async def run_upload_processing_task(
-    kb_name: str,
-    base_dir: str,
-    uploaded_file_paths: list[str],
-    task_id: str,
-    rag_provider: str = None,
-    folder_id: str = None,
-    folder_root: str = None,
-):
-    """Background task for processing uploaded files.
-
-    Args:
-        kb_name: Knowledge base name
-        base_dir: Base directory for knowledge bases
-        uploaded_file_paths: List of file paths to process
-        rag_provider: RAG provider already matched against the KB binding
-        folder_id: Optional folder ID for sync state update
-        folder_root: Linked folder's own root path, when these files came
-            from a folder sync. Preserves each file's path relative to it
-            instead of flattening to the bare filename.
-    """
-    task_manager = TaskIDManager.get_instance()
-    task_stream_manager = get_task_stream_manager()
-    task_stream_manager.ensure_task(task_id)
-
-    progress_tracker = ProgressTracker(kb_name, Path(base_dir))
-    progress_tracker.task_id = task_id
-
-    with capture_task_logs(task_id):
-        try:
-            _task_log(task_id, f"Processing {len(uploaded_file_paths)} file(s) for KB '{kb_name}'")
-            progress_tracker.update(
-                ProgressStage.PROCESSING_DOCUMENTS,
-                message_key="Validating {{count}} file(s)...",
-                message_params={"count": len(uploaded_file_paths)},
-                current=0,
-                total=len(uploaded_file_paths),
-            )
-
-            adder = DocumentAdder(
-                kb_name=kb_name,
-                base_dir=base_dir,
-                progress_tracker=progress_tracker,
-                rag_provider=rag_provider,
-            )
-
-            # Staging blocks: a full-content hash per file, plus a copy for
-            # anything not already under raw/. A BackgroundTasks entry declared
-            # ``async def`` is awaited ON the event loop — starlette only routes
-            # *sync* callables to its threadpool — so doing this inline stalled
-            # every other request for the length of the batch (#777).
-            staged_files = await asyncio.to_thread(
-                adder.add_documents,
-                uploaded_file_paths,
-                allow_duplicates=False,
-                source_root=folder_root,
-            )
-            _task_log(task_id, f"Staged {len(staged_files)} new file(s)")
-            progress_tracker.update(
-                ProgressStage.PROCESSING_DOCUMENTS,
-                message_key="Staged {{count}} new file(s)",
-                message_params={"count": len(staged_files)},
-                current=0,
-                total=len(staged_files),
-            )
-
-            if not staged_files:
-                _task_log(task_id, "No new files to process (all duplicates or invalid)")
-                progress_tracker.update(
-                    ProgressStage.COMPLETED,
-                    message_key="No new files to process (all duplicates or invalid)",
-                    current=0,
-                    total=0,
-                )
-                task_manager.update_task_status(task_id, "completed")
-                task_stream_manager.emit_complete(
-                    task_id, "No new files to process (all duplicates or invalid)"
-                )
-                return
-
-            index_result = await adder.process_new_documents(staged_files)
-            processed_files = index_result.processed_files
-            _task_log(task_id, f"Indexed {index_result.processed_count} file(s)")
-
-            if index_result.has_failures:
-                failure_summary = index_result.failure_summary()
-                error_msg = (
-                    f"Indexed {index_result.processed_count}/{len(staged_files)} file(s); "
-                    f"{index_result.failed_count} failed: {failure_summary}"
-                )
-                _task_log(task_id, error_msg, level="error")
-                for failure in index_result.failures:
-                    _task_log(
-                        task_id,
-                        f"Failed to index {failure.file_path.name}: {failure.error}",
-                        level="error",
-                    )
-                progress_tracker.update(
-                    ProgressStage.ERROR,
-                    message_key="Processing failed: {{error}}",
-                    message_params={"error": error_msg},
-                    current=index_result.processed_count,
-                    total=len(staged_files),
-                    error=error_msg,
-                    indexed_count=index_result.processed_count,
-                    index_changed=index_result.processed_count > 0,
-                    index_action="upload",
-                )
-                task_manager.update_task_status(task_id, "error", error=error_msg)
-                task_stream_manager.emit_failed(
-                    task_id,
-                    error_msg,
-                    details="\n".join(
-                        f"{failure.file_path}: {failure.error}" for failure in index_result.failures
-                    ),
-                )
-                return
-
-            progress_tracker.update(
-                ProgressStage.PROCESSING_DOCUMENTS,
-                message_key="Saving metadata...",
-                current=index_result.processed_count,
-                total=len(staged_files),
-            )
-            adder.update_metadata(index_result.processed_count)
-
-            if folder_id and processed_files:
-                try:
-                    manager = get_kb_manager()
-                    manager.update_folder_sync_state(
-                        kb_name, folder_id, [str(f) for f in processed_files]
-                    )
-                    _task_log(task_id, f"Updated folder sync state: {folder_id}")
-                except Exception as sync_err:
-                    _task_log(
-                        task_id, f"Folder sync state update failed: {sync_err}", level="warning"
-                    )
-
-            num_processed = index_result.processed_count
-            progress_tracker.update(
-                ProgressStage.COMPLETED,
-                message_key="Successfully processed {{count}} files!",
-                message_params={"count": num_processed},
-                current=num_processed,
-                total=num_processed,
-                indexed_count=num_processed,
-                index_changed=num_processed > 0,
-                index_action="upload",
-            )
-
-            _task_log(
-                task_id, f"Processed {num_processed} file(s) for '{kb_name}'", level="success"
-            )
-            task_manager.update_task_status(task_id, "completed")
-            task_stream_manager.emit_complete(
-                task_id, f"Successfully processed {num_processed} files for '{kb_name}'"
-            )
-        except Exception as e:
-            import traceback as _tb
-
-            error_msg = f"Upload processing failed (KB '{kb_name}'): {e}"
-            trace = _tb.format_exc()
-            failure_metadata = {
-                "error": error_msg,
-                "index_action": "upload",
-                **_exception_failure_metadata(e),
-            }
-            _task_log(task_id, error_msg, level="error")
-            _task_log(task_id, f"Stack trace:\n{trace}", level="error")
-
-            task_manager.update_task_status(task_id, "error", error=error_msg)
-
-            progress_tracker.update(
-                ProgressStage.ERROR,
-                message_key="Processing failed: {{error}}",
-                message_params={"error": error_msg},
-                **failure_metadata,
-            )
-            task_stream_manager.emit_failed(task_id, error_msg, details=trace)
 
 def _load_kb_docstore(kb_name: str):
     """Load the active LlamaIndex docstore, or return ``None`` for an empty KB."""
@@ -3987,3 +3694,232 @@ def _video_index_for_kb(kb_name: str) -> tuple[str, Path]:
             raise
         return kb_name, candidate
     return resolved_name, video_index_path(resolved_name, kb_base_dir=Path(manager.base_dir))
+
+
+
+class AddGitHubSourceRequest(BaseModel):
+    repo: str
+    branch: str = "main"
+    path: str = ""
+    glob: str = "*.md"
+
+
+class GitHubSourceInfo(BaseModel):
+    id: str
+    repo: str
+    branch: str
+    path: str
+    glob: str
+    enabled: bool = True
+    last_synced_sha: str = ""
+    last_synced_at: str = ""
+    last_sync_status: str = "pending"
+    last_sync_error: str | None = None
+    files_synced: int = 0
+    added_at: str = ""
+
+
+class AddWebSourceRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+    max_depth: int = Field(default=3, ge=1, le=5)
+    max_pages: int = Field(default=200, ge=1, le=200)
+
+
+class WebSourceInfo(BaseModel):
+    id: str
+    url: str
+    max_depth: int = 3
+    max_pages: int = 200
+    enabled: bool = True
+    page_count: int = 0
+    last_synced_at: str = ""
+    last_sync_status: str = "pending"
+    last_sync_error: str | None = None
+    added_at: str = ""
+    navigation: dict | None = None
+
+
+@router.post("/{kb_name}/github-source", response_model=GitHubSourceInfo)
+async def add_github_source(kb_name: str, request: AddGitHubSourceRequest):
+    try:
+        manager, resolved_name, _ = _writable_kb(kb_name)
+        info = manager.add_github_source(
+            resolved_name, request.repo, request.branch, request.path, request.glob
+        )
+        return GitHubSourceInfo(**info)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400 if "not found" not in str(e).lower() else 404, detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{kb_name}/github-sources", response_model=list[GitHubSourceInfo])
+async def get_github_sources(kb_name: str):
+    try:
+        manager, resolved_name, _ = _writable_kb(kb_name)
+        return [GitHubSourceInfo(**s) for s in manager.get_github_sources(resolved_name)]
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"KB '{kb_name}' not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/{kb_name}/github-source/{source_id}")
+async def remove_github_source(kb_name: str, source_id: str):
+    try:
+        manager, resolved_name, _ = _writable_kb(kb_name)
+        if not manager.remove_github_source(resolved_name, source_id):
+            raise HTTPException(status_code=404, detail=f"Source '{source_id}' not found")
+        return {"message": "Removed", "source_id": source_id}
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"KB '{kb_name}' not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{kb_name}/sync-github")
+async def sync_github_sources(kb_name: str):
+    try:
+        manager, resolved_name, kb_base_dir = _writable_kb(kb_name)
+        sources = manager.get_github_sources(resolved_name)
+        if not sources:
+            return {"message": "No GitHub sources", "results": []}
+        from deeptutor.services.github_source.sync import sync_source
+
+        results = []
+        for src in sources:
+            if not src.get("enabled", True):
+                continue
+            r = await sync_source(kb_name=resolved_name, source=src, base_dir=str(kb_base_dir))
+            results.append(
+                {
+                    "source_id": src.get("id"),
+                    "repo": src.get("repo"),
+                    "ok": r.ok,
+                    "skipped": r.skipped,
+                    "files_added": r.files_added,
+                    "files_updated": r.files_updated,
+                    "files_removed": r.files_removed,
+                    "error": r.error or None,
+                }
+            )
+        return {"message": f"Synced {len(results)} source(s)", "results": results}
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"KB '{kb_name}' not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{kb_name}/web-source", response_model=WebSourceInfo)
+async def add_web_source(kb_name: str, request: AddWebSourceRequest):
+    try:
+        manager, resolved_name, _ = _writable_kb(kb_name)
+        info = manager.add_web_source(
+            resolved_name, request.url, request.max_depth, request.max_pages
+        )
+        return WebSourceInfo(**info)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400 if "not found" not in str(e).lower() else 404, detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{kb_name}/web-sources", response_model=list[WebSourceInfo])
+async def get_web_sources(kb_name: str):
+    try:
+        manager, resolved_name, _ = _writable_kb(kb_name)
+        return [WebSourceInfo(**s) for s in manager.get_web_sources(resolved_name)]
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"KB '{kb_name}' not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/{kb_name}/web-source/{source_id}")
+async def remove_web_source(kb_name: str, source_id: str):
+    try:
+        manager, resolved_name, _ = _writable_kb(kb_name)
+        if not manager.remove_web_source(resolved_name, source_id):
+            raise HTTPException(status_code=404, detail=f"Source '{source_id}' not found")
+        return {"message": "Removed", "source_id": source_id}
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"KB '{kb_name}' not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{kb_name}/sync-web")
+async def sync_web_sources(kb_name: str):
+    """Run one bounded crawl-and-sync pass for every enabled web source."""
+    try:
+        manager, resolved_name, kb_base_dir = _writable_kb(kb_name)
+        sources = manager.get_web_sources(resolved_name)
+        if not sources:
+            return {"message": "No web sources", "results": []}
+        from deeptutor.services.web_source.sync import sync_source
+
+        enabled = [s for s in sources if s.get("enabled", True)]
+        if not enabled:
+            return {"message": "No enabled web sources", "results": []}
+
+        results = []
+        for source in enabled:
+            result = await sync_source(
+                kb_name=resolved_name,
+                source=source,
+                base_dir=str(kb_base_dir),
+                max_depth=source.get("max_depth"),
+                max_pages=source.get("max_pages"),
+            )
+            refreshed = manager.get_web_sources(resolved_name)
+            page_count = next(
+                (
+                    item.get("page_count", 0)
+                    for item in refreshed
+                    if item.get("id") == source.get("id")
+                ),
+                source.get("page_count", 0),
+            )
+            results.append(
+                {
+                    "source_id": source.get("id"),
+                    "url": source.get("url"),
+                    "ok": result.ok,
+                    "page_count": page_count,
+                    "pages_added": result.pages_added,
+                    "pages_updated": result.pages_updated,
+                    "pages_removed": result.pages_removed,
+                    "pages_unchanged": result.pages_unchanged,
+                    "error": result.error or None,
+                }
+            )
+
+        return {
+            "message": f"Synced {len(results)} source(s)",
+            "ok": all(result["ok"] for result in results),
+            "results": results,
+        }
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"KB '{kb_name}' not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

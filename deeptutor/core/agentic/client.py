@@ -23,13 +23,13 @@ import httpx
 from openai import AsyncAzureOpenAI, AsyncOpenAI
 
 from deeptutor.services.config import load_system_settings
-from deeptutor.services.keypool import KeyPool
+from deeptutor.services.keypool import KeyPool, primary_api_key
 from deeptutor.services.llm import get_token_limit_kwargs, supports_tools
 from deeptutor.services.llm.openai_http_client import sanitize_invalid_ssl_env
 from deeptutor.services.llm.reasoning_params import (
     build_openai_compatible_reasoning_kwargs,
 )
-from deeptutor.services.provider_registry import find_by_name
+from deeptutor.services.provider_registry import find_by_name, model_overrides_for
 
 # Providers that don't reliably support OpenAI function-calling. The loop
 # still runs without tool schemas — the model just produces prose.
@@ -94,7 +94,7 @@ def _build_openai_client(
     # construction. Drop broken CA paths first so TLS uses its default CA config.
     sanitize_invalid_ssl_env()
     if isinstance(config.api_key, list):
-        keys = [str(key).strip() for key in config.api_key if str(key).strip()]
+        keys = [str(key).strip() for key in config.api_key if str(key or "").strip()]
         clients = {
             key: _build_openai_client(
                 replace(config, api_key=key),
@@ -159,9 +159,7 @@ class _KeyRotatingCompletions:
 class _KeyRotatingClient:
     def __init__(self, key_pool: KeyPool, clients: dict[str, Any]) -> None:
         self._clients = clients
-        self.chat = SimpleNamespace(
-            completions=_KeyRotatingCompletions(key_pool, clients)
-        )
+        self.chat = SimpleNamespace(completions=_KeyRotatingCompletions(key_pool, clients))
 
     async def close(self) -> None:
         await asyncio.gather(*(_close_client(client) for client in self._clients.values()))
@@ -246,7 +244,7 @@ def _build_anthropic_adapter(config: LLMClientConfig, spec: Any) -> Any:
     from deeptutor.services.llm.provider_core import AnthropicProvider
 
     anthropic_provider = AnthropicProvider(
-        api_key=config.api_key,
+        api_key=primary_api_key(config.api_key),
         api_base=config.base_url or spec.default_api_base or None,
         default_model=config.model or "claude-sonnet-4-20250514",
         extra_headers=config.extra_headers,
@@ -274,6 +272,32 @@ def _build_copilot_adapter(config: LLMClientConfig, spec: Any) -> Any:
     return _ProviderOpenAIAdapter(copilot_provider)
 
 
+def _build_codebuddy_adapter(config: LLMClientConfig, spec: Any) -> Any:
+    from deeptutor.services.llm.provider_core.codebuddy_http_provider import (
+        build_codebuddy_provider,
+    )
+
+    codebuddy_provider = build_codebuddy_provider(
+        api_key=primary_api_key(config.api_key),
+        default_model=config.model or "codebuddy/hy3",
+    )
+    return _ProviderOpenAIAdapter(codebuddy_provider)
+
+
+def _build_direct_openai_adapter(config: LLMClientConfig, spec: Any) -> Any:
+    from deeptutor.services.llm.provider_core import OpenAICompatProvider
+
+    provider = OpenAICompatProvider(
+        api_key=config.api_key,
+        api_base=config.base_url or spec.default_api_base or None,
+        default_model=config.model or "gpt-5",
+        extra_headers=config.extra_headers,
+        spec=spec,
+        provider_name=config.binding,
+    )
+    return _ProviderOpenAIAdapter(provider)
+
+
 _NATIVE_ADAPTER_BUILDERS: dict[str, Callable[[LLMClientConfig, Any], Any]] = {
     "anthropic": _build_anthropic_adapter,
     "openai_codex": _build_codex_adapter,
@@ -282,6 +306,27 @@ _NATIVE_ADAPTER_BUILDERS: dict[str, Callable[[LLMClientConfig, Any], Any]] = {
 
 
 def _build_native_provider_adapter(config: LLMClientConfig, spec: Any) -> Any | None:
+    endpoint = (config.base_url or spec.default_api_base or "").lower()
+    model = (config.model or "").lower()
+    if (
+        spec.name == "openai"
+        and not config.api_version
+        and "api.openai.com" in endpoint
+        and any(token in model for token in ("gpt-5", "o1", "o3", "o4"))
+    ):
+        # Reuse the services provider: it already converts messages, tools,
+        # streaming events and token limits for the Responses API.
+        return _build_direct_openai_adapter(config, spec)
+    native_web_search_models = {
+        str(name).strip().lower()
+        for name in getattr(spec, "native_web_search_models", ())
+        if str(name).strip()
+    }
+    if model.split("/")[-1] in native_web_search_models and not config.api_version:
+        # DeepSeek's native web search is a Responses-only capability. Route
+        # the supported model through the provider adapter; sibling models
+        # stay on the ordinary Chat Completions client.
+        return _build_direct_openai_adapter(config, spec)
     builder = _NATIVE_ADAPTER_BUILDERS.get(spec.backend)
     return builder(config, spec) if builder else None
 
@@ -343,6 +388,7 @@ class _ProviderOpenAIAdapter:
                             _openai_tool_call(tool_call, index=index)
                             for index, tool_call in enumerate(response.tool_calls or [])
                         ],
+                        provider_specific_fields=response.provider_specific_fields,
                     ),
                     finish_reason=response.finish_reason or "stop",
                 )
@@ -427,6 +473,7 @@ class _ProviderOpenAIStream:
                 _openai_stream_chunk(
                     finish_reason=response.finish_reason or "stop",
                     usage=response.usage or None,
+                    provider_specific_fields=response.provider_specific_fields,
                 )
             )
         except Exception as exc:
@@ -459,6 +506,7 @@ def _openai_stream_chunk(
     index: int = 0,
     finish_reason: str | None = None,
     usage: dict[str, int] | None = None,
+    provider_specific_fields: dict[str, Any] | None = None,
 ) -> Any:
     tool_calls = None
     if tool_call is not None:
@@ -468,6 +516,7 @@ def _openai_stream_chunk(
             SimpleNamespace(
                 delta=SimpleNamespace(content=content, tool_calls=tool_calls),
                 finish_reason=finish_reason,
+                provider_specific_fields=provider_specific_fields,
             )
         ],
         usage=usage,
@@ -493,6 +542,14 @@ def build_completion_kwargs(
             reasoning_effort=reasoning_effort,
         )
     )
+    # Apply model-intrinsic overrides last, matching OpenAICompatProvider. A
+    # None value drops the parameter instead of serialising JSON null.
+    spec = find_by_name(binding)
+    for key, value in model_overrides_for(model, spec).items():
+        if value is None:
+            kwargs.pop(key, None)
+        else:
+            kwargs[key] = value
     return kwargs
 
 

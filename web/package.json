@@ -21,12 +21,14 @@
     "build:brand-icons": "tsx ./scripts/build-brand-icons.mts"
   },
   "dependencies": {
+    "@recogito/text-annotator": "4.2.5",
     "@types/three": "^0.185.4",
     "chart.js": "^4.5.1",
     "clsx": "^2.1.1",
     "cytoscape": "^3.33.1",
     "docx-preview": "^0.3.7",
     "echarts": "^6.1.0",
+    "epubjs": "^0.3.93",
     "exceljs": "^4.4.0",
     "framer-motion": "^12.24.0",
     "html2canvas": "^1.4.1",
@@ -49,6 +51,11 @@
     "remark-math": "^6.0.0",
     "tailwind-merge": "^3.4.0",
     "three": "^0.185.1"
+  },
+  "overrides": {
+    "epubjs": {
+      "@xmldom/xmldom": "^0.9.12"
+    }
   },
   "devDependencies": {
     "@playwright/test": "^1.53.2",

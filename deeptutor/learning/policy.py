@@ -50,6 +50,26 @@ QUALITATIVE_TYPES: frozenset[KnowledgeType] = frozenset(
 _QUALITATIVE_PASS_DISPLAY = 1.0
 
 
+def path_display_name(progress: LearningProgress) -> str:
+    """What to call this path, everywhere it is named.
+
+    A path's own :attr:`~deeptutor.learning.models.LearningProgress.name` wins.
+    Without one the first module's name stands in, and failing that the storage
+    id — the behaviour every surface implemented separately before this
+    function existed, which is why rebuilding a map used to rename the path
+    (``mastery_build`` replaces module one) and why three surfaces could
+    disagree about the same path.
+
+    Derivation is the fallback, never the record: a named path keeps its name
+    across every rebuild.
+    """
+    named = str(progress.name or "").strip()
+    if named:
+        return named
+    first_module = progress.modules[0].name.strip() if progress.modules else ""
+    return first_module or progress.book_id
+
+
 def gate_threshold(kp_type: KnowledgeType) -> float:
     """The quantitative mastery bar for *kp_type* (qualitative types report
     their pass-display value so callers have a single number to show)."""
@@ -58,7 +78,7 @@ def gate_threshold(kp_type: KnowledgeType) -> float:
     return QUANTITATIVE_GATE.get(kp_type, 0.9)
 
 
-def is_mastered(progress: LearningProgress, kp: KnowledgePoint) -> bool:
+def is_assessed_mastered(progress: LearningProgress, kp: KnowledgePoint) -> bool:
     """Whether ``kp`` clears its mastery gate.
 
     * MEMORY / PROCEDURE: recency-weighted accuracy ≥ the type's threshold.
@@ -67,6 +87,27 @@ def is_mastered(progress: LearningProgress, kp: KnowledgePoint) -> bool:
     if kp.type in QUALITATIVE_TYPES:
         return bool(progress.qualitative_mastery.get(kp.id, False))
     return progress.mastery_levels.get(kp.id, 0.0) >= gate_threshold(kp.type)
+
+
+def mastery_source(progress: LearningProgress, kp: KnowledgePoint) -> str:
+    """Return ``system`` or ``learner`` provenance for a cleared waypoint."""
+
+    if is_assessed_mastered(progress, kp):
+        return "system"
+    if kp.id in progress.learner_mastery_overrides:
+        return "learner"
+    return ""
+
+
+def is_mastered(progress: LearningProgress, kp: KnowledgePoint) -> bool:
+    """Whether the route may advance past ``kp``.
+
+    The deterministic assessed gate remains available through
+    :func:`is_assessed_mastered`.  An explicit learner claim may advance the
+    route, but every public report exposes that different provenance.
+    """
+
+    return bool(mastery_source(progress, kp))
 
 
 def display_mastery(progress: LearningProgress, kp: KnowledgePoint) -> float:
@@ -124,6 +165,7 @@ class NextStep:
     reason: str = ""
     pending_prompt: str = ""
     pending_question: PublicPendingQuestion | None = None
+    session_id: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -142,6 +184,7 @@ class NextStep:
             "pending_question": (
                 self.pending_question.to_dict() if self.pending_question is not None else None
             ),
+            "session_id": self.session_id,
         }
 
 
@@ -160,7 +203,12 @@ def _gate_kind(kp: KnowledgePoint) -> str:
     return "qualitative" if kp.type in QUALITATIVE_TYPES else "quantitative"
 
 
-def next_objective(progress: LearningProgress, *, now: float | None = None) -> NextStep:
+def next_objective(
+    progress: LearningProgress,
+    *,
+    now: float | None = None,
+    pending_session_id: str = "",
+) -> NextStep:
     """Decide the next thing to work on. Order of precedence:
 
     1. an outstanding posed question (grade it before moving on);
@@ -186,6 +234,7 @@ def next_objective(progress: LearningProgress, *, now: float | None = None) -> N
             reason="A posed question is awaiting the learner's answer; grade it with mastery_grade.",
             pending_prompt=pending.prompt,
             pending_question=public_pending_question(pending),
+            session_id=str(pending_session_id or ""),
         )
 
     due = due_reviews(progress, now=now)
@@ -260,6 +309,12 @@ def map_summary(progress: LearningProgress, *, now: float | None = None) -> dict
                     "type": kp.type.value,
                     "status": status,
                     "mastery": round(display_mastery(progress, kp), 3),
+                    "mastery_source": mastery_source(progress, kp),
+                    "override_note": (
+                        progress.learner_mastery_overrides[kp.id].note
+                        if kp.id in progress.learner_mastery_overrides
+                        else ""
+                    ),
                 }
             )
         modules_out.append(
@@ -273,10 +328,86 @@ def map_summary(progress: LearningProgress, *, now: float | None = None) -> dict
             }
         )
     return {
+        "name": path_display_name(progress),
         "counts": counts,
         "due_reviews": len(due_reviews(progress, now=now)),
         "complete": counts["total"] > 0 and counts["mastered"] == counts["total"],
         "modules": modules_out,
+    }
+
+
+def objective_report(progress: LearningProgress, kp_id: str) -> dict | None:
+    """Everything the engine knows about one objective, for review.
+
+    ``map_summary`` stays deliberately thin because the tutor reads it on every
+    turn; this is the opposite trade — the whole evidence trail behind a single
+    objective, read only when someone opens it. ``None`` when *kp_id* is not on
+    the path.
+    """
+    kp, module_id, module_name = find_knowledge_point(progress, kp_id)
+    if kp is None:
+        return None
+
+    attempts = [
+        {
+            "question_id": attempt.question_id,
+            "is_correct": attempt.is_correct,
+            "answer": str(attempt.user_answer or ""),
+            "error_type": attempt.error_type.value if attempt.error_type else "",
+            "at": attempt.timestamp,
+        }
+        for attempt in progress.quiz_attempts
+        if attempt.knowledge_point_id == kp_id
+    ]
+    state = progress.repetition_states.get(kp_id)
+    due_at = next(
+        (task.due_at for task in progress.review_queue if task.knowledge_point_id == kp_id),
+        None,
+    )
+    return {
+        "id": kp.id,
+        "name": kp.name,
+        "type": kp.type.value,
+        "module_id": module_id,
+        "module_name": module_name,
+        "status": objective_status(progress, kp),
+        "gate": _gate_kind(kp),
+        "mastered": is_mastered(progress, kp),
+        "assessed_mastered": is_assessed_mastered(progress, kp),
+        "mastery_source": mastery_source(progress, kp),
+        "override_note": (
+            progress.learner_mastery_overrides[kp_id].note
+            if kp_id in progress.learner_mastery_overrides
+            else ""
+        ),
+        "mastery": round(display_mastery(progress, kp), 3),
+        "threshold": round(gate_threshold(kp.type), 3),
+        "attempts": attempts,
+        "correct_count": sum(1 for attempt in attempts if attempt["is_correct"]),
+        # The learner's own words, kept as the evidence behind a qualitative pass.
+        "explanation": progress.feynman_explanations.get(kp_id, ""),
+        "review": (
+            {
+                "due_at": due_at,
+                "interval_index": state.interval_index,
+                "consecutive_correct": state.consecutive_correct,
+                "consecutive_wrong": state.consecutive_wrong,
+            }
+            if state is not None
+            else None
+        ),
+        "errors": [
+            {
+                "id": record.id,
+                "error_type": record.error_type.value,
+                "status": record.status,
+                "self_attribution": record.self_attribution,
+                "retries": len(record.retry_history),
+                "created_at": record.created_at,
+            }
+            for record in progress.error_records
+            if record.knowledge_point_id == kp_id
+        ],
     }
 
 
@@ -285,11 +416,15 @@ __all__ = [
     "QUALITATIVE_TYPES",
     "NextStep",
     "gate_threshold",
+    "is_assessed_mastered",
     "is_mastered",
+    "mastery_source",
     "display_mastery",
     "objective_status",
+    "objective_report",
     "due_reviews",
     "find_knowledge_point",
     "next_objective",
     "map_summary",
+    "path_display_name",
 ]

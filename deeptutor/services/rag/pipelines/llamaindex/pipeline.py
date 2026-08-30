@@ -22,7 +22,7 @@ from deeptutor.services.rag.index_versioning import (
 from deeptutor.services.rag.kb_paths import resolve_kb_dir
 
 from . import storage
-from .config import default_top_k
+from .config import default_top_k, should_show_progress
 from .document_loader import LlamaIndexDocumentLoader
 from .embedding_adapter import (
     configure_llamaindex_settings,
@@ -33,14 +33,17 @@ from .errors import search_error_result
 
 DEFAULT_KB_BASE_DIR = str(get_runtime_data_root() / "knowledge_bases")
 
+# How long an indexing step may run without reporting any progress before it
+# is treated as stalled (see _run_with_stall_guard).
 _INDEX_STALL_TIMEOUT_SECONDS = 600.0
+# How often the stall guard checks the progress heartbeat.
 _INDEX_STALL_POLL_SECONDS = 5.0
 
 SignatureProvider = Callable[[], EmbeddingSignature | None]
 
 
 class IndexingStallError(RuntimeError):
-    """Raised when an indexing operation stops reporting progress."""
+    """Raised when an indexing operation makes no progress for too long."""
 
 
 async def _run_with_stall_guard(
@@ -49,11 +52,29 @@ async def _run_with_stall_guard(
     progress_callback: Optional[Callable[..., Any]] = None,
     stall_timeout: Optional[float] = None,
 ) -> Any:
-    """Run synchronous indexing and fail bounded when its heartbeat stops.
+    """Run a synchronous indexing step in the executor, failing if it stalls.
 
-    Python cannot interrupt an arbitrary executor thread, so a stalled worker
-    may finish later. The caller nevertheless receives an actionable error
-    instead of waiting forever on a provider request that never completes.
+    Indexing steps (chunking + embedding) run in a worker thread via
+    ``run_in_executor``. A provider that accepts a request but never
+    completes it (e.g. a blackholed keep-alive connection) can block that
+    thread indefinitely: per-request HTTP timeouts only bound a single
+    attempt, and provider retries extend the wait far beyond any reasonable
+    budget. Instead of hanging forever, watch the embedding progress
+    heartbeat and fail with a clear error once no progress has been reported
+    for ``stall_timeout`` seconds.
+
+    The sync function keeps running in its thread after a stall is raised —
+    Python cannot interrupt arbitrary synchronous code — but the API call
+    fails fast with an actionable message instead of waiting forever.
+
+    ``set_progress_callback`` writes to the process-global LlamaIndex
+    ``Settings`` embed model, which holds exactly one callback. A second
+    indexing job started while this one runs therefore displaces our
+    heartbeat, so we re-arm it on every poll tick: missing a few
+    notifications for one tick is harmless, whereas never seeing our own
+    progress again would kill a perfectly healthy job. The guard is
+    consciously biased this way — it can be slow to notice a genuine stall
+    while another job indexes, and never fails a job that is making progress.
     """
     if stall_timeout is None:
         stall_timeout = _INDEX_STALL_TIMEOUT_SECONDS
@@ -69,6 +90,8 @@ async def _run_with_stall_guard(
     future = asyncio.get_running_loop().run_in_executor(None, fn)
 
     def _consume_terminal_exception(fut: "asyncio.Future[Any]") -> None:
+        # The stalled thread may finish after we raise; retrieve its exception
+        # so it is not reported as "exception was never retrieved".
         if not fut.cancelled():
             fut.exception()
 
@@ -76,9 +99,7 @@ async def _run_with_stall_guard(
         done, _ = await asyncio.wait({future}, timeout=_INDEX_STALL_POLL_SECONDS)
         if done:
             return future.result()
-
-        # The active adapter has one process-global callback slot. Re-arm it
-        # in case a concurrent indexing job replaced this job's heartbeat.
+        # Reclaim the shared callback slot in case a concurrent job took it.
         set_progress_callback(_heartbeat)
         stalled_for = time.monotonic() - last_progress["at"]
         if stalled_for > stall_timeout:
@@ -86,8 +107,8 @@ async def _run_with_stall_guard(
             raise IndexingStallError(
                 f"Indexing made no progress for {stalled_for:.0f}s while "
                 "embedding documents. The embedding provider may be accepting "
-                "requests without completing them; check the embedding endpoint "
-                "and retry."
+                "requests without completing them; check the embedding "
+                "endpoint and retry."
             )
 
 
@@ -156,7 +177,9 @@ class LlamaIndexPipeline:
             )
 
             await _run_with_stall_guard(
-                lambda: storage.create_index(documents, storage_dir, show_progress=True),
+                lambda: storage.create_index(
+                    documents, storage_dir, show_progress=should_show_progress()
+                ),
                 progress_callback=progress_callback,
             )
 
@@ -290,6 +313,7 @@ class LlamaIndexPipeline:
 
         try:
             await self._verify_embedding_connectivity()
+
             documents = await self.document_loader.load(
                 file_paths, image_progress_callback=image_progress_callback
             )
@@ -312,7 +336,9 @@ class LlamaIndexPipeline:
                 self.logger.info(f"Creating new index with {len(documents)} documents...")
                 plan.storage_dir.mkdir(parents=True, exist_ok=True)
                 num_added = await _run_with_stall_guard(
-                    lambda: storage.create_index(documents, plan.storage_dir, show_progress=True),
+                    lambda: storage.create_index(
+                        documents, plan.storage_dir, show_progress=should_show_progress()
+                    ),
                     progress_callback=progress_callback,
                 )
                 self.logger.info(f"Created new index with {num_added} documents")

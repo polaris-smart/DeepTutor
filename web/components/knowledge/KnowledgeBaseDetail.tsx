@@ -6,6 +6,8 @@ import {
   ArrowLeft,
   Database,
   FileText,
+  Github,
+  Globe,
   Layers,
   Loader2,
   RefreshCw,
@@ -31,6 +33,8 @@ import KbFilesTab from "./KbFilesTab";
 import KbDocumentsSection from "./KbDocumentsSection";
 import KbIndexVersionsSection from "./KbIndexVersionsSection";
 import KbSettingsSection from "./KbSettingsSection";
+import KbGitHubSourcesSection from "./KbGitHubSourcesSection";
+import KbWebSourcesSection from "./KbWebSourcesSection";
 import KbMarginNoteDevicesSection from "./KbMarginNoteDevicesSection";
 
 interface KnowledgeBaseDetailProps {
@@ -58,6 +62,8 @@ const SECTION_CHROME: Record<
 > = {
   files: { label: "Files", Icon: FileText },
   add: { label: "Add documents", Icon: Upload },
+  github: { label: "GitHub", Icon: Github },
+  web: { label: "Web", Icon: Globe },
   versions: { label: "Index versions", Icon: Layers },
   devices: { label: "Devices", Icon: Smartphone },
   settings: { label: "Settings", Icon: SettingsIcon },
@@ -277,6 +283,12 @@ export default function KnowledgeBaseDetail({
                         : onReindex(kb.name)
                   }
                 />
+              )}
+              {activeSection === "github" && (
+                <KbGitHubSourcesSection kbName={kb.name} />
+              )}
+              {activeSection === "web" && (
+                <KbWebSourcesSection kbName={kb.name} />
               )}
               {activeSection === "devices" && (
                 <KbMarginNoteDevicesSection key={kb.name} kb={kb} />

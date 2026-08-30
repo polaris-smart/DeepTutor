@@ -5,12 +5,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
 from typing import Any
 
+from deeptutor.capabilities.course_study import COURSE_STUDY_TOOL_TYPES
 from deeptutor.capabilities.ima import IMA_TOOL_TYPES
 from deeptutor.capabilities.marginnote4 import MARGINNOTE_TOOL_TYPES
 from deeptutor.capabilities.mastery import MASTERY_TOOL_TYPES
 from deeptutor.capabilities.obsidian import OBSIDIAN_TOOL_TYPES
+from deeptutor.capabilities.partner_authoring import PARTNER_AUTHORING_TOOL_TYPES
+from deeptutor.capabilities.partner_group import PARTNER_GROUP_TOOL_TYPES
 from deeptutor.capabilities.reading import READING_TOOL_TYPES
 from deeptutor.capabilities.setup import SETUP_TOOL_TYPES
 from deeptutor.capabilities.solve import SOLVE_TOOL_TYPES
@@ -305,15 +309,45 @@ class CodeExecutionTool(_PromptHintsMixin, BaseTool):
         "cc": "c",
     }
 
+    @classmethod
+    def _command_for_platform(cls, language: str, *, has_stdin: bool) -> str:
+        """Build the shell command understood by the selected host platform."""
+        if sys.platform != "win32":
+            source_name, command_template = cls._LANGUAGES[language]
+            stdin_redirect = "< stdin.txt" if has_stdin else ""
+            return command_template.format(src=source_name, stdin=stdin_redirect).strip()
+
+        commands = {
+            "python": "python main.py",
+            # Use syntax supported by Windows PowerShell 5 as well as 7;
+            # ``&&`` only exists in PowerShell 7.
+            "c": "gcc main.c -O2 -o prog.exe; if ($LASTEXITCODE -eq 0) { .\\prog.exe }",
+            "cpp": "g++ -std=c++17 -O2 main.cpp -o prog.exe; if ($LASTEXITCODE -eq 0) { .\\prog.exe }",
+        }
+        command = commands[language]
+        # PowerShell's pipeline supplies stdin without relying on POSIX `<`.
+        if not has_stdin:
+            return command
+        if language == "python":
+            return "Get-Content stdin.txt | python main.py"
+        compiler, source = ("gcc", "main.c") if language == "c" else ("g++", "main.cpp")
+        flags = "-O2" if language == "c" else "-std=c++17 -O2"
+        return (
+            "$stdinText = Get-Content -Raw stdin.txt; "
+            f"{compiler} {flags} {source} -o prog.exe; "
+            "if ($LASTEXITCODE -eq 0) { $stdinText | .\\prog.exe }"
+        )
+
     def get_definition(self) -> ToolDefinition:
         return ToolDefinition(
             name="code_execution",
             description=(
                 "Run a code snippet in an isolated sandbox and return its "
-                "stdout/stderr. Pass complete, ready-to-run source in `code` "
-                "and pick `language` (python, c, or cpp). Use for calculation, "
-                "algorithm checking, and numerical verification — print results "
-                "to stdout. Not a substitute for explaining your reasoning."
+                "stdout/stderr plus any files generated in the workspace. Pass "
+                "complete, ready-to-run source in `code` and pick `language` "
+                "(python, c, or cpp). Use it for calculation, data processing, "
+                "and code-generated deliverables instead of embedding source in "
+                "an exec command. Print concise results to stdout."
             ),
             parameters=[
                 ToolParameter(
@@ -368,7 +402,7 @@ class CodeExecutionTool(_PromptHintsMixin, BaseTool):
         if not code:
             raise ValueError("code_execution requires non-empty 'code'.")
         language = self._resolve_language(kwargs.get("language"))
-        source_name, command_template = self._LANGUAGES[language]
+        source_name, _ = self._LANGUAGES[language]
 
         try:
             timeout = int(kwargs.get("timeout") or 30)
@@ -396,11 +430,10 @@ class CodeExecutionTool(_PromptHintsMixin, BaseTool):
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / source_name).write_text(code, encoding="utf-8")
 
-        stdin_redirect = ""
-        if str(kwargs.get("stdin") or "") != "":
+        has_stdin = str(kwargs.get("stdin") or "") != ""
+        if has_stdin:
             (run_dir / "stdin.txt").write_text(str(kwargs["stdin"]), encoding="utf-8")
-            stdin_redirect = "< stdin.txt"
-        command = command_template.format(src=source_name, stdin=stdin_redirect).strip()
+        command = self._command_for_platform(language, has_stdin=has_stdin)
 
         limits = ResourceLimits(timeout_s=timeout)
         request = ExecRequest(
@@ -414,7 +447,7 @@ class CodeExecutionTool(_PromptHintsMixin, BaseTool):
         # The source file, compiled binary, and stdin scratch are inputs we
         # wrote ourselves — exclude them so only program-generated files
         # surface as artifacts.
-        meta_files = {source_name, "prog", "stdin.txt"}
+        meta_files = {source_name, "prog", "prog.exe", "stdin.txt"}
         artifacts = [
             artifact
             for artifact in collect_public_artifacts(str(run_dir))
@@ -1729,6 +1762,16 @@ BUILTIN_TOOL_TYPES: tuple[type[BaseTool], ...] = (
     # Self-configuration tools — globally registered; the setup capability
     # mounts them (additively) on a turn that is actually about configuration.
     *SETUP_TOOL_TYPES,
+    # Chat-native Partner profile drafting. The capability gates this tool to
+    # actual authoring requests; confirmation is handled by the Partner API.
+    *PARTNER_AUTHORING_TOOL_TYPES,
+    # Group-only Partner collaboration. The capability finish guard makes this
+    # a post-answer proposal; execution remains behind explicit user approval.
+    *PARTNER_GROUP_TOOL_TYPES,
+    # Course Study tools — globally registered; the course capability mounts
+    # them (additively) and binds the active course server-side, so they are
+    # inert on a turn that belongs to no course.
+    *COURSE_STUDY_TOOL_TYPES,
     # Partner-only memory + history tools. Globally registered so schemas/API
     # stay stable, but never mounted in product chat: the partner runtime
     # force-mounts them (and suppresses chat's read_memory/write_memory) on

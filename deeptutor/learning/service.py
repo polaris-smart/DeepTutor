@@ -12,6 +12,7 @@ from deeptutor.learning.models import (
     ErrorRecord,
     LearningEvidence,
     InteractionStatus,
+    LearnerMasteryOverride,
     LearningModule,
     LearningProgress,
     LearningStage,
@@ -19,11 +20,18 @@ from deeptutor.learning.models import (
     PendingQuestion,
     QuizAttempt,
     RetryAttempt,
+    TopicMetadata,
+    TopicSource,
 )
 from deeptutor.learning.storage import LearningStore
 
 if TYPE_CHECKING:
     from deeptutor.learning.scheduler import SpacedRepetitionScheduler
+
+
+# Long enough for a course title, short enough that a list row stays a row.
+# Matches the cap module and objective names already use.
+_MAX_PATH_NAME_LEN = 200
 
 
 class MasteryInteractionError(RuntimeError):
@@ -102,6 +110,9 @@ class LearningService:
         for key in list(progress.repetition_states.keys()):
             if key not in new_kp_ids:
                 del progress.repetition_states[key]
+        for key in list(progress.learner_mastery_overrides.keys()):
+            if key not in new_kp_ids:
+                del progress.learner_mastery_overrides[key]
         progress.error_records = [
             r for r in progress.error_records if r.knowledge_point_id in new_kp_ids
         ]
@@ -505,6 +516,29 @@ class LearningService:
                     session_id=interaction.session_id,
                     turn_id=interaction.turn_id,
                 )
+            elif (
+                interaction.status == InteractionStatus.ANSWERED
+                and interaction.question.question_type == "choice"
+            ):
+                # Recover from a prior unreadable composer commit (#1004): allow
+                # a later readable pick to replace the stalled user_answer.
+                from deeptutor.learning.pending import is_readable_choice_answer
+
+                stored = str(interaction.user_answer or "")
+                incoming = str(answer or "")
+                if not is_readable_choice_answer(
+                    stored, interaction.question.options
+                ) and is_readable_choice_answer(incoming, interaction.question.options):
+                    interaction.user_answer = incoming
+                    interaction.session_id = session_id or interaction.session_id
+                    interaction.turn_id = turn_id or interaction.turn_id
+                    tx.put_interaction(interaction)
+                    tx.emit(
+                        "interaction.answered",
+                        {"interaction_id": interaction.interaction_id},
+                        session_id=interaction.session_id,
+                        turn_id=interaction.turn_id,
+                    )
             return interaction
 
         _, interaction = self._store.mutate(book_id, record)
@@ -556,20 +590,26 @@ class LearningService:
                 raise NoPendingInteractionError("The question was abandoned")
 
             pending = interaction.question
-            raw_answer = (
-                interaction.user_answer
-                if interaction.status == InteractionStatus.ANSWERED
-                else str(answer or "")
-            )
+            raw_answer = str(answer or "")
             if interaction.status == InteractionStatus.ANSWERED:
+                stored = str(interaction.user_answer or "")
                 if pending.question_type == "choice":
                     from deeptutor.learning.pending import (
                         has_option_bodies,
+                        is_readable_choice_answer,
                         parse_options,
                         resolve_choice_submission,
                     )
 
                     option_map = parse_options(pending.options)
+                    if is_readable_choice_answer(stored, option_map):
+                        raw_answer = stored
+                    elif is_readable_choice_answer(raw_answer, option_map):
+                        # Prior commit was unreadable clarifying text (#1004) —
+                        # accept the fresh readable answer and rewrite storage.
+                        interaction.user_answer = raw_answer
+                    else:
+                        raw_answer = stored
                     if has_option_bodies(option_map):
                         graded_answer = (
                             resolve_choice_submission(raw_answer, option_map) or raw_answer
@@ -581,6 +621,7 @@ class LearningService:
                             raw_answer if answer_for_grading is None else answer_for_grading
                         )
                 else:
+                    raw_answer = stored
                     graded_answer = raw_answer
             else:
                 graded_answer = raw_answer if answer_for_grading is None else answer_for_grading
@@ -663,11 +704,23 @@ class LearningService:
         modules: list[LearningModule],
         *,
         append: bool = False,
+        name: str = "",
         event_type: str = "path.modules_replaced",
         session_id: str = "",
         turn_id: str = "",
     ) -> LearningProgress:
+        """Install a module set, optionally naming a path that has no name yet.
+
+        ``name`` is applied only when the path is still unnamed, in the same
+        transaction as the modules so a built path is never briefly nameless.
+        Replacing the map deliberately does NOT rename: the map is what the
+        path teaches, the name is which path it is — deriving one from the
+        other is what made a rebuild look like a different course.
+        """
+
         def replace(tx):
+            if name.strip() and not tx.progress.name.strip():
+                tx.progress.name = name.strip()[:_MAX_PATH_NAME_LEN]
             applied_modules = [module.model_copy(deep=True) for module in modules]
             if append:
                 offset = len(tx.progress.modules)
@@ -683,12 +736,61 @@ class LearningService:
                     tx.progress.current_module_id = applied_modules[0].id
                     tx.progress.current_kp_index = 0
             else:
+                current_kp_id = ""
+                for current_module in tx.progress.modules:
+                    if current_module.id != tx.progress.current_module_id:
+                        continue
+                    if 0 <= tx.progress.current_kp_index < len(current_module.knowledge_points):
+                        current_kp_id = current_module.knowledge_points[
+                            tx.progress.current_kp_index
+                        ].id
+                    break
+                pending_kp_id = (
+                    tx.progress.pending_question.knowledge_point_id
+                    if tx.progress.pending_question is not None
+                    else ""
+                )
+                active_interaction = tx.active_interaction()
+                active_kp_id = (
+                    active_interaction.question.knowledge_point_id
+                    if active_interaction is not None
+                    else ""
+                )
+
                 self.replace_modules(tx.progress, applied_modules)
-                tx.progress.pending_question = None
-                tx.abandon_active_interactions()
-                if applied_modules:
+                objective_locations = {
+                    kp.id: (module.id, kp_index)
+                    for module in applied_modules
+                    for kp_index, kp in enumerate(module.knowledge_points)
+                }
+
+                if current_kp_id in objective_locations:
+                    (
+                        tx.progress.current_module_id,
+                        tx.progress.current_kp_index,
+                    ) = objective_locations[current_kp_id]
+                elif applied_modules:
                     tx.progress.current_module_id = applied_modules[0].id
                     tx.progress.current_kp_index = 0
+                else:
+                    tx.progress.current_module_id = ""
+                    tx.progress.current_kp_index = 0
+
+                if tx.progress.pending_question is not None:
+                    if pending_kp_id not in objective_locations:
+                        tx.progress.pending_question = None
+                    else:
+                        pending_module_id, _ = objective_locations[pending_kp_id]
+                        tx.progress.pending_question.module_id = pending_module_id
+
+                if active_interaction is not None:
+                    if active_kp_id not in objective_locations:
+                        tx.abandon_active_interactions()
+                    else:
+                        active_module_id, _ = objective_locations[active_kp_id]
+                        if active_interaction.question.module_id != active_module_id:
+                            active_interaction.question.module_id = active_module_id
+                            tx.put_interaction(active_interaction)
             tx.touch()
             tx.emit(
                 event_type,
@@ -704,6 +806,61 @@ class LearningService:
             )
 
         progress, _ = self._store.mutate(book_id, replace, create=True)
+        return progress
+
+    def create_topic(
+        self,
+        book_id: str,
+        *,
+        name: str,
+        modules: list[LearningModule],
+        metadata: TopicMetadata,
+        sources: list[TopicSource],
+    ) -> LearningProgress:
+        """Create a confirmed topic, sources, and route in one transaction."""
+
+        if self._store.exists(book_id):
+            raise ValueError(f"Mastery topic {book_id!r} already exists")
+
+        def create(tx):
+            tx.progress.name = str(name or "").strip()[:_MAX_PATH_NAME_LEN]
+            self.replace_modules(tx.progress, [module.model_copy(deep=True) for module in modules])
+            tx.progress.current_module_id = modules[0].id if modules else ""
+            tx.progress.current_kp_index = 0
+            tx.put_topic(metadata, sources)
+            tx.touch()
+            tx.emit(
+                "topic.created",
+                {
+                    "module_count": len(modules),
+                    "knowledge_point_count": sum(
+                        len(module.knowledge_points) for module in modules
+                    ),
+                    "source_count": len(sources),
+                },
+            )
+
+        progress, _ = self._store.mutate(book_id, create, create=True)
+        return progress
+
+    def rename_path(self, book_id: str, name: str) -> LearningProgress:
+        """Set (or clear) the learner-facing name of a path.
+
+        Clearing it is meaningful, not a no-op: an empty name hands the path
+        back to the derived display name, which is the only way to undo a
+        rename without inventing a second "auto" flag.
+        """
+        cleaned = str(name or "").strip()[:_MAX_PATH_NAME_LEN]
+
+        def rename(tx):
+            if tx.progress.name == cleaned:
+                return cleaned
+            tx.progress.name = cleaned
+            tx.touch()
+            tx.emit("path.renamed", {"name": cleaned})
+            return cleaned
+
+        progress, _ = self._store.mutate(book_id, rename)
         return progress
 
     def abandon_active_question(self, book_id: str) -> tuple[LearningProgress, bool]:
@@ -748,6 +905,7 @@ class LearningService:
             progress.error_records = []
             progress.repetition_states = {}
             progress.review_queue = []
+            progress.learner_mastery_overrides = {}
             progress.pending_question = None
             progress.feynman_retries = {}
             progress.feynman_explanations = {}
@@ -761,6 +919,42 @@ class LearningService:
             tx.emit("path.reset", {})
 
         progress, _ = self._store.mutate(book_id, reset)
+        return progress
+
+    def set_learner_mastery_override(
+        self,
+        book_id: str,
+        kp_id: str,
+        *,
+        mastered: bool,
+        note: str = "",
+    ) -> LearningProgress:
+        """Set or clear an explicit learner claim without changing evidence."""
+
+        def update(tx):
+            from deeptutor.learning.policy import find_knowledge_point
+
+            kp, _, _ = find_knowledge_point(tx.progress, kp_id)
+            if kp is None:
+                raise MasteryInteractionError(f"Unknown objective {kp_id!r}")
+            if mastered:
+                tx.progress.learner_mastery_overrides[kp_id] = LearnerMasteryOverride(
+                    knowledge_point_id=kp_id,
+                    note=str(note or "").strip()[:500],
+                )
+                event_type = "mastery.overridden"
+            else:
+                if kp_id not in tx.progress.learner_mastery_overrides:
+                    return
+                tx.progress.learner_mastery_overrides.pop(kp_id, None)
+                event_type = "mastery.override_cleared"
+            tx.touch()
+            tx.emit(
+                event_type,
+                {"knowledge_point_id": kp_id, "mastered": bool(mastered)},
+            )
+
+        progress, _ = self._store.mutate(book_id, update)
         return progress
 
     def record_qualitative(
@@ -897,8 +1091,7 @@ class LearningService:
             overviews.append(
                 {
                     "path_id": progress.book_id,
-                    "name": (progress.modules[0].name if progress.modules else "")
-                    or progress.book_id,
+                    "name": policy.path_display_name(progress),
                     "objectives": counts["total"],
                     "mastered": counts["mastered"],
                     "learning": counts["learning"],
@@ -914,6 +1107,8 @@ class LearningService:
 
     def list_progress(self) -> dict:
         """Return summary of all book progress with per-book error info."""
+        from deeptutor.learning import policy
+
         logger = logging.getLogger(__name__)
 
         book_ids = self._store.list_all()
@@ -930,14 +1125,10 @@ class LearningService:
                 total_mastery = sum(
                     progress.mastery_levels.get(kp_id, 0) for kp_id in current_kp_ids
                 )
-                # Derive display name from first module, fall back to book_id
-                display_name = ""
-                if progress.modules:
-                    display_name = progress.modules[0].name or ""
                 summaries.append(
                     {
                         "book_id": progress.book_id,
-                        "name": display_name or progress.book_id,
+                        "name": policy.path_display_name(progress),
                         "modules_count": len(progress.modules),
                         "kp_count": total_kps,
                         "current_stage": progress.current_stage.value

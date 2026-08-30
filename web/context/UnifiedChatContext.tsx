@@ -29,7 +29,12 @@ import {
 } from "@/lib/session-api";
 import { normalizeMarkdownForDisplay } from "@/lib/markdown-display";
 import { normalizeMessageContent } from "@/lib/message-content";
-import { buildVisiblePath, tipMessageId } from "@/lib/message-branches";
+import {
+  buildVisiblePath,
+  persistedBranchSelections,
+  selectChildBranch,
+  tipMessageId,
+} from "@/lib/message-branches";
 import { nextOptimisticId, resolvePersistedMessage } from "@/lib/optimistic-id";
 import { reconcileTurnIds } from "@/lib/turn-reconcile";
 import {
@@ -94,6 +99,10 @@ export interface ChatState {
   llmSelection: LLMSelection | null;
   /** Persistent mastery state associated with this conversation. */
   masteryPathId: string | null;
+  /** Study course this conversation belongs to; "" = unclassified.
+   *  Read by the composer's course pill and sent with every turn, so Course
+   *  Study senses the same course the learner can see it is bound to. */
+  courseId: string;
   /** Session-level persona preference; "" = Default (no persona). Applies
    *  to every following message until changed (persisted on the session). */
   personaSelection: string;
@@ -104,6 +113,14 @@ export interface ChatState {
   /** Edit-branching: keyed by stringified parent_message_id (or "null"
    *  for the root). Empty means "default to latest sibling everywhere". */
   selectedBranches: Record<string, number>;
+}
+
+export interface SessionConfiguration {
+  capability?: string | null;
+  knowledgeBases?: string[];
+  masteryPathId?: string | null;
+  courseId?: string;
+  enabledTools?: string[];
 }
 
 interface SessionStatusSnapshot {
@@ -194,6 +211,7 @@ interface SessionSnapshot {
   knowledgeBases?: string[];
   llmSelection?: LLMSelection | null;
   masteryPathId?: string | null;
+  courseId?: string;
   personaSelection?: string;
   language?: string;
   selectedBranches?: Record<string, number>;
@@ -208,6 +226,7 @@ type Action =
   // session that produced it, which may no longer be the selected one. The
   // composer omits it and means "the one on screen".
   | { type: "SET_MASTERY_PATH_ID"; masteryPathId: string | null; key?: string }
+  | { type: "SET_COURSE_ID"; courseId: string }
   | { type: "SET_PERSONA_SELECTION"; persona: string }
   | { type: "SET_LANGUAGE"; lang: string }
   | {
@@ -247,7 +266,16 @@ type Action =
       assistantMessageId?: number | null;
     }
   | { type: "DELETE_TURN"; key: string; messageId: number }
-  | { type: "NEW_SESSION"; key: string }
+  | {
+      type: "NEW_SESSION";
+      key: string;
+      configuration?: SessionConfiguration;
+    }
+  | {
+      type: "CONFIGURE_SESSION";
+      key?: string;
+      configuration: SessionConfiguration;
+    }
   | { type: "ENSURE_DRAFT_SESSION"; key: string }
   | {
       type: "SET_SELECTED_BRANCH";
@@ -275,6 +303,7 @@ function createSessionEntry(
     knowledgeBases: [],
     llmSelection: null,
     masteryPathId: null,
+    courseId: "",
     personaSelection: "",
     messages: [],
     isStreaming: false,
@@ -313,12 +342,47 @@ function updateSelectedSession(
   };
 }
 
+function applySessionConfiguration(
+  session: SessionEntry,
+  configuration?: SessionConfiguration,
+): SessionEntry {
+  if (!configuration) return session;
+  return {
+    ...session,
+    activeCapability:
+      configuration.capability !== undefined
+        ? configuration.capability
+        : session.activeCapability,
+    knowledgeBases:
+      configuration.knowledgeBases !== undefined
+        ? [...configuration.knowledgeBases]
+        : session.knowledgeBases,
+    masteryPathId:
+      configuration.masteryPathId !== undefined
+        ? configuration.masteryPathId
+        : session.masteryPathId,
+    courseId:
+      configuration.courseId !== undefined
+        ? configuration.courseId
+        : session.courseId,
+    enabledTools:
+      configuration.enabledTools !== undefined
+        ? [...configuration.enabledTools]
+        : session.enabledTools,
+    updatedAt: Date.now(),
+  };
+}
+
 /** Add an empty session under ``key`` and make it the selected one. */
-function selectFreshDraft(state: ProviderState, key: string): ProviderState {
+function selectFreshDraft(
+  state: ProviderState,
+  key: string,
+  configuration?: SessionConfiguration,
+): ProviderState {
   const MAX_CACHED_SESSIONS = 20;
   const nextSessions = {
     ...state.sessions,
-    [key]: createSessionEntry(key),
+    [key]: applySessionConfiguration(createSessionEntry(key), configuration),
   };
   const keys = Object.keys(nextSessions);
   if (keys.length > MAX_CACHED_SESSIONS) {
@@ -379,6 +443,11 @@ function reducer(state: ProviderState, action: Action): ProviderState {
         },
       };
     }
+    case "SET_COURSE_ID":
+      return updateSelectedSession(state, (session) => ({
+        ...session,
+        courseId: action.courseId,
+      }));
     case "SET_PERSONA_SELECTION":
       return updateSelectedSession(state, (session) => ({
         ...session,
@@ -392,6 +461,9 @@ function reducer(state: ProviderState, action: Action): ProviderState {
     case "ADD_USER_MSG": {
       const session =
         state.sessions[action.key] ?? createSessionEntry(action.key);
+      const userId = nextOptimisticId();
+      const parentId =
+        action.parentMessageId === undefined ? null : action.parentMessageId;
       return {
         ...state,
         sessions: {
@@ -401,14 +473,11 @@ function reducer(state: ProviderState, action: Action): ProviderState {
             messages: [
               ...session.messages,
               {
-                id: nextOptimisticId(),
+                id: userId,
                 role: "user",
                 content: action.content,
                 capability: action.capability || "",
-                parentMessageId:
-                  action.parentMessageId === undefined
-                    ? null
-                    : action.parentMessageId,
+                parentMessageId: parentId,
                 ...(action.attachments?.length
                   ? { attachments: action.attachments }
                   : {}),
@@ -417,6 +486,11 @@ function reducer(state: ProviderState, action: Action): ProviderState {
                   : {}),
               },
             ],
+            selectedBranches: selectChildBranch(
+              session.selectedBranches,
+              parentId,
+              userId,
+            ),
             updatedAt: Date.now(),
           },
         },
@@ -659,6 +733,10 @@ function reducer(state: ProviderState, action: Action): ProviderState {
               action.masteryPathId !== undefined
                 ? action.masteryPathId
                 : existing.masteryPathId,
+            courseId:
+              action.courseId !== undefined
+                ? action.courseId
+                : existing.courseId,
             personaSelection:
               action.personaSelection !== undefined
                 ? action.personaSelection
@@ -798,7 +876,20 @@ function reducer(state: ProviderState, action: Action): ProviderState {
         sidebarRefreshToken: state.sidebarRefreshToken + 1,
       };
     case "NEW_SESSION":
-      return selectFreshDraft(state, action.key);
+      return selectFreshDraft(state, action.key, action.configuration);
+    case "CONFIGURE_SESSION": {
+      const key = action.key || state.selectedKey;
+      if (!key) return state;
+      const session = state.sessions[key];
+      if (!session) return state;
+      return {
+        ...state,
+        sessions: {
+          ...state.sessions,
+          [key]: applySessionConfiguration(session, action.configuration),
+        },
+      };
+    }
     // Idempotent variant of NEW_SESSION: guarantees there is *a* selected
     // session without discarding one a page already selected and configured.
     // The check belongs here rather than in the caller because a mount effect
@@ -830,6 +921,7 @@ interface ChatContextValue {
   setKBs: (kbs: string[]) => void;
   setLLMSelection: (selection: LLMSelection | null) => void;
   setMasteryPathId: (masteryPathId: string | null) => void;
+  setCourseId: (courseId: string) => void;
   setPersonaSelection: (persona: string) => void;
   setLanguage: (lang: string) => void;
   sendMessage: (
@@ -872,7 +964,14 @@ interface ChatContextValue {
   /** Switch which sibling is currently visible at a branch point. */
   switchBranch: (parentMessageId: number | null, childId: number) => void;
   renameSessionTitle: (title: string) => Promise<void>;
-  newSession: () => void;
+  newSession: (configuration?: SessionConfiguration) => void;
+  /** Apply route-owned preferences to an explicit loaded session (or the
+   * selected draft). Dispatching by key keeps this safe immediately after
+   * LOAD_SESSION, before React has committed a new context render. */
+  configureSession: (
+    configuration: SessionConfiguration,
+    sessionKey?: string,
+  ) => void;
   /** Fetch a session and apply it. Pass ``revalidate`` when the session is
    *  already on screen (see ``showCachedSession``): the snapshot is then
    *  dropped rather than applied if a turn started meanwhile. */
@@ -1423,6 +1522,13 @@ export function UnifiedChatProvider({
           typeof session.preferences?.mastery_path_id === "string"
             ? session.preferences.mastery_path_id
             : null,
+        // The server is the truth for which course a conversation belongs to:
+        // it is set from the launch URL, from the composer's pill, and from the
+        // sidebar's "move to course", and every one of those writes here.
+        courseId:
+          typeof session.preferences?.course_id === "string"
+            ? session.preferences.course_id
+            : "",
         personaSelection:
           typeof session.preferences?.persona === "string"
             ? session.preferences.persona
@@ -1844,6 +1950,7 @@ export function UnifiedChatProvider({
       knowledgeBases: current.knowledgeBases,
       llmSelection: current.llmSelection,
       masteryPathId: current.masteryPathId,
+      courseId: current.courseId,
       personaSelection: current.personaSelection,
       messages: current.messages,
       isStreaming: current.isStreaming,
@@ -1888,6 +1995,10 @@ export function UnifiedChatProvider({
     dispatch({ type: "SET_MASTERY_PATH_ID", masteryPathId: normalized });
   }, []);
 
+  const setCourseId = useCallback((courseId: string) => {
+    dispatch({ type: "SET_COURSE_ID", courseId: courseId.trim() });
+  }, []);
+
   const setPersonaSelection = useCallback((persona: string) => {
     dispatch({ type: "SET_PERSONA_SELECTION", persona });
   }, []);
@@ -1913,9 +2024,23 @@ export function UnifiedChatProvider({
     });
   }, []);
 
-  const newSession = useCallback(() => {
-    dispatch({ type: "NEW_SESSION", key: makeDraftKey() });
-  }, [makeDraftKey]);
+  const newSession = useCallback(
+    (configuration?: SessionConfiguration) => {
+      dispatch({ type: "NEW_SESSION", key: makeDraftKey(), configuration });
+    },
+    [makeDraftKey],
+  );
+
+  const configureSession = useCallback(
+    (configuration: SessionConfiguration, sessionKey?: string) => {
+      dispatch({
+        type: "CONFIGURE_SESSION",
+        key: sessionKey,
+        configuration,
+      });
+    },
+    [],
+  );
 
   const editMessage = useCallback(
     async (messageId: number, newContent: string) => {
@@ -1977,11 +2102,12 @@ export function UnifiedChatProvider({
         childId,
       });
       const sessionId = session.sessionId;
-      if (!sessionId) return;
-      const nextSelections = {
+      if (!sessionId || childId < 0) return;
+      const nextSelections = persistedBranchSelections({
         ...session.selectedBranches,
         [parentKey]: childId,
-      };
+      });
+      if (Object.keys(nextSelections).length === 0) return;
       // Fire-and-forget — local state is the source of truth for the UI;
       // the server copy only matters for reload-time hydration.
       updateBranchSelection(sessionId, nextSelections).catch((err) => {
@@ -1999,20 +2125,25 @@ export function UnifiedChatProvider({
       const session = currentState.sessions[key];
       if (!session || !session.sessionId) return;
       if (session.isStreaming) return;
-      let effectiveId = messageId;
-      if (messageId < 0) {
-        const origIdx = session.messages.findIndex((m) => m.id === messageId);
-        if (origIdx === -1) return;
-        try {
-          await loadSession(session.sessionId);
-        } catch {
-          return;
-        }
-        const refreshed = stateRef.current.sessions[key];
-        const realId = refreshed?.messages[origIdx]?.id;
-        if (realId == null || realId < 0) return;
-        effectiveId = realId;
+      // Same optimistic-id race as editMessage (#739): after loadSession
+      // dispatches, stateRef can still hold the negative sentinel until
+      // React commits. Resolve from the returned snapshot instead.
+      let target: MessageItem | undefined;
+      try {
+        target = await resolvePersistedMessage(
+          session.messages,
+          messageId,
+          "user",
+          async () =>
+            session.sessionId
+              ? await loadSession(session.sessionId)
+              : undefined,
+        );
+      } catch {
+        return;
       }
+      if (!target || typeof target.id !== "number" || target.id < 0) return;
+      const effectiveId = target.id;
       try {
         await deleteMessage(session.sessionId, effectiveId);
         dispatch({ type: "DELETE_TURN", key, messageId: effectiveId });
@@ -2038,6 +2169,7 @@ export function UnifiedChatProvider({
       setKBs,
       setLLMSelection,
       setMasteryPathId,
+      setCourseId,
       setPersonaSelection,
       setLanguage,
       sendMessage,
@@ -2049,6 +2181,7 @@ export function UnifiedChatProvider({
       switchBranch,
       renameSessionTitle,
       newSession,
+      configureSession,
       loadSession,
       showCachedSession,
       selectedSessionId: derivedState.sessionId,
@@ -2062,6 +2195,7 @@ export function UnifiedChatProvider({
       setKBs,
       setLLMSelection,
       setMasteryPathId,
+      setCourseId,
       setPersonaSelection,
       setLanguage,
       sendMessage,
@@ -2073,6 +2207,7 @@ export function UnifiedChatProvider({
       switchBranch,
       renameSessionTitle,
       newSession,
+      configureSession,
       loadSession,
       showCachedSession,
       sessionStatuses,

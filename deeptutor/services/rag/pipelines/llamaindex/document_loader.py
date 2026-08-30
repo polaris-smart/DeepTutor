@@ -105,10 +105,16 @@ class LlamaIndexDocumentLoader:
             # archive download) on a synchronous httpx.Client — running it on
             # the event loop stalls every other request for the whole PDF
             # (same class of bug as upstream #761/#777). Hand it to a thread.
-            text, extracted_images = await asyncio.to_thread(
+            text, extracted_images, parse_engine = await asyncio.to_thread(
                 self._parse_document, file_path
             )
-            self._append_if_nonempty(documents, file_path, text)
+            self._append_if_nonempty(
+                documents,
+                file_path,
+                text,
+                parse_engine=parse_engine,
+                extracted_image_count=len(extracted_images),
+            )
             image_sources.extend(extracted_images)
 
         for file_path_str in classification.text_files:
@@ -140,10 +146,10 @@ class LlamaIndexDocumentLoader:
 
         return documents
 
-    def _parse_document(self, file_path: Path) -> tuple[str, list[_ImageSource]]:
+    def _parse_document(self, file_path: Path) -> tuple[str, list[_ImageSource], str]:
         """Parse a document through the shared, engine-pluggable parse layer.
 
-        Returns ``(text, extracted_images)``. A parse failure (engine
+        Returns ``(text, extracted_images, engine)``. A parse failure (engine
         unavailable, unsupported format for the active engine, or models not
         ready) is logged and the file is skipped — matching the sibling
         LightRAG/GraphRAG pipelines — rather than aborting the whole batch.
@@ -157,14 +163,14 @@ class LlamaIndexDocumentLoader:
                 f"Skipped {file_path.name}: the active document-parsing engine could "
                 f"not handle it ({exc}). Change the engine in Settings → Document Parsing."
             )
-            return "", []
+            return "", [], ""
 
         text = parsed.markdown.strip() or self._text_from_blocks(parsed.blocks)
         # 悦学 doc_intel: keep the structured blocks for _append_if_nonempty's
         # enrich pass (content_list carries heading levels / bboxes / page_idx).
         self._last_parsed_blocks = parsed.blocks
         images = self._collect_asset_images(parsed.asset_dir, origin=file_path)
-        return text, images
+        return text, images, str(parsed.engine or "")
 
     def _lookup_cached_blocks(self, file_path: Path) -> list[dict] | None:
         """Return content_list blocks cached for a text file, or ``None``.
@@ -556,7 +562,15 @@ class LlamaIndexDocumentLoader:
 
         return _MD_IMAGE_RE.sub(_replace, text)
 
-    def _append_if_nonempty(self, documents: list[Any], file_path: Path, text: str) -> None:
+    def _append_if_nonempty(
+        self,
+        documents: list[Any],
+        file_path: Path,
+        text: str,
+        *,
+        parse_engine: str = "",
+        extracted_image_count: int = 0,
+    ) -> None:
         if text.strip():
             # Markdown local-image inlining must run BEFORE the doc_intel
             # enrich pass below — enrich derives block_meta from this text.
@@ -676,4 +690,16 @@ class LlamaIndexDocumentLoader:
                 f"Loaded: {file_path.name} ({len(text)} chars)"
             )
         else:
-            self.logger.warning(f"Skipped empty document: {file_path.name}")
+            if file_path.suffix.lower() == ".pdf" and extracted_image_count:
+                engine_label = parse_engine or "the active parser"
+                self.logger.warning(
+                    "Skipped empty document: %s. The %s engine extracted %d image(s) "
+                    "but no text. This is usually a scanned PDF; use an OCR-capable "
+                    "parsing engine such as MinerU or Docling with OCR enabled. "
+                    "Change the engine in Settings, Document Parsing.",
+                    file_path.name,
+                    engine_label,
+                    extracted_image_count,
+                )
+            else:
+                self.logger.warning(f"Skipped empty document: {file_path.name}")

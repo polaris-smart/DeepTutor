@@ -15,6 +15,7 @@ from deeptutor.agents.question.capability import DeepQuestionCapability
 from deeptutor.agents.research.capability import DeepResearchCapability
 from deeptutor.agents.visualize.capability import VisualizeCapability
 import deeptutor.agents.visualize.pipeline as visualize_pipeline
+from deeptutor.capabilities.ask_questions.capability import AskQuestionsCapability
 from deeptutor.capabilities.solve.capability import DeepSolveCapability
 from deeptutor.core.context import Attachment, UnifiedContext
 from deeptutor.core.stream import StreamEvent, StreamEventType
@@ -69,6 +70,7 @@ async def _collect_events(run_coro) -> list[StreamEvent]:
 def test_builtin_capability_registry_covers_documented_capabilities() -> None:
     assert set(BUILTIN_CAPABILITY_CLASSES) == {
         "chat",
+        "ask_questions",
         "deep_solve",
         "deep_question",
         "deep_research",
@@ -76,7 +78,47 @@ def test_builtin_capability_registry_covers_documented_capabilities() -> None:
         "visualize",
         "mastery_path",
         "immersive_reading",
+        # Course Study orchestrates across the surfaces above rather than
+        # teaching itself, so it registers here like any other mode.
+        "course_study",
     }
+
+
+@pytest.mark.asyncio
+async def test_ask_questions_capability_forces_card_on_selected_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakePipeline:
+        def __init__(
+            self,
+            *,
+            language: str = "en",
+            initial_tool_choice: str | None = None,
+        ) -> None:
+            captured["language"] = language
+            captured["initial_tool_choice"] = initial_tool_choice
+
+        async def run(self, context: UnifiedContext, stream: StreamBus) -> None:
+            captured["ask_questions_mode"] = context.metadata.get("ask_questions_mode")
+            await stream.content("question", source="chat", stage="responding")
+
+    monkeypatch.setattr(
+        "deeptutor.capabilities.ask_questions.capability.AgenticChatPipeline",
+        FakePipeline,
+    )
+
+    context = UnifiedContext(user_message="Help me plan", language="zh")
+    capability = AskQuestionsCapability()
+    events = await _collect_events(lambda bus: capability.run(context, bus))
+
+    assert captured == {
+        "language": "zh",
+        "initial_tool_choice": "ask_user",
+        "ask_questions_mode": True,
+    }
+    assert any(event.type == StreamEventType.CONTENT for event in events)
 
 
 @pytest.mark.asyncio
@@ -425,3 +467,36 @@ async def test_visualize_capability_passes_attachments_to_analysis_agent(
     assert captured["analysis"]["attachments"][0].filename == "figure.png"
     result_event = next(event for event in events if event.type == StreamEventType.RESULT)
     assert result_event.metadata["render_type"] == "svg"
+
+
+@pytest.mark.asyncio
+async def test_deep_question_rejects_empty_custom_topic_before_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Invalid input returns a clear error before workspace allocation."""
+
+    monkeypatch.setattr(
+        "deeptutor.services.llm.config.get_llm_config",
+        lambda: SimpleNamespace(api_key="", base_url="", api_version=""),
+    )
+
+    class FailingPathService:
+        def get_task_workspace(self, *_args: Any, **_kwargs: Any) -> str:
+            raise AssertionError("workspace must not be allocated for invalid input")
+
+    monkeypatch.setattr(
+        "deeptutor.services.path_service.get_path_service",
+        lambda: FailingPathService(),
+    )
+
+    context = UnifiedContext(
+        user_message="",
+        config_overrides={"mode": "custom", "topic": ""},
+        language="en",
+    )
+    events = await _collect_events(lambda bus: DeepQuestionCapability().run(context, bus))
+
+    errors = [event for event in events if event.type == StreamEventType.ERROR]
+    assert errors
+    assert "topic" in errors[-1].content.lower()
+    assert errors[-1].metadata["code"] == "topic_required"

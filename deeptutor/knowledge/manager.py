@@ -16,6 +16,7 @@ import shutil
 import stat
 import sys
 from typing import Any
+from urllib.parse import urlparse
 
 from deeptutor.knowledge.kb_types import (
     IMA_KB_TYPE,
@@ -46,6 +47,7 @@ from deeptutor.services.rag.index_probe import (
     inspect_provider_version,
     provider_failure_summary,
 )
+from deeptutor.services.web_source.crawler import MAX_CRAWL_DEPTH, MAX_CRAWL_PAGES
 
 logger = logging.getLogger(__name__)
 
@@ -1896,6 +1898,197 @@ class KnowledgeBaseManager:
                 folder["file_count"] = len(file_states)
                 atomic_write_json(metadata_file, metadata)
                 break
+
+    # ------------------------------------------------------------------
+    # GitHub source management
+    # ------------------------------------------------------------------
+
+    def add_github_source(self, kb_name, repo, branch="main", path="", glob="*.md"):
+        """Register a GitHub repo as a document source for a KB."""
+        if kb_name not in self.list_knowledge_bases():
+            raise ValueError(f"Knowledge base not found: {kb_name}")
+        repo_clean = repo.strip().rstrip("/")
+        if repo_clean.endswith(".git"):
+            repo_clean = repo_clean[:-4]
+        if "github.com/" in repo_clean:
+            repo_clean = repo_clean.split("github.com/", 1)[-1]
+        repo_clean = repo_clean.strip("/")
+        source_id = hashlib.md5(  # noqa: S324
+            f"{repo_clean}:{branch}:{path}".encode(), usedforsecurity=False
+        ).hexdigest()[:8]
+        kb_dir = self.base_dir / kb_name
+        metadata_file = kb_dir / "metadata.json"
+        metadata = self._read_kb_metadata(metadata_file)
+        sources = metadata.get("github_sources", [])
+        for existing in sources:
+            if existing.get("id") == source_id:
+                return existing
+        source_info = {
+            "id": source_id,
+            "repo": repo_clean,
+            "branch": branch,
+            "path": path,
+            "glob": glob,
+            "enabled": True,
+            "last_synced_sha": "",
+            "last_synced_at": "",
+            "last_sync_status": "pending",
+            "last_sync_error": None,
+            "files_synced": 0,
+            "added_at": datetime.now().isoformat(),
+        }
+        sources.append(source_info)
+        metadata["github_sources"] = sources
+        atomic_write_json(metadata_file, metadata)
+        return source_info
+
+    def remove_github_source(self, kb_name, source_id):
+        """Remove a GitHub source from a KB."""
+        if kb_name not in self.list_knowledge_bases():
+            raise ValueError(f"Knowledge base not found: {kb_name}")
+        metadata_file = self.base_dir / kb_name / "metadata.json"
+        metadata = self._read_kb_metadata(metadata_file)
+        sources = metadata.get("github_sources", [])
+        new_sources = [s for s in sources if s.get("id") != source_id]
+        if len(new_sources) == len(sources):
+            return False
+        metadata["github_sources"] = new_sources
+        atomic_write_json(metadata_file, metadata)
+        return True
+
+    def get_github_sources(self, kb_name):
+        """Return all GitHub sources registered for a KB."""
+        if kb_name not in self.list_knowledge_bases():
+            raise ValueError(f"Knowledge base not found: {kb_name}")
+        metadata_file = self.base_dir / kb_name / "metadata.json"
+        metadata = self._read_kb_metadata(metadata_file)
+        return metadata.get("github_sources", [])
+
+    def update_github_source_state(self, kb_name, source_id, **fields):
+        """Persist sync state fields into a GitHub source entry."""
+        if kb_name not in self.list_knowledge_bases():
+            raise ValueError(f"Knowledge base not found: {kb_name}")
+        metadata_file = self.base_dir / kb_name / "metadata.json"
+        metadata = self._read_kb_metadata(metadata_file)
+        sources = metadata.get("github_sources", [])
+        for src in sources:
+            if src.get("id") == source_id:
+                src.update(fields)
+                atomic_write_json(metadata_file, metadata)
+                return
+
+    def get_all_github_sources(self):
+        """Scan every KB and return (kb_name, source_dict) pairs."""
+        result = []
+        for kb_name in self.list_knowledge_bases():
+            for src in self.get_github_sources(kb_name):
+                result.append((kb_name, src))
+        return result
+
+    # ------------------------------------------------------------------
+    # Web source management
+    # ------------------------------------------------------------------
+
+    def add_web_source(
+        self,
+        kb_name: str,
+        url: str,
+        max_depth: int = 3,
+        max_pages: int = 200,
+    ) -> dict:
+        """Register a documentation site URL as a document source for a KB."""
+        if kb_name not in self.list_knowledge_bases():
+            raise ValueError(f"Knowledge base not found: {kb_name}")
+        if not 1 <= max_depth <= MAX_CRAWL_DEPTH:
+            raise ValueError(f"Web source crawl depth must be between 1 and {MAX_CRAWL_DEPTH}")
+        if not 1 <= max_pages <= MAX_CRAWL_PAGES:
+            raise ValueError(f"Web source crawl page count must be between 1 and {MAX_CRAWL_PAGES}")
+        normalized_url = url.strip()
+        parsed_url = urlparse(normalized_url)
+        if parsed_url.scheme.lower() not in ("http", "https") or not parsed_url.hostname:
+            raise ValueError("Web source URL must be an absolute http(s) URL")
+        source_id = hashlib.md5(  # noqa: S324
+            normalized_url.encode(), usedforsecurity=False
+        ).hexdigest()[:8]
+        metadata_file = self.base_dir / kb_name / "metadata.json"
+        metadata = self._read_kb_metadata(metadata_file)
+        sources = metadata.get("web_sources", [])
+        for existing in sources:
+            if existing.get("id") == source_id:
+                return existing
+
+        source_info = {
+            "id": source_id,
+            "url": normalized_url,
+            "max_depth": max_depth,
+            "max_pages": max_pages,
+            "enabled": True,
+            "page_hashes": {},
+            "page_count": 0,
+            "last_synced_at": "",
+            "last_sync_status": "pending",
+            "last_sync_error": None,
+            "added_at": datetime.now().isoformat(),
+        }
+        sources.append(source_info)
+        metadata["web_sources"] = sources
+        atomic_write_json(metadata_file, metadata)
+        return source_info
+
+    def remove_web_source(self, kb_name: str, source_id: str) -> bool:
+        """Remove a web source from a KB."""
+        if kb_name not in self.list_knowledge_bases():
+            raise ValueError(f"Knowledge base not found: {kb_name}")
+        metadata_file = self.base_dir / kb_name / "metadata.json"
+        metadata = self._read_kb_metadata(metadata_file)
+        sources = metadata.get("web_sources", [])
+        remaining = [source for source in sources if source.get("id") != source_id]
+        if len(remaining) == len(sources):
+            return False
+
+        metadata["web_sources"] = remaining
+        atomic_write_json(metadata_file, metadata)
+        return True
+
+    def get_web_sources(self, kb_name: str) -> list[dict]:
+        """Return all web sources registered for a KB."""
+        if kb_name not in self.list_knowledge_bases():
+            raise ValueError(f"Knowledge base not found: {kb_name}")
+        metadata_file = self.base_dir / kb_name / "metadata.json"
+        metadata = self._read_kb_metadata(metadata_file)
+        return metadata.get("web_sources", [])
+
+    def update_web_source_state(self, kb_name: str, source_id: str, **fields: object) -> None:
+        """Persist sync state fields into a web source entry."""
+        if kb_name not in self.list_knowledge_bases():
+            raise ValueError(f"Knowledge base not found: {kb_name}")
+        metadata_file = self.base_dir / kb_name / "metadata.json"
+        metadata = self._read_kb_metadata(metadata_file)
+        for source in metadata.get("web_sources", []):
+            if source.get("id") == source_id:
+                source.update(fields)
+                atomic_write_json(metadata_file, metadata)
+                return
+
+    def get_all_web_sources(self) -> list[tuple[str, dict]]:
+        """Scan every KB and return (kb_name, source_dict) pairs."""
+        result = []
+        for kb_name in self.list_knowledge_bases():
+            for source in self.get_web_sources(kb_name):
+                result.append((kb_name, source))
+        return result
+
+    @staticmethod
+    def _read_kb_metadata(metadata_file):
+        """Load metadata.json, returning {} on absence or parse error."""
+        if not metadata_file.exists():
+            return {}
+        try:
+            with open(metadata_file, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
 
 
 def main():

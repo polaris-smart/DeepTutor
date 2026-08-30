@@ -2,7 +2,8 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   AlertTriangle,
   Bookmark,
@@ -31,6 +32,12 @@ import {
   type NotebookCategory,
   type NotebookEntry,
 } from "@/lib/notebook-api";
+// v1.6.1 upstream route surface (course-scoped notebook console). Kept beside
+// the fork's inline page so the course deep links have a ready-made target.
+import NotebookConsole, {
+  type NotebookCourseScope,
+} from "@/components/notebook/NotebookConsole";
+import { listCourses } from "@/lib/courses-api";
 
 const MarkdownRenderer = dynamic(
   () => import("@/components/common/MarkdownRenderer"),
@@ -38,6 +45,72 @@ const MarkdownRenderer = dynamic(
 );
 
 type FilterMode = "all" | "bookmarked" | "wrong";
+
+/**
+ * v1.6.1 upstream course-scoped notebook route. Not the default route (the
+ * fork's inline page below owns `/notebook`), kept as the drop-in upgrade path
+ * for upstream course deep links.
+ */
+export function NotebookRoute() {
+  const searchParams = useSearchParams();
+  // Deep links from Memory arrive as `/notebook?notebook=<id>`.
+  const requested = searchParams.get("notebook");
+  // A course scope arrives as `/notebook?course=<id>`, from the course page or
+  // a Course Study hand-off. Resolved here rather than in the console so the
+  // console stays a pure view over whatever list it is handed.
+  const courseId = searchParams.get("course")?.trim() ?? "";
+  const [courseScope, setCourseScope] = useState<NotebookCourseScope | null>(
+    null,
+  );
+
+  // Bumped after the console attaches something, so the notebook just created
+  // stops looking like it is outside the course.
+  const [scopeVersion, setScopeVersion] = useState(0);
+  const handleScopeChanged = useCallback(
+    () => setScopeVersion((version) => version + 1),
+    [],
+  );
+
+  useEffect(() => {
+    if (!courseId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setCourseScope(null);
+      return;
+    }
+    let cancelled = false;
+    void listCourses()
+      .then((courses) => {
+        if (cancelled) return;
+        const course = courses.find((item) => item.id === courseId);
+        setCourseScope({
+          id: courseId,
+          name: course?.name ?? "",
+          // A course that references no notebook scopes the list to nothing,
+          // which is the honest answer — not "here is everything instead".
+          notebookIds: (course?.resources ?? [])
+            .filter((resource) => resource.kind === "notebook")
+            .map((resource) => resource.ref_id),
+        });
+      })
+      .catch(() => {
+        // Scope unknown: show the whole library rather than an empty console.
+        if (!cancelled) setCourseScope(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [courseId, scopeVersion]);
+
+  return (
+    <Suspense fallback={<Loader2 className="animate-spin" aria-hidden />}>
+      <NotebookConsole
+        initialNotebookId={requested}
+        courseScope={courseScope}
+        onScopeChanged={handleScopeChanged}
+      />
+    </Suspense>
+  );
+}
 
 export default function NotebookPage() {
   const { t } = useTranslation();

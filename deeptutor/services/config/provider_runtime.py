@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from deeptutor.services.imagegen.config import ImagegenConfig
+from deeptutor.services.keypool import primary_api_key
 from deeptutor.services.model_selection import LLMSelection, apply_llm_selection_to_catalog
 from deeptutor.services.provider_registry import (
     NANOBOT_LLM_PROVIDERS,
@@ -86,6 +87,7 @@ SEARCH_PROVIDERS: dict[str, SearchProviderSpec] = {
         supports_answer=True,
     ),
     "serper": SearchProviderSpec(label="Serper", requires_api_key=True, soft_fallback=False),
+    "serply": SearchProviderSpec(label="Serply", requires_api_key=True, soft_fallback=False),
     "firecrawl": SearchProviderSpec(label="Firecrawl", requires_api_key=True, soft_fallback=False),
     # China-hosted engines. Doubao is the one that writes its own answer: Ark
     # exposes web search only as a tool on a Doubao model, never standalone.
@@ -541,7 +543,7 @@ class NormalizedProviderConfig:
     """Normalized provider configuration input."""
 
     name: str
-    api_key: str = ""
+    api_key: str | list[str] = ""
     api_base: str | None = None
     api_version: str | None = None
     extra_headers: dict[str, str] | None = None
@@ -556,7 +558,7 @@ class ResolvedLLMConfig:
     provider_mode: str
     binding_hint: str | None = None
     binding: str = "openai"
-    api_key: str = ""
+    api_key: str | list[str] = ""
     base_url: str | None = None
     effective_url: str | None = None
     api_version: str | None = None
@@ -574,7 +576,7 @@ class ResolvedEmbeddingConfig:
     provider_mode: str
     binding_hint: str | None = None
     binding: str = "openai"
-    api_key: str = ""
+    api_key: str | list[str] = ""
     base_url: str | None = None
     effective_url: str | None = None
     api_version: str | None = None
@@ -619,6 +621,12 @@ def _as_str(value: Any) -> Any:
     if isinstance(value, list):
         return [str(v).strip() for v in value if str(v).strip()]
     return str(value).strip() if value is not None else ""
+
+
+def _as_api_key(value: Any) -> str | list[str]:
+    if isinstance(value, list):
+        return [key for item in value if (key := _as_str(item))]
+    return _as_str(value)
 
 
 def _to_headers(value: Any) -> dict[str, str]:
@@ -688,7 +696,7 @@ def _collect_provider_pool(catalog: dict[str, Any]) -> dict[str, NormalizedProvi
             continue
         providers[name] = NormalizedProviderConfig(
             name=name,
-            api_key=_as_str(profile.get("api_key")),
+            api_key=_as_api_key(profile.get("api_key")),
             api_base=_as_str(profile.get("base_url")) or None,
             api_version=_as_str(profile.get("api_version")) or None,
             extra_headers=_to_headers(profile.get("extra_headers")) or None,
@@ -700,14 +708,14 @@ def _choose_resolved_provider(
     *,
     hint: str | None,
     model: str,
-    api_key: str,
+    api_key: str | list[str],
     api_base: str | None,
     provider_pool: dict[str, NormalizedProviderConfig],
 ) -> ProviderSpec:
     explicit_spec = find_by_name(hint) if hint else None
     detected_gateway = find_gateway(
         provider_name=None,
-        api_key=api_key or None,
+        api_key=primary_api_key(api_key),
         api_base=api_base or None,
     )
     # Keep backward compatibility: old `binding=openai` should not block
@@ -751,22 +759,41 @@ def resolve_llm_runtime_config(
     *,
     service: ModelCatalogService | None = None,
     llm_selection: dict[str, Any] | LLMSelection | None = None,
+    service_name: str = "llm",
 ) -> ResolvedLLMConfig:
-    """Resolve active LLM config with TutorBot-style provider matching."""
+    """Resolve active LLM config with TutorBot-style provider matching.
+
+    ``service_name`` selects which catalog service supplies the profile and
+    model. It is ``llm`` for everything the user drives; the ``task`` service
+    is the same shape and stands in for it on the calls DeepTutor makes on its
+    own. The provider pool it falls back to stays the LLM one either way —
+    a task profile that names a bare model still resolves against the
+    credentials configured for chat.
+    """
     catalog_service = service or get_model_catalog_service()
     loaded = _with_personal_llm_profiles(_load_catalog(catalog))
-    loaded = apply_llm_selection_to_catalog(loaded, llm_selection)
+    # Parse the payload once: ``apply_llm_selection_to_catalog`` would otherwise
+    # re-parse it, so a malformed selection would be validated (and rejected)
+    # from two places. ``from_payload`` is idempotent on an already-parsed value.
+    selection = LLMSelection.from_payload(llm_selection)
+    loaded = apply_llm_selection_to_catalog(loaded, selection)
 
-    profile, model = _active_profile_and_model(loaded, catalog_service, "llm")
+    profile, model = _active_profile_and_model(loaded, catalog_service, service_name)
     resolved_model = _as_str((model or {}).get("model"))
 
     binding_hint_raw = _as_str((profile or {}).get("binding"))
     binding_hint = canonical_provider_name(binding_hint_raw)
 
-    active_api_key = _as_str((profile or {}).get("api_key"))
+    active_api_key = _as_api_key((profile or {}).get("api_key"))
     active_api_base = _as_str((profile or {}).get("base_url"))
     active_api_version = _as_str((profile or {}).get("api_version"))
     reasoning_effort = _as_str((model or {}).get("reasoning_effort")) or None
+    # Per-conversation override (#641): an explicit reasoning_effort on the
+    # caller's LLMSelection takes precedence over the profile/model default
+    # resolved above. The model/global config value stays the fallback when
+    # no override is present, preserving today's behavior.
+    if selection is not None and selection.reasoning_effort:
+        reasoning_effort = selection.reasoning_effort
     active_extra_headers = _to_headers((profile or {}).get("extra_headers"))
     context_window = _coerce_optional_int((model or {}).get("context_window"))
     if context_window is None:
@@ -832,7 +859,7 @@ def _collect_embedding_provider_pool(
             continue
         providers[name] = NormalizedProviderConfig(
             name=name,
-            api_key=_as_str(profile.get("api_key")),
+            api_key=_as_api_key(profile.get("api_key")),
             api_base=_as_str(profile.get("base_url")) or None,
             api_version=_as_str(profile.get("api_version")) or None,
             extra_headers=_to_headers(profile.get("extra_headers")) or None,
@@ -941,7 +968,7 @@ def resolve_embedding_runtime_config(
     binding_hint_raw = _as_str((profile or {}).get("binding"))
     binding_hint = _canonical_embedding_provider_name(binding_hint_raw)
 
-    active_api_key = _as_str((profile or {}).get("api_key"))
+    active_api_key = _as_api_key((profile or {}).get("api_key"))
     active_api_base = _as_str((profile or {}).get("base_url"))
     active_api_version = _as_str((profile or {}).get("api_version"))
     active_extra_headers = _to_headers((profile or {}).get("extra_headers"))
@@ -996,8 +1023,8 @@ def resolve_embedding_runtime_config(
         dimension=dimension,
         send_dimensions=send_dimensions,
         request_timeout=60,
-        # YuEdu fork: 火山 plan 的 embedding RPM 极低，必须允许 profile 里限速
-        # （model_catalog embedding profile 的 batch_size/batch_delay 字段，默认与上游一致）
+        # Some providers (e.g. Volcengine Ark plan tier) enforce very low RPM limits;
+        # allow per-profile batch_size/batch_delay in the embedding profile, defaults unchanged
         batch_size=_clamp_batch_size(profile),
         batch_delay=_clamp_batch_delay(profile),
     )
@@ -1388,6 +1415,7 @@ __all__ = [
     "resolve_search_runtime_config",
     "search_provider_state",
 ]
+
 
 def _clamp_batch_size(profile: dict | None) -> int:
     try:

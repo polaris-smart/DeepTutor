@@ -116,7 +116,7 @@ export interface KnowledgeBase {
     vault_path?: string;
     /** SQLite store of a connected MarginNote 4 library (when type === "marginnote4"). */
     db_path?: string;
-    /** Backend of a connected subagent (when type === "subagent"): "claude_code" | "codex" | "gemini" | "kimi" | "opencode" | "mimo" | "partner". */
+    /** Backend of a connected subagent (when type === "subagent"): "claude_code" | "codex" | "gemini" | "antigravity" | "kimi" | "opencode" | "mimo" | "partner". */
     agent_kind?: string;
     /** Bound partner id when agent_kind === "partner". */
     partner_id?: string;
@@ -216,6 +216,18 @@ export const formatKnowledgeTimestamp = (value?: string): string | null => {
 export const MARGINNOTE4_KB_TYPE = "marginnote4";
 
 /**
+ * A connected subagent (partner or local CLI), reachable live via
+ * `consult_subagent`. It owns no documents and nothing to retrieve, so any
+ * picker that feeds static context into a generation step (Mastery topic
+ * sources, Book sources) must exclude it — unlike the chat composer's
+ * "attach knowledge" picker, where surfacing it is the point.
+ */
+export const SUBAGENT_KB_TYPE = "subagent";
+
+export const isSubagentKb = (kb: KnowledgeBase): boolean =>
+  kb.metadata?.type === SUBAGENT_KB_TYPE;
+
+/**
  * A connected MarginNote 4 library.
  *
  * It owns no documents and no index: the Add-on pushes objects into its own
@@ -228,6 +240,8 @@ export const isMarginNoteKb = (kb: KnowledgeBase): boolean =>
 export const KB_DETAIL_SECTIONS = [
   "files",
   "add",
+  "github",
+  "web",
   "versions",
   "devices",
   "settings",
@@ -309,7 +323,7 @@ export const resolveKnowledgeIndexFailure = (
     retryable: progress?.retryable ?? storedProgress?.retryable,
     requiresModelChange: requiresEmbeddingChange || requiresCompletionChange,
     settingsHref: requiresEmbeddingChange
-      ? "/settings/embedding"
+      ? "/settings/models#embedding"
       : requiresCompletionChange
         ? "/settings/models"
         : undefined,

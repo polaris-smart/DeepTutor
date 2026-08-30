@@ -37,6 +37,9 @@ import {
   isSvgFilename,
 } from "@/lib/doc-attachments";
 import { useTranslation } from "react-i18next";
+
+import { CoursePill } from "@/components/chat/home/CoursePill";
+import type { StudyCourse } from "@/lib/courses-api";
 import type { SelectedHistorySession } from "@/components/chat/HistorySessionPicker";
 import type { SelectedQuestionEntry } from "@/components/chat/QuestionBankPicker";
 import type { SelectedRecord } from "@/lib/notebook-selection-types";
@@ -81,15 +84,22 @@ interface KnowledgeBase {
   name: string;
 }
 
-interface CapabilityDef {
+/**
+ * The picker's view of a capability. The authoritative list — including
+ * `defaultTools` and the prose — lives with the capabilities themselves in
+ * `app/(workspace)/home/[[...sessionId]]/page.tsx`; this is the subset the
+ * composer renders, so the two must stay in step.
+ */
+export interface CapabilityDef {
   value: string;
   label: string;
   description: string;
   icon: LucideIcon;
   allowedTools: string[];
-  // Loop-engine capabilities (solve / mastery) run on the chat agent loop and
-  // are collapsed into the "More" flyout instead of listed directly.
+  /** Collapse into the "More" flyout instead of listing directly. */
   secondary?: boolean;
+  /** Still resolvable for existing sessions, but never offered as a new one. */
+  legacy?: boolean;
 }
 
 /** One row in the capability picker — shared by the built-in list and the
@@ -180,6 +190,9 @@ export default memo(function ChatComposer({
   dragCounter,
   dragging,
   capMenuOpen,
+  courses = [],
+  courseId = "",
+  onSelectCourse,
   spaceMenuOpen,
   hasMessages,
   attachments,
@@ -208,6 +221,7 @@ export default memo(function ChatComposer({
   selectedMemoryFiles,
   selectedKnowledgeBases,
   isStreaming,
+  awaitingUserReply = false,
   isVisualizeMode,
   capabilityNeedsConfig,
   capabilityConfigConfirmed,
@@ -249,6 +263,8 @@ export default memo(function ChatComposer({
   onCancelStreaming,
   prefillInputRef,
   inputPlaceholder,
+  inputPlaceholderCompletion,
+  showCapabilityChip = true,
 }: {
   composerRef: RefObject<HTMLDivElement | null>;
   capMenuRef: RefObject<HTMLDivElement | null>;
@@ -258,6 +274,12 @@ export default memo(function ChatComposer({
   dragCounter: RefObject<number>;
   dragging: boolean;
   capMenuOpen: boolean;
+  /* Course binding. Absent on the standalone composers (Mastery Path,
+     Immersive Reading), which are already inside one subject's surface and
+     have no course to choose. */
+  courses?: StudyCourse[];
+  courseId?: string;
+  onSelectCourse?: (courseId: string) => void;
   spaceMenuOpen: boolean;
   hasMessages: boolean;
   attachments: PendingAttachment[];
@@ -298,6 +320,8 @@ export default memo(function ChatComposer({
   selectedMemoryFiles: SpaceMemoryFile[];
   selectedKnowledgeBases: string[];
   isStreaming: boolean;
+  /** The live turn is paused on an ask_user card and needs an answer. */
+  awaitingUserReply?: boolean;
   isVisualizeMode: boolean;
   /**
    * True when the active capability (e.g. Quiz / Visualize / Research)
@@ -363,6 +387,14 @@ export default memo(function ChatComposer({
   prefillInputRef?: React.MutableRefObject<((text: string) => void) | null>;
   /** Override the composer placeholder (e.g. quiz follow-up). */
   inputPlaceholder?: string;
+  /** A line Tab accepts while the composer is empty. See ComposerInput. */
+  inputPlaceholderCompletion?: string;
+  /**
+   * Hide the capability chip. A surface that only ever runs one capability
+   * — and names it in its own chrome — gains nothing from a picker that
+   * cannot pick anything.
+   */
+  showCapabilityChip?: boolean;
 }) {
   const { t } = useTranslation();
   const CapIcon = activeCap.icon;
@@ -511,13 +543,18 @@ export default memo(function ChatComposer({
   // (via `onRequestConfigConfirm`) instead of silently doing nothing.
   const isConfigBlocked = capabilityNeedsConfig && !capabilityConfigConfirmed;
   const hasIntent = hasContent || hasReferences;
-  const canSend = hasIntent && !isStreaming && !isConfigBlocked;
+  // A turn paused on a question is technically still streaming, but the only
+  // thing that can move it forward is the user's answer. Locking the composer
+  // there made the interactive card the ONLY way to answer — and left the
+  // learner with no way out at all if the card failed to render.
+  const streamingBlocksSend = isStreaming && !awaitingUserReply;
+  const canSend = hasIntent && !streamingBlocksSend && !isConfigBlocked;
 
   // `blocked` only exists once there is intent: without it the button stays
   // `idle` so an empty composer doesn't present a live send affordance. That
   // makes intent — not `canSend` — the thing that decides interactivity, so
   // the `blocked` state can stay clickable and surface the config card.
-  const sendState: SendState = isStreaming
+  const sendState: SendState = streamingBlocksSend
     ? "streaming"
     : !hasIntent
       ? "idle"
@@ -637,17 +674,22 @@ export default memo(function ChatComposer({
     doSend(content);
   }, [canSend, doSend, isConfigBlocked, onRequestConfigConfirm]);
 
-  // One button, so one handler: mid-turn the same control cancels.
+  // One button, so one handler: mid-turn the same control cancels — except
+  // while the turn is waiting on the user, where sending IS how it continues.
   const handleSendButtonClick = useCallback(() => {
-    if (isStreaming) {
+    if (streamingBlocksSend) {
       onCancelStreaming();
       return;
     }
     handleManualSend();
-  }, [handleManualSend, isStreaming, onCancelStreaming]);
+  }, [handleManualSend, streamingBlocksSend, onCancelStreaming]);
 
   const sendLabel =
-    sendState === "streaming" ? t("Stop generating") : t("Send");
+    sendState === "streaming"
+      ? t("Stop generating")
+      : awaitingUserReply
+        ? t("Send answer")
+        : t("Send");
   const sendTitle =
     sendState === "blocked"
       ? t("Confirm settings on the right to send.")
@@ -750,6 +792,7 @@ export default memo(function ChatComposer({
                 : undefined
             }
             placeholder={inputPlaceholder}
+            placeholderCompletion={inputPlaceholderCompletion}
             minHeight={hasMessages ? 28 : 64}
           />
 
@@ -859,129 +902,149 @@ export default memo(function ChatComposer({
               on hover. */}
           <div className="px-3 pb-2 pt-0.5">
             <div className="flex items-center gap-1">
-              <div className="relative">
-                <button
-                  ref={capBtnRef}
-                  onClick={() => onSetCapMenuOpen((v) => !v)}
-                  className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2 text-[14px] font-medium transition-[background-color,color,transform] duration-150 active:scale-[0.97] ${
-                    capMenuOpen
-                      ? "bg-[var(--primary)]/10 text-[var(--primary)]"
-                      : "text-[var(--foreground)] hover:bg-[var(--muted)]/55"
-                  }`}
-                >
-                  <span className="flex min-w-0 items-center gap-1.5">
-                    <CapIcon size={16} strokeWidth={1.7} className="shrink-0" />
-                    {composerCompact ? null : (
-                      <span className="truncate">{t(activeCap.label)}</span>
-                    )}
-                  </span>
-                  <ChevronDown
-                    size={13}
-                    strokeWidth={2}
-                    className={`-mr-0.5 shrink-0 transition-transform duration-200 ${capMenuOpen ? "rotate-180" : ""}`}
-                  />
-                </button>
-
-                {capMenuOpen && (
-                  <div
-                    ref={capMenuRef}
-                    className="dt-popup-up absolute bottom-full left-0 z-50 mb-1.5 w-[260px] overflow-visible rounded-xl border border-[var(--border)] bg-[var(--popover)] py-1 shadow-lg backdrop-blur-md"
+              {showCapabilityChip && (
+                <div className="relative">
+                  <button
+                    ref={capBtnRef}
+                    onClick={() => onSetCapMenuOpen((v) => !v)}
+                    className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2 text-[14px] font-medium transition-[background-color,color,transform] duration-150 active:scale-[0.97] ${
+                      capMenuOpen
+                        ? "bg-[var(--primary)]/10 text-[var(--primary)]"
+                        : "text-[var(--foreground)] hover:bg-[var(--muted)]/55"
+                    }`}
                   >
-                    {capabilities
-                      .filter((cap) => !cap.secondary)
-                      .map((cap) => (
-                        <CapMenuItem
-                          key={cap.value}
-                          cap={cap}
-                          selected={activeCap.value === cap.value}
-                          onSelect={handleSelectCapability}
-                        />
-                      ))}
-                    {(() => {
-                      const loopCaps = capabilities.filter(
-                        (cap) => cap.secondary,
-                      );
-                      if (loopCaps.length === 0) return null;
-                      const loopSelected = loopCaps.some(
-                        (cap) => cap.value === activeCap.value,
-                      );
-                      return (
-                        <div
-                          className="group/more relative"
-                          onMouseEnter={() => setMoreCapsOpen(true)}
-                          onMouseLeave={() => setMoreCapsOpen(false)}
-                          onFocus={() => setMoreCapsOpen(true)}
-                          onBlur={(event) => {
-                            const next = event.relatedTarget;
-                            if (
-                              !next ||
-                              !event.currentTarget.contains(next as Node)
-                            ) {
-                              setMoreCapsOpen(false);
-                            }
-                          }}
-                        >
-                          <button
-                            type="button"
-                            aria-haspopup="menu"
-                            aria-expanded={moreCapsOpen}
-                            onClick={() => setMoreCapsOpen((open) => !open)}
-                            className={`flex w-full items-center gap-2.5 px-3 py-1.5 text-left transition-colors ${
-                              moreCapsOpen
-                                ? "bg-[var(--muted)]/45"
-                                : "group-hover/more:bg-[var(--muted)]/45"
-                            } ${
-                              loopSelected && !moreCapsOpen
-                                ? "bg-[var(--primary)]/[0.06]"
-                                : ""
-                            }`}
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <CapIcon
+                        size={16}
+                        strokeWidth={1.7}
+                        className="shrink-0"
+                      />
+                      {composerCompact ? null : (
+                        <span className="truncate">{t(activeCap.label)}</span>
+                      )}
+                    </span>
+                    <ChevronDown
+                      size={13}
+                      strokeWidth={2}
+                      className={`-mr-0.5 shrink-0 transition-transform duration-200 ${capMenuOpen ? "rotate-180" : ""}`}
+                    />
+                  </button>
+
+                  {capMenuOpen && (
+                    <div
+                      ref={capMenuRef}
+                      className="dt-popup-up absolute bottom-full left-0 z-50 mb-1.5 w-[260px] overflow-visible rounded-xl border border-[var(--border)] bg-[var(--popover)] py-1 shadow-lg backdrop-blur-md"
+                    >
+                      {capabilities
+                        .filter((cap) => !cap.secondary && !cap.legacy)
+                        .map((cap) => (
+                          <CapMenuItem
+                            key={cap.value}
+                            cap={cap}
+                            selected={activeCap.value === cap.value}
+                            onSelect={handleSelectCapability}
+                          />
+                        ))}
+                      {(() => {
+                        const loopCaps = capabilities.filter(
+                          (cap) => cap.secondary && !cap.legacy,
+                        );
+                        if (loopCaps.length === 0) return null;
+                        const loopSelected = loopCaps.some(
+                          (cap) => cap.value === activeCap.value,
+                        );
+                        return (
+                          <div
+                            className="group/more relative"
+                            onMouseEnter={() => setMoreCapsOpen(true)}
+                            onMouseLeave={() => setMoreCapsOpen(false)}
+                            onFocus={() => setMoreCapsOpen(true)}
+                            onBlur={(event) => {
+                              const next = event.relatedTarget;
+                              if (
+                                !next ||
+                                !event.currentTarget.contains(next as Node)
+                              ) {
+                                setMoreCapsOpen(false);
+                              }
+                            }}
                           >
-                            <Sparkles
-                              size={15}
-                              strokeWidth={1.7}
-                              className={`shrink-0 ${loopSelected ? "text-[var(--primary)]" : "text-[var(--muted-foreground)]"}`}
-                            />
-                            <div className="min-w-0 flex-1">
-                              <div className="truncate text-[12.5px] font-medium leading-snug text-[var(--foreground)]">
-                                {t("More Capabilities")}
+                            <button
+                              type="button"
+                              aria-haspopup="menu"
+                              aria-expanded={moreCapsOpen}
+                              onClick={() => setMoreCapsOpen((open) => !open)}
+                              className={`flex w-full items-center gap-2.5 px-3 py-1.5 text-left transition-colors ${
+                                moreCapsOpen
+                                  ? "bg-[var(--muted)]/45"
+                                  : "group-hover/more:bg-[var(--muted)]/45"
+                              } ${
+                                loopSelected && !moreCapsOpen
+                                  ? "bg-[var(--primary)]/[0.06]"
+                                  : ""
+                              }`}
+                            >
+                              <Sparkles
+                                size={15}
+                                strokeWidth={1.7}
+                                className={`shrink-0 ${loopSelected ? "text-[var(--primary)]" : "text-[var(--muted-foreground)]"}`}
+                              />
+                              <div className="min-w-0 flex-1">
+                                <div className="truncate text-[12.5px] font-medium leading-snug text-[var(--foreground)]">
+                                  {t("More Capabilities")}
+                                </div>
+                                <div className="truncate text-[11px] leading-snug text-[var(--muted-foreground)]">
+                                  {t("Agent-loop driven modes")}
+                                </div>
                               </div>
-                              <div className="truncate text-[11px] leading-snug text-[var(--muted-foreground)]">
-                                {t("Agent-loop driven modes")}
-                              </div>
-                            </div>
-                            <ChevronRight
-                              size={14}
-                              strokeWidth={2}
-                              className="shrink-0 text-[var(--muted-foreground)]"
-                            />
-                          </button>
-                          {/* Right flyout. ``pl-1.5`` is a pointer bridge so the
+                              <ChevronRight
+                                size={14}
+                                strokeWidth={2}
+                                className="shrink-0 text-[var(--muted-foreground)]"
+                              />
+                            </button>
+                            {/* Right flyout. ``pl-1.5`` is a pointer bridge so the
                               cursor can cross the gap without dropping hover;
                               click/focus also open it for touch and keyboard. */}
-                          <div
-                            className={`absolute bottom-0 left-full z-50 pl-1.5 transition-opacity duration-150 ${
-                              moreCapsOpen
-                                ? "visible opacity-100"
-                                : "invisible opacity-0"
-                            }`}
-                          >
-                            <div className="w-[240px] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--popover)] py-1 shadow-lg backdrop-blur-md">
-                              {loopCaps.map((cap) => (
-                                <CapMenuItem
-                                  key={cap.value}
-                                  cap={cap}
-                                  selected={activeCap.value === cap.value}
-                                  onSelect={handleSelectCapability}
-                                />
-                              ))}
+                            <div
+                              className={`absolute bottom-0 left-full z-50 pl-1.5 transition-opacity duration-150 ${
+                                moreCapsOpen
+                                  ? "visible opacity-100"
+                                  : "invisible opacity-0"
+                              }`}
+                            >
+                              <div className="w-[240px] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--popover)] py-1 shadow-lg backdrop-blur-md">
+                                {loopCaps.map((cap) => (
+                                  <CapMenuItem
+                                    key={cap.value}
+                                    cap={cap}
+                                    selected={activeCap.value === cap.value}
+                                    onSelect={handleSelectCapability}
+                                  />
+                                ))}
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      );
-                    })()}
-                  </div>
-                )}
-              </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Which course this conversation belongs to. Sits beside the
+                  mode because the two are chosen together: Course Study
+                  without a course is an inert mode, and the learner should be
+                  able to see that from the composer rather than from a reply. */}
+              {onSelectCourse ? (
+                <CoursePill
+                  courses={courses}
+                  courseId={courseId}
+                  onSelect={onSelectCourse}
+                  needsCourse={activeCap.value === "course_study"}
+                  compact={composerCompact}
+                />
+              ) : null}
 
               <div className="relative flex min-w-0 flex-1 items-center">
                 <button

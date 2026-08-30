@@ -14,11 +14,15 @@ import time
 
 from deeptutor.learning import policy
 from deeptutor.learning.models import (
+    ErrorRecord,
+    ErrorType,
     KnowledgePoint,
     KnowledgeType,
+    LearnerMasteryOverride,
     LearningModule,
     LearningProgress,
     PendingQuestion,
+    QuizAttempt,
     RepetitionState,
     ReviewTask,
 )
@@ -79,6 +83,28 @@ def test_objective_status_new_learning_mastered():
     assert policy.objective_status(progress, kp) == "learning"
     progress.mastery_levels["kp1"] = 0.95
     assert policy.objective_status(progress, kp) == "mastered"
+
+
+def test_learner_override_advances_without_faking_assessed_mastery():
+    kp1, kp2 = _kp("kp1", KnowledgeType.MEMORY), _kp("kp2", KnowledgeType.MEMORY)
+    progress = _progress(kp1, kp2)
+    progress.mastery_levels["kp1"] = 0.2
+    progress.learner_mastery_overrides["kp1"] = LearnerMasteryOverride(
+        knowledge_point_id="kp1",
+        note="Covered this in class",
+    )
+
+    assert policy.is_assessed_mastered(progress, kp1) is False
+    assert policy.is_mastered(progress, kp1) is True
+    assert policy.mastery_source(progress, kp1) == "learner"
+    assert policy.next_objective(progress).knowledge_point_id == "kp2"
+
+    summary = policy.map_summary(progress)
+    first = summary["modules"][0]["knowledge_points"][0]
+    assert first["status"] == "mastered"
+    assert first["mastery_source"] == "learner"
+    assert first["mastery"] == 0.2
+    assert first["override_note"] == "Covered this in class"
 
 
 # ── next_objective: gate is the cursor, mastered objectives are skipped ─────
@@ -209,3 +235,118 @@ def test_map_summary_counts_and_completion():
     assert summary["complete"] is False
     progress.qualitative_mastery["kp2"] = True
     assert policy.map_summary(progress)["complete"] is True
+
+
+# ── per-objective report (the review view) ─────────────────────────────────
+
+
+def test_objective_report_gathers_the_whole_evidence_trail():
+    kp = _kp("kp1", KnowledgeType.MEMORY)
+    progress = _progress(kp)
+    progress.mastery_levels["kp1"] = 0.5
+    progress.quiz_attempts = [
+        QuizAttempt(
+            question_id="q1",
+            knowledge_point_id="kp1",
+            module_id="m1",
+            is_correct=False,
+            user_answer="7",
+            error_type=ErrorType.APPLICATION_ERROR,
+        ),
+        QuizAttempt(
+            question_id="q2",
+            knowledge_point_id="kp1",
+            module_id="m1",
+            is_correct=True,
+            user_answer="4",
+        ),
+        QuizAttempt(question_id="q3", knowledge_point_id="other", module_id="m1", is_correct=True),
+    ]
+    progress.error_records = [
+        ErrorRecord(
+            id="e1",
+            question_id="q1",
+            knowledge_point_id="kp1",
+            module_id="m1",
+            error_type=ErrorType.APPLICATION_ERROR,
+        )
+    ]
+    progress.repetition_states["kp1"] = RepetitionState(
+        interval_index=2, consecutive_correct=1, next_review_at=1000.0
+    )
+    progress.review_queue = [
+        ReviewTask(
+            id="r1",
+            knowledge_point_id="kp1",
+            knowledge_type=KnowledgeType.MEMORY,
+            due_at=1000.0,
+            priority=1,
+            state=progress.repetition_states["kp1"],
+        )
+    ]
+
+    report = policy.objective_report(progress, "kp1")
+
+    assert report is not None
+    assert report["module_name"] == "M1"
+    assert report["gate"] == "quantitative"
+    assert report["threshold"] == 0.9
+    assert report["mastered"] is False
+    # Only this objective's attempts, in order, with their grading outcome.
+    assert [a["question_id"] for a in report["attempts"]] == ["q1", "q2"]
+    assert report["correct_count"] == 1
+    assert report["attempts"][0]["error_type"] == "application"
+    assert report["review"]["due_at"] == 1000.0
+    assert report["review"]["interval_index"] == 2
+    assert [e["id"] for e in report["errors"]] == ["e1"]
+
+
+def test_objective_report_carries_qualitative_evidence():
+    kp = _kp("kp1", KnowledgeType.CONCEPT)
+    progress = _progress(kp)
+    progress.qualitative_mastery["kp1"] = True
+    progress.feynman_explanations["kp1"] = "It routes by intent."
+
+    report = policy.objective_report(progress, "kp1")
+
+    assert report is not None
+    assert report["gate"] == "qualitative"
+    assert report["mastered"] is True
+    assert report["explanation"] == "It routes by intent."
+    assert report["review"] is None
+
+
+def test_objective_report_is_none_for_an_unknown_objective():
+    assert policy.objective_report(_progress(_kp("kp1", KnowledgeType.MEMORY)), "nope") is None
+
+
+# ── path_display_name ──────────────────────────────────────────────────────
+
+
+def test_path_display_name_prefers_the_paths_own_name():
+    progress = _progress(_kp("kp1", KnowledgeType.MEMORY))
+    progress.name = "一元二次方程基础"
+    assert policy.path_display_name(progress) == "一元二次方程基础"
+
+
+def test_path_display_name_falls_back_to_the_first_module():
+    """How every unnamed path was named before paths had names."""
+    progress = _progress(_kp("kp1", KnowledgeType.MEMORY))
+    assert policy.path_display_name(progress) == "M1"
+
+
+def test_path_display_name_falls_back_to_the_id_with_no_modules():
+    assert policy.path_display_name(LearningProgress(book_id="b1")) == "b1"
+
+
+def test_path_display_name_ignores_a_blank_name():
+    progress = _progress(_kp("kp1", KnowledgeType.MEMORY))
+    progress.name = "   "
+    assert policy.path_display_name(progress) == "M1"
+
+
+def test_map_summary_carries_the_display_name():
+    """So the dashboard and the composer strip read it instead of deriving it."""
+    progress = _progress(_kp("kp1", KnowledgeType.MEMORY))
+    progress.name = "Quadratics"
+    assert policy.map_summary(progress)["name"] == "Quadratics"

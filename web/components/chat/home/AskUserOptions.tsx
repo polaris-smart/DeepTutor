@@ -4,6 +4,7 @@ import { ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { decodeEscapedUnicodeForDisplay } from "@/lib/markdown-display";
 import {
   collectNarrationCallIds,
   shouldAppendEventContent,
@@ -183,7 +184,16 @@ export type MessageSegment =
       data: AskUserCardData;
       toolCallId: string | null;
       key: string;
-    };
+    }
+  /**
+   * The trace of the round(s) that ran AFTER a card — the reasoning the
+   * resumed turn produced once the user answered. It renders below the
+   * card it followed, because the message's activity block is pinned to
+   * the top: everything emitted after a submit used to land back up
+   * there, above content the user had already scrolled past, so the
+   * turn looked frozen after they picked an option.
+   */
+  | { kind: "trace"; events: StreamEvent[]; key: string };
 
 export function extractMessageSegments(
   events: StreamEvent[] | undefined,
@@ -197,6 +207,8 @@ export function extractMessageSegments(
   const byToolCall = new Map<string, number>();
   const seenAskUserCards = new Set<string>();
   let pendingTextIdx: number | null = null;
+  let pendingTraceIdx: number | null = null;
+  let sawAskUser = false;
   let seq = 0;
   // Narration rounds (chat-loop preamble alongside a tool call) stream as
   // content but belong in the trace, not the answer — keep them out of the
@@ -204,6 +216,7 @@ export function extractMessageSegments(
   const narrationCallIds = collectNarrationCallIds(events);
 
   const ensureTextSegment = () => {
+    pendingTraceIdx = null;
     if (pendingTextIdx === null) {
       pendingTextIdx = segments.length;
       segments.push({ kind: "text", text: "", key: `t${seq++}` });
@@ -211,10 +224,24 @@ export function extractMessageSegments(
     return pendingTextIdx;
   };
 
+  /** Collect one post-card trace event; a no-op before the first card. */
+  const appendTraceEvent = (event: StreamEvent) => {
+    if (!sawAskUser) return;
+    if (pendingTraceIdx === null) {
+      pendingTraceIdx = segments.length;
+      segments.push({ kind: "trace", events: [], key: `r${seq++}` });
+    }
+    const seg = segments[pendingTraceIdx];
+    if (seg.kind === "trace") seg.events.push(event);
+  };
+
   for (const event of events) {
     if (shouldAppendEventContent(event)) {
       const callId = ((event.metadata ?? {}) as { call_id?: string }).call_id;
-      if (callId && narrationCallIds.has(callId)) continue;
+      if (callId && narrationCallIds.has(callId)) {
+        appendTraceEvent(event);
+        continue;
+      }
       const idx = ensureTextSegment();
       const seg = segments[idx];
       if (seg.kind === "text") {
@@ -225,10 +252,16 @@ export function extractMessageSegments(
     const meta = (event.metadata ?? {}) as Record<string, unknown>;
     if (event.type === "tool_result") {
       const toolMetadata = meta.tool_metadata;
-      if (!toolMetadata || typeof toolMetadata !== "object") continue;
-      const askUser = (toolMetadata as Record<string, unknown>).ask_user;
+      const askUser =
+        toolMetadata && typeof toolMetadata === "object"
+          ? (toolMetadata as Record<string, unknown>).ask_user
+          : null;
       const normalised = normaliseAskUserPayload(askUser);
-      if (!normalised) continue;
+      if (!normalised) {
+        // Any other tool's result is trace material for the region.
+        appendTraceEvent(event);
+        continue;
+      }
       const toolCallId =
         (event as { tool_call_id?: string }).tool_call_id ??
         (typeof meta.tool_call_id === "string" ? meta.tool_call_id : null);
@@ -237,9 +270,11 @@ export function extractMessageSegments(
         : `payload:${JSON.stringify(normalised)}`;
       if (seenAskUserCards.has(cardKey)) continue;
       seenAskUserCards.add(cardKey);
-      // Close the current text run so the next text chunk starts a new
-      // segment after this card.
+      // Close the current text and trace runs so what the resumed round
+      // emits starts fresh segments below this card.
       pendingTextIdx = null;
+      pendingTraceIdx = null;
+      sawAskUser = true;
       const idx = segments.length;
       segments.push({
         kind: "ask_user",
@@ -306,12 +341,48 @@ export function extractMessageSegments(
           resolved: true,
         },
       };
+      // The resolution belongs to the card, not to the trace below it.
+      continue;
     }
+    appendTraceEvent(event);
   }
 
   // Drop empty trailing/leading text segments so the renderer doesn't
-  // emit blank ``<AssistantResponse>`` nodes.
-  return segments.filter((s) => s.kind !== "text" || s.text.length > 0);
+  // emit blank ``<AssistantResponse>`` nodes, and trace regions whose
+  // events all turned out to be unrenderable.
+  return segments.filter((s) =>
+    s.kind === "text"
+      ? s.text.length > 0
+      : s.kind !== "trace" || s.events.length > 0,
+  );
+}
+
+/**
+ * The events whose trace rows still belong to the message's top activity
+ * block: everything the segments did not claim for a post-card region.
+ * Pass it as ``AssistantActivity``'s ``traceEvents`` (or to a bare
+ * ``TraceFlow``) so a resumed round's reasoning is not shown twice — once
+ * where the user is looking, and once back above the card.
+ */
+export function leadingTraceEvents(
+  events: StreamEvent[] | undefined,
+  segments: MessageSegment[],
+): StreamEvent[] {
+  const claimed = new Set<StreamEvent>();
+  for (const segment of segments) {
+    if (segment.kind !== "trace") continue;
+    for (const event of segment.events) claimed.add(event);
+  }
+  return (events ?? []).filter((event) => !claimed.has(event));
+}
+
+/**
+ * Decode dense JSON unicode escapes before the card paints learner-facing
+ * copy. Markdown already does this; ask_user prompts are plain text and used
+ * to leak ``\\u300c...`` stems (#973).
+ */
+function displayText(value: string): string {
+  return decodeEscapedUnicodeForDisplay(value);
 }
 
 /**
@@ -322,15 +393,15 @@ export function extractMessageSegments(
 function normaliseOption(raw: unknown): AskUserOption | null {
   if (raw && typeof raw === "object") {
     const o = raw as Record<string, unknown>;
-    const label = String(o.label ?? "").trim();
+    const label = displayText(String(o.label ?? "").trim());
     if (!label) return null;
     const description =
       typeof o.description === "string" && o.description.trim()
-        ? o.description.trim()
+        ? displayText(o.description.trim())
         : null;
     return { label, description };
   }
-  const label = String(raw ?? "").trim();
+  const label = displayText(String(raw ?? "").trim());
   return label ? { label, description: null } : null;
 }
 
@@ -344,7 +415,7 @@ function normaliseAskUserPayload(raw: unknown): AskUserPayload | null {
     for (const item of obj.questions) {
       if (!item || typeof item !== "object") continue;
       const q = item as Record<string, unknown>;
-      const prompt = String(q.prompt ?? q.question ?? "").trim();
+      const prompt = displayText(String(q.prompt ?? q.question ?? "").trim());
       if (!prompt) continue;
       const optionsRaw = Array.isArray(q.options) ? q.options : [];
       questions.push({
@@ -352,7 +423,7 @@ function normaliseAskUserPayload(raw: unknown): AskUserPayload | null {
         prompt,
         header:
           typeof q.header === "string" && q.header.trim()
-            ? q.header.trim()
+            ? displayText(q.header.trim())
             : null,
         multi_select: Boolean(q.multi_select ?? q.multiSelect),
         options: optionsRaw
@@ -361,7 +432,7 @@ function normaliseAskUserPayload(raw: unknown): AskUserPayload | null {
         allow_free_text: q.allow_free_text === false ? false : true,
         placeholder:
           typeof q.placeholder === "string" && q.placeholder.trim()
-            ? (q.placeholder as string).trim()
+            ? displayText((q.placeholder as string).trim())
             : null,
       });
     }
@@ -369,14 +440,14 @@ function normaliseAskUserPayload(raw: unknown): AskUserPayload | null {
     return {
       intro:
         typeof obj.intro === "string" && obj.intro.trim()
-          ? (obj.intro as string).trim()
+          ? displayText((obj.intro as string).trim())
           : null,
       questions,
     };
   }
 
   // Legacy single-question shape from before the multi-question refactor.
-  const prompt = String(obj.question ?? "").trim();
+  const prompt = displayText(String(obj.question ?? "").trim());
   if (!prompt) return null;
   const optionsRaw = Array.isArray(obj.options) ? obj.options : [];
   return {
