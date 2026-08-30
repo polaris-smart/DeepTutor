@@ -14,6 +14,8 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 import pytest
 
+from fastapi import HTTPException
+
 from deeptutor.api.routers._partners_channel_schema import (
     all_channel_schemas,
     channel_schema_payload,
@@ -21,24 +23,25 @@ from deeptutor.api.routers._partners_channel_schema import (
     inline_refs,
     resolve_config_model,
 )
+from deeptutor.api.routers.partners import _validate_channels_payload
 
-    def test_rejects_a_malformed_discovered_channel_section(self) -> None:
-        with pytest.raises(HTTPException) as exc_info:
-            _validate_channels_payload(
-                {
-                    "telegram": {
-                        "enabled": True,
-                        "allow_from": ["*"],
-                        "connection_pool_size": "not-a-number",
-                    }
+def test_rejects_a_malformed_discovered_channel_section() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        _validate_channels_payload(
+            {
+                "telegram": {
+                    "enabled": True,
+                    "allow_from": ["*"],
+                    "connection_pool_size": "not-a-number",
                 }
-            )
-
-        assert exc_info.value.status_code == 422
-        assert exc_info.value.detail["errors"][0]["loc"] == (
-            "telegram",
-            "connection_pool_size",
+            }
         )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail["errors"][0]["loc"] == (
+        "telegram",
+        "connection_pool_size",
+    )
 
 
 class TestResolveConfigModel:

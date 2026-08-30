@@ -1,8 +1,7 @@
 """MinerU engine adapter implementing the ``Parser`` protocol.
 
-Thin wrapper over the existing ``parse_pdf_to_workdir`` (local CLI / cloud
-dispatch). The readiness gate (``readiness.py``) enforces "no silent model
-download" before a local parse runs.
+The readiness gate (``readiness.py``) enforces "no silent model download"
+before a local parse runs.
 """
 
 from __future__ import annotations
@@ -14,11 +13,12 @@ from ...base import ReadinessReport
 from ...signature import ParserSignature
 from .._versions import package_version
 from .config import MinerUConfig, resolve_mineru_config
+from .formats import MINERU_SUPPORTED_FORMATS
 from .readiness import mineru_readiness
 
 
 class MinerUParser:
-    """PDF → multimodal ``content_list`` via the MinerU CLI or cloud API."""
+    """Documents/images → multimodal IR via the MinerU CLI or cloud API."""
 
     name = "mineru"
     needs_local_models = True
@@ -33,14 +33,8 @@ class MinerUParser:
     def resolve_config(self) -> MinerUConfig:
         return resolve_mineru_config()
 
-    # 悦学 fork: cloud 模式放开多格式（MinerU 云 API 原生支持 doc/docx/ppt/pptx），
-    # local 模式仍只认 PDF（MinerU CLI 限制，local.py 有独立拦截）。
-    _CLOUD_FORMATS = frozenset({".pdf", ".doc", ".docx", ".ppt", ".pptx"})
-    _LOCAL_FORMATS = frozenset({".pdf"})
-
     def supported_formats(self) -> frozenset[str]:
-        config = self.resolve_config()
-        return self._CLOUD_FORMATS if config.is_cloud else self._LOCAL_FORMATS
+        return MINERU_SUPPORTED_FORMATS
 
     def signature(self, config: MinerUConfig) -> ParserSignature:
         version = f"cloud:{config.api_base_url}" if config.is_cloud else package_version("mineru")
@@ -68,11 +62,11 @@ class MinerUParser:
         config: MinerUConfig,
         on_output: Optional[Callable[[str], None]] = None,
     ) -> None:
-        from .backend import parse_pdf_to_workdir
+        from .backend import parse_document_to_workdir
 
         # Writes ``<workdir>/<stem>/...`` (markdown + content_list + images);
         # ParseService loads the IR from ``workdir`` afterwards.
-        parse_pdf_to_workdir(source_path, workdir, config=config, on_output=on_output)
+        parse_document_to_workdir(source_path, workdir, config=config, on_output=on_output)
 
 
 __all__ = ["MinerUParser"]
