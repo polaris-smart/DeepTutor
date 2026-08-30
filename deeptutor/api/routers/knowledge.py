@@ -3474,16 +3474,48 @@ def _node_has_doc_intel_question_mark(metadata: dict) -> bool:
 
     The qa_split pass (``deeptutor/knowledge/doc_intel/qa_split.py``) tags
     question blocks with ``is_question=true`` plus ``q_id`` / ``q_type`` /
-    ``has_answer``, and answer/analysis blocks with the same ``q_id``. Accept
-    ``is_question``, or a bare ``q_id`` only when the node is not tagged as an
-    answer/analysis block, so a partially-annotated store still surfaces its
-    questions without leaking answer blocks into the list.
+    ``has_answer``; answer blocks carry ``is_answer`` plus the same ``q_id``,
+    while analysis blocks carry ``is_analysis`` only. Accept ``is_question``,
+    or a bare ``q_id`` only when the node is not tagged as an answer/analysis
+    block, so a partially-annotated store still surfaces its questions without
+    leaking answer blocks into the list.
     """
     if metadata.get("is_question"):
         return True
     if metadata.get("is_answer") or metadata.get("is_analysis"):
         return False
     return bool(metadata.get("q_id"))
+
+
+def _doc_intel_question_metadata(metadata: dict) -> list[dict]:
+    """Return question metadata views from current and persisted index shapes.
+
+    Flat/explicitly annotated nodes expose qa_split fields at the top level.
+    Existing production indexes instead carry a JSON list in
+    ``di_block_meta``. Its slim entries omit answer/analysis role markers, so
+    only an explicit nested ``is_question`` marker is safe to surface.
+    """
+    if _node_has_doc_intel_question_mark(metadata):
+        return [metadata]
+
+    raw = metadata.get("di_block_meta")
+    if isinstance(raw, str):
+        try:
+            block_metadata = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+    else:
+        block_metadata = raw
+    if not isinstance(block_metadata, list):
+        return []
+
+    questions: list[dict] = []
+    for block in block_metadata:
+        if not isinstance(block, dict) or not block.get("is_question"):
+            continue
+        questions.append({**metadata, **block})
+    return questions
+
 
 @router.get("/{kb_name}/questions/by-struct")
 async def get_questions_by_struct(
@@ -3493,36 +3525,56 @@ async def get_questions_by_struct(
 ):
     """Return doc_intel question nodes under a textbook structure path.
 
-    Question blocks carry ``is_question=true`` (plus ``q_id`` / ``q_type`` /
-    ``has_answer``) from the qa_split pass. A KB whose nodes carry no doc_intel
-    markers returns an empty list with a hint instead of an error (fail-open).
+    Reads both flat qa_split fields and the serialized ``di_block_meta`` shape
+    used by existing indexes. A KB whose nodes carry no doc_intel markers
+    returns an empty list with a hint instead of an error (fail-open).
     """
     try:
         resolved_name, docstore = await asyncio.to_thread(_load_kb_docstore, kb_name)
         questions: list[dict] = []
         has_doc_intel = False
+        seen_questions: set[tuple[str, str, str]] = set()
         if docstore is not None:
             nodes = await asyncio.to_thread(lambda: list(docstore.docs.values()))
             for node in nodes:
+                node_id = str(getattr(node, "node_id", ""))
                 metadata = getattr(node, "metadata", {}) or {}
-                if not _node_has_doc_intel_question_mark(metadata):
-                    continue
-                has_doc_intel = True
-                node_struct_path = str(metadata.get("struct_path") or "")
-                if not _struct_path_matches(node_struct_path, struct_path):
-                    continue
-                questions.append(
-                    {
-                        "node_id": str(getattr(node, "node_id", "")),
-                        "q_id": str(metadata.get("q_id") or ""),
-                        "text": _node_text(node)[:500],
-                        "question_type": str(metadata.get("q_type") or ""),
-                        "difficulty": str(metadata.get("difficulty") or ""),
-                        "struct_path": node_struct_path,
-                        "has_answer": bool(metadata.get("has_answer")),
-                        "file_name": str(metadata.get("file_name") or ""),
-                    }
-                )
+                for question_metadata in _doc_intel_question_metadata(metadata):
+                    has_doc_intel = True
+                    node_struct_path = str(question_metadata.get("struct_path") or "")
+                    if not _struct_path_matches(node_struct_path, struct_path):
+                        continue
+                    q_id = str(question_metadata.get("q_id") or "")
+                    question_key = (
+                        str(
+                            question_metadata.get("file_path")
+                            or question_metadata.get("file_name")
+                            or ""
+                        ),
+                        q_id or f"node:{node_id}",
+                        node_struct_path,
+                    )
+                    if question_key in seen_questions:
+                        continue
+                    seen_questions.add(question_key)
+                    questions.append(
+                        {
+                            "node_id": node_id,
+                            "q_id": q_id,
+                            "text": str(
+                                question_metadata.get("text")
+                                or question_metadata.get("preview")
+                                or _node_text(node)
+                            )[:500],
+                            "question_type": str(question_metadata.get("q_type") or ""),
+                            "difficulty": str(question_metadata.get("difficulty") or ""),
+                            "struct_path": node_struct_path,
+                            "has_answer": bool(question_metadata.get("has_answer")),
+                            "file_name": str(question_metadata.get("file_name") or ""),
+                        }
+                    )
+                    if len(questions) >= limit:
+                        break
                 if len(questions) >= limit:
                     break
         hint = ""

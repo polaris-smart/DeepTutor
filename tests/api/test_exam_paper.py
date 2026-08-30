@@ -17,6 +17,7 @@ The docstore is faked with ``SimpleNamespace`` nodes exactly like
 from __future__ import annotations
 
 import importlib
+import json
 from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -186,6 +187,65 @@ def test_questions_by_struct_returns_is_question_nodes(monkeypatch: pytest.Monke
     assert first["struct_path"] == "必修一/第1章 集合/1.1 集合的概念"
     assert first["has_answer"] is True
     assert first["file_name"] == "数学必修一_教师版.pdf"
+
+
+def test_questions_by_struct_reads_serialized_qa_split_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Production indexes keep per-block qa_split data in ``di_block_meta``."""
+    metadata = {
+        "file_name": "数学必修一_教师版.pdf",
+        "di_block_meta": json.dumps(
+            [
+                {
+                    "is_question": True,
+                    "q_id": "P3-1",
+                    "q_type": "计算题",
+                    "struct_path": "必修一/第1章 集合/1.1 集合的概念",
+                },
+                # The persisted slim format keeps an answer's q_id but drops
+                # is_answer. It must not create a second question.
+                {
+                    "q_id": "P3-1",
+                    "struct_path": "必修一/第1章 集合/1.1 集合的概念",
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        "di_q_ids": "P3-1,P3-1",
+    }
+    docstore = _docstore(
+        _Node(
+            "n-q1",
+            text="1. 计算 3 + 5 的值。",
+            metadata=metadata,
+        ),
+        # LlamaIndex chunks inherit the same document metadata. The endpoint
+        # must not emit every serialized question once per chunk.
+        _Node("n-other", text="本节学习目标……", metadata=dict(metadata)),
+    )
+    with _questions_client(monkeypatch, docstore) as client:
+        response = client.get(
+            "/api/v1/knowledge/数学/questions/by-struct",
+            params={"struct_path": "必修一/第1章"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["has_doc_intel"] is True
+    assert payload["hint"] == ""
+    assert payload["questions"] == [
+        {
+            "node_id": "n-q1",
+            "q_id": "P3-1",
+            "text": "1. 计算 3 + 5 的值。",
+            "question_type": "计算题",
+            "difficulty": "",
+            "struct_path": "必修一/第1章 集合/1.1 集合的概念",
+            "has_answer": False,
+            "file_name": "数学必修一_教师版.pdf",
+        }
+    ]
 
 
 def test_questions_by_struct_prefix_does_not_leak_into_longer_chapter_numbers(
