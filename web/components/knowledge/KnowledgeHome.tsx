@@ -33,10 +33,8 @@ import KnowledgeEngineIcon, {
 
 export type KnowledgeHomeSection = "knowledge-bases" | "knowledge-engines";
 
-type GroupedKnowledgeBase = KnowledgeBase & { group?: string };
-
 interface KnowledgeHomeProps {
-  kbs: GroupedKnowledgeBase[];
+  kbs: KnowledgeBase[];
   providers: RagProviderSummary[];
   onOpenKb: (name: string) => void;
   onOpenEngine: (id: string) => void;
@@ -121,21 +119,6 @@ export default function KnowledgeHome({
     if (!q) return kbs;
     return kbs.filter((kb) => kb.name.toLowerCase().includes(q));
   }, [kbs, query]);
-
-  const groupedKbs = useMemo(() => {
-    const groups = new Map<string, GroupedKnowledgeBase[]>();
-    for (const kb of filteredKbs) {
-      const group = kb.group?.trim() ?? "";
-      const items = groups.get(group) ?? [];
-      items.push(kb);
-      groups.set(group, items);
-    }
-    return Array.from(groups.entries()).sort(([left], [right]) => {
-      if (!left) return 1;
-      if (!right) return -1;
-      return left.localeCompare(right);
-    });
-  }, [filteredKbs]);
 
   const groupedProviders = useMemo(
     () => ({
@@ -437,74 +420,6 @@ export default function KnowledgeHome({
                   </p>
                 </div>
               </div>
-<<<<<<< HEAD
-              <p className="mx-auto mt-1 max-w-sm text-[12px] leading-relaxed text-[var(--muted-foreground)]">
-                {t(
-                  "Create one to upload documents and retrieve grounded context in chat.",
-                )}
-              </p>
-              <button
-                type="button"
-                onClick={onCreate}
-                className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-[var(--primary)] px-3.5 py-2 text-[12.5px] font-medium text-[var(--primary-foreground)] transition-opacity hover:opacity-90"
-              >
-                <Plus size={14} />
-                {t("New knowledge base")}
-              </button>
-            </div>
-          ) : filteredKbs.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-[var(--border)] px-4 py-8 text-center text-[12px] text-[var(--muted-foreground)]">
-              {t("No matches")}
-            </div>
-          ) : (
-            <div className="space-y-5">
-              {groupedKbs.map(([group, groupKbs]) => (
-                <section key={group || "uncategorized"}>
-                  <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wide text-[var(--muted-foreground)]">
-                    {group || t("Uncategorized")}
-                  </h3>
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    {groupKbs.map((kb) => {
-                      const docs = kbDocCount(kb);
-                      return (
-                        <button
-                          key={kb.name}
-                          type="button"
-                          onClick={() => onOpenKb(kb.name)}
-                          className="group flex flex-col gap-2 rounded-2xl border border-[var(--border)] p-4 text-left transition-colors hover:border-[var(--ring)]"
-                        >
-                          <div className="flex items-center gap-2">
-                            <StatusDot kb={kb} />
-                            <span className="truncate text-[13.5px] font-medium text-[var(--foreground)]">
-                              {kb.name}
-                            </span>
-                            {kb.is_default && (
-                              <Star
-                                className="h-3 w-3 shrink-0 text-amber-500"
-                                fill="currentColor"
-                              />
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2 text-[11px] text-[var(--muted-foreground)]">
-                            <span className="rounded-full border border-[var(--border)] px-1.5 py-0.5">
-                              {providerName(kbProvider(kb))}
-                            </span>
-                            {docs !== null && (
-                              <span>
-                                {docs} {t("docs")}
-                              </span>
-                            )}
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </section>
-              ))}
-            </div>
-          )}
-        </section>
-=======
               <div className="grid grid-cols-1 items-stretch gap-3 md:grid-cols-2">
                 {groupedProviders.local.map(renderProvider)}
               </div>
@@ -564,7 +479,6 @@ export default function KnowledgeHome({
             </section>
           </div>
         )}
->>>>>>> v1.6.2
       </div>
     </div>
   );
