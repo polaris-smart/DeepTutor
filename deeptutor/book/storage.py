@@ -82,10 +82,15 @@ def _safe_page_id(page_id: str) -> str:
 def _read_json(path: Path) -> Any | None:
     if not path.exists():
         return None
+    # macOS AppleDouble resource-fork files ("._name") ride along on copies
+    # made from a Mac and are binary — treat them as absent (HK 迁移实锤:
+    # 29,725 个 ._ 文件曾让 list_pages 对整本书 500).
+    if path.name.startswith("._"):
+        return None
     try:
         with open(path, encoding="utf-8") as f:
             return json.load(f)
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         logger.warning(f"Failed to read JSON {path}: {exc}")
         return None
 
