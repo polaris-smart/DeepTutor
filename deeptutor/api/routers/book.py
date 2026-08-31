@@ -32,6 +32,8 @@ from deeptutor.book.export import export_filename, render_book_markdown
 from deeptutor.book.importer import TocImportError, layout_to_spine, toc_to_spine
 from deeptutor.book.models import (
     BlockStatus,
+    Book,
+    BookStatus,
     ContentType,
     LearningCapture,
     LearningCaptureStatus,
@@ -117,6 +119,40 @@ class PagesImportRequest(BaseModel):
     chapter_id: str
     pages: list[ImportedPageSpec]
     mark_ready: bool = True  # pages whose blocks are all READY become READY
+
+
+class CanonicalizeChapterSpec(BaseModel):
+    """Verbatim pages destined for one chapter of the imported spine.
+
+    The chapter is addressed by its position in the flattened TOC
+    (``chapter_index``) or by exact title (``chapter_title``); ids are not
+    knowable to the caller because the spine is created by this same call.
+    """
+
+    chapter_index: int | None = Field(default=None, ge=0)
+    chapter_title: str = ""
+    pages: list[ImportedPageSpec] = Field(default_factory=list)
+
+
+class CanonicalizeRequest(BaseModel):
+    """One-shot textbook canonicalization: book + spine + verbatim pages.
+
+    Deterministic end to end — the IdeationAgent and SpineAgent never run, so
+    every title comes from the textbook itself. This is the orchestrator's
+    single entry point: what would otherwise be three calls (create, spine
+    import, pages import) with two round-trips to learn the generated ids.
+    """
+
+    title: str
+    description: str = ""
+    toc: list[dict[str, Any]] | None = None
+    layout: dict[str, Any] | None = None
+    source: str = "toc_json"  # "toc_json" | "layout_json"
+    language: str = "zh"
+    knowledge_bases: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    chapters: list[CanonicalizeChapterSpec] = Field(default_factory=list)
+    mark_ready: bool = True
 
 
 class CompilePageRequest(BaseModel):
@@ -738,6 +774,180 @@ async def create_book(req: CreateBookRequest) -> dict[str, Any]:
     }
 
 
+async def _import_pages_into_chapter(
+    engine: Any,
+    book_id: str,
+    spine: Spine,
+    chapter: Any,
+    specs: list[ImportedPageSpec],
+    *,
+    mark_ready: bool,
+) -> list[Page]:
+    """Create verbatim pages under ``chapter`` and return what was persisted.
+
+    Shared by the bulk pages-import endpoint and the one-shot canonicalize
+    endpoint. Blocks go through ``insert_block(compile_now=False)``, so
+    verbatim generators (reading / user_note) materialize immediately and the
+    compiler is never invoked.
+    """
+    created: list[Page] = []
+    for spec in specs:
+        page = Page(
+            book_id=book_id,
+            chapter_id=chapter.id,
+            title=spec.title,
+            content_type=chapter.content_type,
+            order=chapter.order,
+            status=PageStatus.PENDING,
+        )
+        engine.storage.save_page(page)
+        chapter.page_ids.append(page.id)
+        engine.storage.save_spine(spine)
+        all_ready = True
+        for blk in spec.blocks:
+            block = await engine.insert_block(
+                book_id=book_id,
+                page_id=page.id,
+                block_type=_coerce_block_type(str(blk.get("block_type") or "")),
+                params=blk.get("params") or {},
+                compile_now=False,
+            )
+            if block is None:
+                raise ValueError(f"failed to insert block into page {page.id}")
+            if block.status != BlockStatus.READY:
+                all_ready = False
+        if mark_ready and all_ready and spec.blocks:
+            # Reload before promoting: insert_block persisted blocks onto the
+            # stored page — the in-memory shell is stale now.
+            saved = engine.storage.load_page(book_id, page.id)
+            if saved is not None:
+                saved.status = PageStatus.READY
+                saved.updated_at = time.time()
+                engine.storage.save_page(saved)
+                created.append(saved)
+                continue
+        created.append(page)
+    return created
+
+
+@router.post("/books/canonicalize")
+async def canonicalize_book(req: CanonicalizeRequest) -> dict[str, Any]:
+    """Turn one parsed textbook into a canonical Book in a single call.
+
+    Collapses create → spine import → pages import. Fully deterministic: the
+    book title is the caller's, chapters come from the textbook's own TOC (or
+    a MinerU layout via the running-header rebuild), and page blocks are
+    verbatim. No agent invents anything, so an orchestrator can run this
+    unattended over a shelf of books.
+    """
+    title = req.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title is required")
+    if not can_create_book():
+        raise HTTPException(status_code=403, detail="Book creation is not allowed")
+
+    engine = get_book_engine()
+    book = Book(
+        title=title,
+        description=req.description,
+        status=BookStatus.DRAFT,
+        knowledge_bases=list(req.knowledge_bases),
+        language=req.language,
+        metadata={**req.metadata, "canonical_source": req.source},
+    )
+    engine.storage.save_book(book)
+
+    try:
+        if req.source == "layout_json" or req.layout is not None:
+            if req.layout is None:
+                raise HTTPException(status_code=400, detail="source=layout_json requires layout")
+            spine = layout_to_spine(book.id, req.layout)
+        else:
+            if not req.toc:
+                raise HTTPException(status_code=400, detail="toc is required for source=toc_json")
+            spine = toc_to_spine(book.id, req.toc)
+    except TocImportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    try:
+        await engine.confirm_spine(book_id=book.id, edited_spine=spine, auto_compile=False)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"canonicalize spine import failed: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    # Re-read: confirm_spine owns page-shell creation and may rewrite chapters,
+    # so the ids the page import addresses must come from what was persisted.
+    saved_spine = engine.load_spine(book.id) or spine
+
+    chapter_reports: list[dict[str, Any]] = []
+    pages_created = 0
+    try:
+        for spec in req.chapters:
+            chapter = _resolve_canonical_chapter(saved_spine, spec)
+            pages = await _import_pages_into_chapter(
+                engine,
+                book.id,
+                saved_spine,
+                chapter,
+                spec.pages,
+                mark_ready=req.mark_ready,
+            )
+            pages_created += len(pages)
+            chapter_reports.append(
+                {
+                    "chapter_id": chapter.id,
+                    "chapter_title": chapter.title,
+                    "pages": [p.model_dump(mode="json") for p in pages],
+                }
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"canonicalize pages import failed: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    final_spine = engine.load_spine(book.id) or saved_spine
+    book.chapter_count = len(final_spine.chapters)
+    book.page_count = pages_created
+    # READY only once real content landed; a spine-only import stays DRAFT so
+    # the library never advertises an empty book as readable.
+    book.status = BookStatus.READY if pages_created else BookStatus.DRAFT
+    book.updated_at = time.time()
+    engine.storage.save_book(book)
+
+    return {
+        "book": book.model_dump(mode="json"),
+        "spine": final_spine.model_dump(mode="json"),
+        "chapters": chapter_reports,
+        "pages_created": pages_created,
+    }
+
+
+def _resolve_canonical_chapter(spine: Spine, spec: CanonicalizeChapterSpec) -> Any:
+    """Find the chapter a canonicalize page-group addresses, or 404."""
+    if spec.chapter_index is not None:
+        if spec.chapter_index >= len(spine.chapters):
+            raise HTTPException(
+                status_code=404,
+                detail=f"chapter_index {spec.chapter_index} is out of range "
+                f"({len(spine.chapters)} chapters)",
+            )
+        return spine.chapters[spec.chapter_index]
+    wanted = spec.chapter_title.strip()
+    if not wanted:
+        raise HTTPException(
+            status_code=400, detail="each chapter group needs chapter_index or chapter_title"
+        )
+    for chapter in spine.chapters:
+        if chapter.title.strip() == wanted:
+            return chapter
+    raise HTTPException(status_code=404, detail=f"Chapter titled {wanted!r} not found")
+
+
 @router.post("/books/confirm-proposal")
 async def confirm_proposal(req: ConfirmProposalRequest) -> dict[str, Any]:
     """Stage 2: user confirms (and possibly edits) the proposal → SpineAgent."""
@@ -859,42 +1069,14 @@ async def import_pages(book_id: str, req: PagesImportRequest) -> dict[str, Any]:
 
     created: list[Page] = []
     try:
-        for spec in req.pages:
-            page = Page(
-                book_id=book_id,
-                chapter_id=chapter.id,
-                title=spec.title,
-                content_type=chapter.content_type,
-                order=chapter.order,
-                status=PageStatus.PENDING,
-            )
-            engine.storage.save_page(page)
-            chapter.page_ids.append(page.id)
-            engine.storage.save_spine(spine)
-            all_ready = True
-            for blk in spec.blocks:
-                block = await engine.insert_block(
-                    book_id=book_id,
-                    page_id=page.id,
-                    block_type=_coerce_block_type(str(blk.get("block_type") or "")),
-                    params=blk.get("params") or {},
-                    compile_now=False,
-                )
-                if block is None:
-                    raise ValueError(f"failed to insert block into page {page.id}")
-                if block.status != BlockStatus.READY:
-                    all_ready = False
-            if req.mark_ready and all_ready and spec.blocks:
-                # Reload before promoting: insert_block persisted blocks onto
-                # the stored page — the in-memory shell is stale now.
-                saved = engine.storage.load_page(book_id, page.id)
-                if saved is not None:
-                    saved.status = PageStatus.READY
-                    saved.updated_at = time.time()
-                    engine.storage.save_page(saved)
-                    created.append(saved)
-                    continue
-            created.append(page)
+        created = await _import_pages_into_chapter(
+            engine,
+            book_id,
+            spine,
+            chapter,
+            req.pages,
+            mark_ready=req.mark_ready,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except HTTPException:
