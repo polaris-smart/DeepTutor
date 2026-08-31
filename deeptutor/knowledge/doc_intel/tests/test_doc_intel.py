@@ -218,3 +218,47 @@ def test_footer_register_covers_chapter_style_books():
     chapters = [n for n in tree["children"] if "第" in n["title"]]
     assert [n["title"][:3] for n in chapters] == ["第一章", "第二章"]
     assert chapters[0].get("printed_page") == 1
+
+
+# ── 封面数字串卫道（vlm 产物回归：OCR 出的 bbox 数字串不得开树）─────────
+
+def test_numeric_ocr_noise_never_opens_structure():
+    """选择性必修三实锤：封面印刷数字串被 vlm 认成 header，regex fallback
+    的节标题分支（^数字.数字）把它们当成标题，升格成树的顶级"章"。"""
+    from deeptutor.knowledge.doc_intel.structure import _block_level
+    noise = ["166.0 174.0 170.0", "162.0 155.0 156.0 158.0", "5.0 157.0 160.0"]
+    for text in noise:
+        assert _block_level({}, text) is None, f"{text!r} must not be a heading"
+
+
+def test_numbered_sections_with_chinese_names_still_open_sections():
+    """卫道不能误伤真节标题："6.1 分类加法计数原理" 必须照常开节。"""
+    from deeptutor.knowledge.doc_intel.structure import _block_level
+    assert _block_level({}, "6.1 分类加法计数原理") is not None
+    assert _block_level({"type": "text", "text_level": 2}, "6.1 分类加法计数原理") is not None
+
+
+def test_footer_register_matches_across_spacing():
+    """选必三实锤：正文"第七章随机变量及其分布"（无空格）必须命中页脚
+    登记"第七章 随机变量及其分布"（有空格），否则被页脚法误拒。"""
+    from deeptutor.knowledge.doc_intel.structure import build_tree
+    blocks = [
+        {"type": "title", "text": "目录", "text_level": 2},
+        {"type": "text", "text": "第七章 随机变量及其分布 …… 20"},
+        {"type": "title", "text": "第七章随机变量及其分布", "text_level": 2},
+        {"type": "footer", "text": "第七章 随机变量及其分布"},
+        {"type": "page_number", "text": "40"},
+    ]
+    tree, _ = build_tree(blocks, doc_id="d")
+    titles = [c.get("title") for c in tree.get("children") or []]
+    assert any("第七章" in t for t in titles), titles
+
+
+def test_long_numbered_section_is_not_mistaken_for_exercise_stem():
+    """"6.1 分类加法计数原理与分步乘法计数原理" 是节标题不是题干——
+    题干卫道只该杀编号后非数字的行（"5. 设 A 是一个集合…"）。"""
+    from deeptutor.knowledge.doc_intel.structure import _block_level
+    assert _block_level({"type": "text", "text_level": 2},
+                        "6.1 分类加法计数原理与分步乘法计数原理") is not None
+    # 题干照旧被杀
+    assert _block_level({}, "5. 设 A 是一个集合，求 A 的子集个数，并说明理由") is None

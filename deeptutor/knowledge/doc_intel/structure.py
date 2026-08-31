@@ -47,6 +47,12 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "")).strip()
 
 
+def _squash(text: str) -> str:
+    """Blank-free key for the footer register: 正文标题的空格习惯不稳定
+    （"第七章 随机变量" vs "第七章随机变量"），登记与查询必须跨空格命中。"""
+    return re.sub(r"\s+", "", (text or ""))
+
+
 def _block_text_v1(block: dict) -> str:
     return _norm(block.get("text", ""))
 
@@ -80,9 +86,25 @@ def _block_level(block: dict, text: str) -> int | None:
         return 2
     if _FRAME_RE.match(text):
         return 3
-    if _TITLED_SECTION_RE.match(text) and len(text) <= 34 and not re.search(r"[。？?！!,，：:]", text):
+    if (
+        _TITLED_SECTION_RE.match(text)
+        and len(text) <= 34
+        and not re.search(r"[。？?！!,，：:]", text)
+        and _has_cjk(text)
+    ):
         return 3
     return None
+
+
+def _has_cjk(text: str) -> bool:
+    """True when the text carries at least one CJK character.
+
+    A numbered section heading is ``编号 + 中文标题`` ("6.1 分类加法计数原理").
+    Cover-page OCR noise is digits-and-spaces only ("166.0 174.0 170.0") —
+    without this guard those lines match the numbered-heading shape and climb
+    the tree as top-level chapters (选择性必修三 vlm 实锤).
+    """
+    return bool(re.search(r"[\u4e00-\u9fff]", text))
 
 
 def _content_level(text: str, mineru_level: int) -> int | None:
@@ -95,14 +117,16 @@ def _content_level(text: str, mineru_level: int) -> int | None:
     if not text or _PRACTICE_RE.match(text) or _BARE_NUM_RE.match(text):
         return None
     # Numbered exercise stems mis-tagged as headings ("5. 设 A 是一个集合…"):
-    # a heading is short and carries no sentence punctuation.
-    if re.match(r"^\d{1,3}[.、．]\s*\S", text) and (len(text) > 12 or re.search(r"[。？?！!,，]", text)):
+    # a heading is short and carries no sentence punctuation. The stem number
+    # is followed by a NON-digit ("5. 设…"); a section number is "6.1" — the
+    # second group is digits, and what follows is the section's own name.
+    if re.match(r"^\d{1,3}[.、．](?!\d)\s*\S", text) and (len(text) > 12 or re.search(r"[。？?！!,，]", text)):
         return None
     if _PART_RE.match(text) or _UNIT_RE.match(text):
         return 1
     if _LESSON_RE.match(text) or _CHAPTER_NUM_RE.match(text):
         return 2
-    if _FRAME_RE.match(text) or _TITLED_SECTION_RE.match(text):
+    if _FRAME_RE.match(text) or (_TITLED_SECTION_RE.match(text) and _has_cjk(text)):
         return 3
     # MinerU L1 on the cover ("普通高中教科书") is book furniture when it
     # appears before any real unit; treat generic L1 as lesson-level.
@@ -179,7 +203,7 @@ def build_tree(blocks: list[dict], *, text_fn=_block_text_v1, doc_id: str = "") 
     # also announce it — otherwise it is TOC-page noise / a false heading
     # (必修1: body lesson headings were dropped to discarded_blocks, leaving
     # only TOC rows as title blocks, which fabricated wrong chapter starts).
-    footer_register: dict[str, int | None] = {}  # norm_title -> printed_page
+    footer_register: dict[str, int | None] = {}  # squashed_title -> printed_page
     last_page_number: int | None = None
     for block in blocks:
         btype = block.get("type")
@@ -189,7 +213,7 @@ def build_tree(blocks: list[dict], *, text_fn=_block_text_v1, doc_id: str = "") 
         elif btype == "footer" and re.match(
             r"^第\s*[一二三四五六七八九十百\d]+\s*(?:课|章)", text
         ):
-            footer_register[_norm(text)] = last_page_number
+            footer_register[_squash(text)] = last_page_number
     footer_register_active = bool(footer_register)
 
     for i, block in enumerate(blocks):
@@ -223,16 +247,20 @@ def build_tree(blocks: list[dict], *, text_fn=_block_text_v1, doc_id: str = "") 
             # first chapter is also a heading. Distinguish by chapter number
             # restart: the TOC ends where a heading's chapter number drops
             # back to the document's first chapter (K12 convention: body
-            # restarts at chapter 1 / unit 1).
+            # restarts at chapter 1 / unit 1). 选必册 restart at 第六章+，so a
+            # footer-registered title is the authoritative exit: running
+            # headers only appear in the body's own pages, never on the TOC.
             if level is not None:
                 m = re.match(r"^第\s*(\d+)\s*章", text) or re.match(r"^第\s*([一二三四五六七八九十]+)\s*(?:单元|课)", text)
                 if m and toc_seen_entries >= 1:
                     cn = m.group(1)
-                    if cn in ("1", "一"):
-                        in_toc = False  # body chapter 1 heading — fall through
+                    if cn in ("1", "一") or _squash(text) in footer_register:
+                        in_toc = False  # body chapter heading — fall through
                     else:
                         paths.append("")
                         continue
+                elif not m and footer_register_active and _squash(text) in footer_register:
+                    in_toc = False  # registered lesson/section resumes — fall through
                 else:
                     paths.append("")
                     continue
@@ -260,7 +288,7 @@ def build_tree(blocks: list[dict], *, text_fn=_block_text_v1, doc_id: str = "") 
             if footer_register_active and re.match(
                 r"^第\s*[一二三四五六七八九十百\d]+\s*(?:课|章)", text
             ):
-                if _norm(text) not in footer_register:
+                if _squash(text) not in footer_register:
                     paths.append("")
                     continue
             stack.append((level, text))
@@ -271,7 +299,7 @@ def build_tree(blocks: list[dict], *, text_fn=_block_text_v1, doc_id: str = "") 
                 block_span=(i, i + 1),
                 struct_path=struct_path,
                 node_id=stable_node_id(doc_id, struct_path),
-                printed_page=footer_register.get(_norm(text)),
+                printed_page=footer_register.get(_squash(text)),
             )
             if node_stack:
                 node_stack[-1].children.append(node)
