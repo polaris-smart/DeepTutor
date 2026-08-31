@@ -3528,6 +3528,25 @@ async def get_textbook_tree(kb_name: str):
                 continue
             if not isinstance(tree, dict):
                 continue
+            # Degraded form: when the full tree exceeds the doc metadata
+            # budget, document_loader stores {"title", "chapters": [..]}.
+            # Present it as children so structure browsing still shows the
+            # book instead of silently dropping it (选必三大部头实锤).
+            if not tree.get("children"):
+                chapters = tree.get("chapters")
+                if isinstance(chapters, list) and chapters:
+                    tree = {
+                        "title": tree.get("title"),
+                        "children": [
+                            child
+                            for child in (
+                                {"title": str(title)} for title in chapters if title
+                            )
+                            if child["title"]
+                        ],
+                    }
+                if not tree.get("children"):
+                    continue
 
             doc_id = str(
                 getattr(node, "ref_doc_id", None)
