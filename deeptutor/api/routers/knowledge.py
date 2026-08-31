@@ -3559,8 +3559,15 @@ async def get_docs_by_struct(
     kb_name: str,
     path: str = Query(..., min_length=1),
     limit: int = Query(20, ge=1, le=100),
+    full_text: bool = Query(False),
 ):
-    """Return nodes whose ``struct_path`` starts with the requested path."""
+    """Return nodes whose ``struct_path`` starts with the requested path.
+
+    ``preview`` is a 200-char browser affordance. Set ``full_text`` to also
+    get each node's whole content — that is the verbatim-prose channel the
+    book canonicalization orchestrator imports from, where a truncated
+    preview would silently ship a mutilated textbook.
+    """
     try:
         resolved_name, docstore = await asyncio.to_thread(_load_kb_docstore, kb_name)
         nodes = []
@@ -3571,14 +3578,16 @@ async def get_docs_by_struct(
                 struct_path = str(metadata.get("struct_path") or "")
                 if not struct_path.startswith(path):
                     continue
-                nodes.append(
-                    {
-                        "node_id": str(getattr(node, "node_id", "")),
-                        "struct_path": struct_path,
-                        "file_name": str(metadata.get("file_name") or ""),
-                        "preview": _node_text(node)[:200],
-                    }
-                )
+                text = _node_text(node)
+                entry = {
+                    "node_id": str(getattr(node, "node_id", "")),
+                    "struct_path": struct_path,
+                    "file_name": str(metadata.get("file_name") or ""),
+                    "preview": text[:200],
+                }
+                if full_text:
+                    entry["text"] = text
+                nodes.append(entry)
                 if len(nodes) >= limit:
                     break
         return {"kb_name": resolved_name, "path": path, "nodes": nodes}
