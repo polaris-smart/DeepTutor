@@ -67,9 +67,9 @@ def _canonical_record(
     hashed = str(value.get("hash") or value.get("password_hash") or "")
     if not hashed:
         return None
-    role = str(value.get("role") or default_role)
-    if role not in {"admin", "user"}:
-        role = default_role
+    from .models import normalize_role
+
+    role = normalize_role(str(value.get("role") or default_role), default_role)
     record = {
         "id": str(value.get("id") or new_user_id()),
         "hash": hashed,
@@ -104,8 +104,10 @@ def _migrate_legacy_users() -> dict[str, dict[str, Any]] | None:
     users: dict[str, dict[str, Any]] = {}
     for username, value in legacy.items():
         role: Role = "admin" if not users else "user"
-        if isinstance(value, dict) and str(value.get("role") or "") in {"admin", "user"}:
-            role = str(value.get("role"))  # type: ignore[assignment]
+        if isinstance(value, dict):
+            from .models import normalize_role
+
+            role = normalize_role(str(value.get("role") or ""), role)  # type: ignore[assignment]
         record = _canonical_record(username, value, default_role=role)
         if record is not None:
             users[str(username)] = record
@@ -185,8 +187,10 @@ def load_users(  # nosec B107 - empty defaults mean "no env fallback supplied".
     changed = False
     for index, (username, value) in enumerate(users.items()):
         role: Role = "admin" if index == 0 else "user"
-        if isinstance(value, dict) and str(value.get("role") or "") in {"admin", "user"}:
-            role = str(value.get("role"))  # type: ignore[assignment]
+        if isinstance(value, dict):
+            from .models import normalize_role
+
+            role = normalize_role(str(value.get("role") or ""), role)  # type: ignore[assignment]
         record = _canonical_record(str(username), value, default_role=role)
         if record is None:
             changed = True
@@ -392,8 +396,10 @@ def delete_avatar_file(user_id: str) -> None:
 
 
 def set_role(username: str, role: Role) -> bool:
-    if role not in {"admin", "user"}:
-        raise ValueError("role must be 'admin' or 'user'")
+    from .models import VALID_ROLES
+
+    if role not in VALID_ROLES:
+        raise ValueError(f"role must be one of {sorted(VALID_ROLES)}")
     if not USERS_FILE.exists():
         return False
     users = load_users()

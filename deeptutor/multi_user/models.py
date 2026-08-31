@@ -6,8 +6,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-Role = Literal["admin", "user"]
+Role = Literal["admin", "teacher", "student", "user"]
 ScopeKind = Literal["admin", "user"]
+
+#: K12 fork: four roles. Role-bearing stores/validators must accept all four;
+#: authorization stays least-privilege — only "admin" elevates.
+VALID_ROLES: frozenset[str] = frozenset({"admin", "teacher", "student", "user"})
+
+
+def normalize_role(value: str, default: str = "user") -> str:
+    """Return the role when legal, else the default (least-privilege degrade)."""
+    return value if value in VALID_ROLES else default
 
 
 @dataclass(frozen=True, slots=True)
