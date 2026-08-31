@@ -123,6 +123,33 @@ class ApiClient:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+#: Parse engines that emit a structured ``content_list``. doc_intel builds the
+#: textbook tree from those blocks; the markdown-only engines (text_only,
+#: pymupdf4llm, markitdown, docling) leave ``blocks=None``, enrich is skipped,
+#: and every book canonicalizes to an empty tree. Verified end to end on
+#: 2026-08-31: a text_only parse of a math textbook produced a 345 KB .md and
+#: no content_list, so ``/textbook-tree`` returned zero textbooks.
+STRUCTURE_CAPABLE_ENGINES = {"mineru"}
+
+
+def preflight_parse_engine(api: ApiClient) -> str:
+    """Fail fast when the active parse engine cannot produce structure.
+
+    Without a ``content_list`` there is nothing for doc_intel to build a tree
+    from, so the whole run would upload, index, and then canonicalize nothing.
+    Checking first costs one request and saves a full parse per book.
+    """
+    settings = api.get("/api/v1/settings/document-parsing") or {}
+    engine = str(settings.get("engine") or "").strip()
+    if engine not in STRUCTURE_CAPABLE_ENGINES:
+        raise OrchestratorError(
+            f"active parse engine {engine!r} emits markdown only — doc_intel needs a "
+            "structured content_list to build the textbook tree. Switch to MinerU in "
+            "Settings → Document Parsing (cloud token or local models) and retry."
+        )
+    return engine
+
+
 def upload_document(api: ApiClient, kb: str, path: Path) -> None:
     """Push one file into the KB; the native pipeline takes over from here."""
     with path.open("rb") as handle:
@@ -357,6 +384,12 @@ def main(argv: list[str] | None = None) -> int:
 
     rows: list[dict[str, Any]] = []
     with ApiClient(args.base_url) as api:
+        try:
+            engine = preflight_parse_engine(api)
+        except OrchestratorError as exc:
+            log_error(str(exc))
+            return 2
+        log_success(f"parse engine: {engine}")
         for position, path in enumerate(books, start=1):
             print(f"[{position}/{len(books)}] {path.name}")
             row = process_book(

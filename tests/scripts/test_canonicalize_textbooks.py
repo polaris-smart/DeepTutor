@@ -28,6 +28,7 @@ _mod = _load_module()
 OrchestratorError = _mod.OrchestratorError
 collect_inputs = _mod.collect_inputs
 fetch_chapter_pages = _mod.fetch_chapter_pages
+preflight_parse_engine = _mod.preflight_parse_engine
 process_book = _mod.process_book
 read_textbook_tree = _mod.read_textbook_tree
 tree_to_toc = _mod.tree_to_toc
@@ -245,6 +246,29 @@ def test_process_book_records_a_failure_instead_of_raising(tmp_path) -> None:
     assert row["ok"] is False
     assert "no doc_intel tree" in row["error"]
     assert "elapsed_seconds" in row
+
+
+# ── preflight_parse_engine ───────────────────────────────────────────────────
+
+
+def test_preflight_accepts_a_structure_capable_engine() -> None:
+    api = _FakeApi({("GET", "/api/v1/settings/document-parsing"): {"engine": "mineru"}})
+    assert preflight_parse_engine(api) == "mineru"
+
+
+def test_preflight_rejects_a_markdown_only_engine() -> None:
+    # text_only / pymupdf4llm / markitdown emit markdown but no content_list,
+    # so doc_intel gets no blocks and every book would canonicalize to an
+    # empty tree. Fail before uploading rather than after a 40-minute parse.
+    api = _FakeApi({("GET", "/api/v1/settings/document-parsing"): {"engine": "text_only"}})
+    with pytest.raises(OrchestratorError, match="text_only"):
+        preflight_parse_engine(api)
+
+
+def test_preflight_names_the_fix_in_its_message() -> None:
+    api = _FakeApi({("GET", "/api/v1/settings/document-parsing"): {"engine": "markitdown"}})
+    with pytest.raises(OrchestratorError, match="MinerU"):
+        preflight_parse_engine(api)
 
 
 # ── collect_inputs ───────────────────────────────────────────────────────────
