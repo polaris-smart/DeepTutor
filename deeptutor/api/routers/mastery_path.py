@@ -664,6 +664,61 @@ async def init_modules(book_id: str, body: InitModulesRequest):
     return {"status": "ok", "module_count": len(modules)}
 
 
+class QuestionBankItem(BaseModel):
+    question: str = Field(min_length=5, max_length=2000)
+    question_type: str = Field(default="choice", pattern="^(choice|short|open)$")
+    options: dict[str, str] = Field(default_factory=dict)
+    answer: str = Field(default="", max_length=500)
+    explanation: str = Field(default="", max_length=2000)
+    difficulty: str = Field(default="", max_length=16)
+
+
+class QuestionBankRequest(BaseModel):
+    """K12 错题闭环题源（QB 对接契约 v1）。HS 习题库 JSON 到位后转格式接此。"""
+
+    knowledge_point_id: str
+    questions: list[QuestionBankItem] = Field(min_length=1, max_length=200)
+
+
+@router.put("/progress/{book_id}/question-bank")
+async def set_kp_question_bank(
+    book_id: str,
+    body: QuestionBankRequest,
+    _: TokenPayload = Depends(require_auth),
+) -> dict[str, object]:
+    """Bind an external question bank to one knowledge point (错题闭环题源).
+
+    Per-user store isolation applies, same as the visualizers endpoint: the
+    learner (or whoever manages the path) binds questions to their own path.
+    Stored verbatim on the KP — the tutor's quiz flow reads the binding
+    before generating questions, so real bank items are always preferred
+    over model-generated ones.
+    """
+    _validate_book_id(book_id)
+    service = get_learning_service()
+    progress = await asyncio.to_thread(service.store.load, book_id)
+    if progress is None:
+        raise HTTPException(status_code=404, detail="Mastery progress not found")
+    target = next(
+        (
+            kp
+            for module in progress.modules
+            for kp in module.knowledge_points
+            if kp.id == body.knowledge_point_id
+        ),
+        None,
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail="Knowledge point not found")
+    target.meta = {"question_bank": [q.model_dump() for q in body.questions]}
+    await asyncio.to_thread(service.save, progress)
+    return {
+        "ok": True,
+        "kp_id": body.knowledge_point_id,
+        "count": len(body.questions),
+    }
+
+
 class KpVisualizersRequest(BaseModel):
     kp_id: str
     visualizers: list[str] = Field(default_factory=list, max_length=8)

@@ -99,6 +99,9 @@ class KnowledgePoint(BaseModel):
     # (e.g. "yuedu_function_explorer"). Surfaced to the tutor agent as a
     # manifest hint; empty for KPs without a bound interactive.
     visualizers: list[str] = Field(default_factory=list)
+    # 错题闭环题源: KP-bound question bank (meta["question_bank"] items +
+    # meta["bank_cursor"] rotation). Stored verbatim from the external QB.
+    meta: dict[str, Any] = Field(default_factory=dict)
     model_config = ConfigDict(extra="ignore")
 
     id: str

@@ -564,13 +564,6 @@ class MasteryQuizTool(BaseTool):
                 content="mastery_quiz needs knowledge_point_id, question, and expected_answer.",
                 success=False,
             )
-        try:
-            q_type, options, expected = _normalize_quiz_contract(
-                kwargs.get("question_type"), kwargs.get("options"), expected
-            )
-        except ValueError as exc:
-            return ToolResult(content=str(exc), success=False)
-
         service = _new_service()
         progress = _load_path(service, path_id)
         if progress is None:
@@ -581,6 +574,51 @@ class MasteryQuizTool(BaseTool):
                 content=f"Unknown objective {kp_id!r}; call mastery_status for valid ids.",
                 success=False,
             )
+        # 错题闭环题源: a KP-bound question bank always wins over the model's
+        # draft — the agent's call here acts as the trigger, but the question
+        # text, options, answer and explanation come verbatim from the bank
+        # (rotation via meta.bank_cursor). Empty-answer items stay strict:
+        # choice items must carry an answer or they are skipped.
+        bank = (kp.meta or {}).get("question_bank") or []
+        bank_note = ""
+        if bank:
+            cursor = int((kp.meta or {}).get("bank_cursor") or 0) % len(bank)
+            item = bank[cursor]
+            bank_question = str(item.get("question") or "").strip()
+            bank_answer = str(item.get("answer") or "").strip()
+            if bank_question and (bank_answer or item.get("question_type") != "choice"):
+                kp.meta["bank_cursor"] = cursor + 1
+                await asyncio.to_thread(service.save, progress)
+                kwargs["question"] = bank_question
+                kwargs["expected_answer"] = bank_answer
+                kwargs["question_type"] = str(item.get("question_type") or "choice")
+                option_map = item.get("options") or {}
+                kwargs["options"] = [
+                    f"{label}: {body}" for label, body in option_map.items()
+                ]
+                if item.get("explanation"):
+                    kwargs["explanation"] = str(item["explanation"])
+                if item.get("difficulty"):
+                    kwargs["difficulty"] = str(item["difficulty"])
+                bank_note = f"题源：挂载题库第 {cursor + 1}/{len(bank)} 题。"
+            else:
+                bank_note = "题源：挂载题库的当前项缺答案，本轮由你出一题。"
+            kwargs["bank_note"] = bank_note
+
+        question = str(kwargs.get("question") or "").strip()
+        expected = str(kwargs.get("expected_answer") or "").strip()
+        if not kp_id or not question or not expected:
+            return ToolResult(
+                content="mastery_quiz needs knowledge_point_id, question, and expected_answer.",
+                success=False,
+            )
+        try:
+            q_type, options, expected = _normalize_quiz_contract(
+                kwargs.get("question_type"), kwargs.get("options"), expected
+            )
+        except ValueError as exc:
+            return ToolResult(content=str(exc), success=False)
+
         pending = PendingQuestion(
             question_id=uuid.uuid4().hex,
             knowledge_point_id=kp_id,
