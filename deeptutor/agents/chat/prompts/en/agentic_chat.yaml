@@ -138,6 +138,8 @@ notices:
   image_fallback: "Model does not support image input; retrying without images."
   empty_final_response: "I could not produce a useful response from the model output. Please try again or narrow the request."
   empty_finish_nudged: "The round produced only internal reasoning; asked the model to continue."
+  capability_finish_rejected: "The model did not complete the required interactive step. Please retry the turn."
+  provider_retry: "The model provider connection was interrupted; retrying."
 
 empty:
   empty_reply: "(empty reply)"

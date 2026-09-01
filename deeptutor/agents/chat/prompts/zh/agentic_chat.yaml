@@ -104,6 +104,8 @@ notices:
   image_fallback: "当前模型不支持图片输入；将去除图片后重试。"
   empty_final_response: "未能从模型输出中得到有效回答。请重试或缩小问题范围。"
   empty_finish_nudged: "模型这一轮只有内部推理，已提示其继续执行。"
+  capability_finish_rejected: "模型未完成要求的交互步骤，请重试本轮。"
+  provider_retry: "模型服务连接中断，正在重试。"
 
 empty:
   empty_reply: "（空回复）"
