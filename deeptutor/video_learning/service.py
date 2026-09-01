@@ -733,6 +733,22 @@ def public_material(material: dict[str, Any], *, provider: str) -> dict[str, Any
             "subtitles_url": f"/api/v1/video-learning/materials/{payload['material_id']}/subtitles.vtt",
             "start_seconds": start,
         }
+    elif provider == "bilibili":
+        source_url = str(source.get("url") or "")
+        bvid = str((material.get("metadata") or {}).get("bvid") or "")
+        page = int((material.get("metadata") or {}).get("page") or 1)
+        if not bvid:
+            match = re.fullmatch(
+                r"https://www\.bilibili\.com/video/(BV[0-9A-Za-z]{10})", source_url
+            )
+            bvid = match.group(1) if match else ""
+        payload["playback"] = {
+            "provider": "bilibili",
+            "kind": "bilibili_iframe",
+            "bvid": bvid,
+            "page": page,
+            "start_seconds": start,
+        }
     else:
         payload["playback"] = {
             "provider": "youtube",
