@@ -344,9 +344,11 @@ def _kp_visualizer_manifest(path_id: str) -> str:
         if not rows:
             return ""
         return (
-            "[KP Visualizers]\n"
-            "Interactive visualizers bound to this path's knowledge points "
-            "(declarative YuEdu packages, reference by id):\n" + "\n".join(rows) + "\n"
+            "[KP Visualizers · 学件挂载]\n"
+            "以下知识点已绑定交互可视化学件（YuEdu 声明式包，按 id 引用）。"
+            "讲解释义这些知识点时，请主动建议学员打开对应学件，"
+            "并给出具体观察点（拖动什么参数、观察什么变化）：\n"
+            + "\n".join(rows) + "\n"
         )
     except Exception:
         logger.exception("Failed to build KP visualizer manifest for %s", path_id)
