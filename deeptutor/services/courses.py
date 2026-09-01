@@ -626,19 +626,26 @@ def get_course_service() -> CourseService:
     return CourseService()
 
 
-def workspace_courses_root(user_id: str) -> Path:
+def workspace_courses_root(user_id: str, *, is_admin: bool = False) -> Path:
     """Courses directory inside one specific user's workspace.
 
+    Path resolution mirrors ``multi_user.paths.scope_for_user`` — admins work
+    in the shared admin workspace root, everyone else in
+    ``USERS_ROOT/<uid>``. Getting this wrong silently reads an empty
+    workspace (the template-pool scan would never find the admin's courses).
     The request-scoped :func:`get_course_service` already points at the
     caller's own workspace; this resolves *another* user's so the copy
     endpoint can read a source course (the K12 teacher/admin template pool)
     and write into an approved target (e.g. a parent's child). Read paths
     only — writes go through a :class:`CourseService` built on this root.
     """
-    from deeptutor.multi_user.paths import USERS_ROOT
+    from deeptutor.multi_user.paths import USERS_ROOT, admin_scope
     from deeptutor.services.path_service import PathService
 
-    scope_root = (USERS_ROOT / user_id).resolve()
+    if is_admin:
+        scope_root = admin_scope().root
+    else:
+        scope_root = (USERS_ROOT / user_id).resolve()
     return PathService(workspace_root=scope_root).get_workspace_dir() / "courses"
 
 

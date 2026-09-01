@@ -130,9 +130,13 @@ class SetRoleRequest(BaseModel):
     @field_validator("role")
     @classmethod
     def role_valid(cls, v: str) -> str:
-        # 悦学 fork: 支持 admin/teacher/student/user 四角色
-        if v not in ("admin", "teacher", "student", "user"):
-            raise ValueError("Role must be 'admin', 'teacher', 'student' or 'user'")
+        # K12 fork: validate against the same whitelist the identity store
+        # enforces (admin/teacher/student/parent/user) — a hardcoded subset
+        # here would 422 the roles the store itself accepts.
+        from deeptutor.multi_user.models import VALID_ROLES
+
+        if v not in VALID_ROLES:
+            raise ValueError(f"Role must be one of {sorted(VALID_ROLES)}")
         return v
 
 

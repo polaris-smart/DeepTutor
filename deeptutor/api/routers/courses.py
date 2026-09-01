@@ -227,12 +227,16 @@ async def copy_course(
         for owner, record in read_user_store().items():
             if not isinstance(record, dict):
                 continue
-            if str(record.get("role") or "") not in ("teacher", "admin"):
+            owner_role = str(record.get("role") or "")
+            if owner_role not in ("teacher", "admin"):
                 continue
-            if str(record.get("id") or owner) == user_id:
+            owner_id = str(record.get("id") or owner)
+            if owner_id == user_id:
                 continue  # own workspace already tried above
             try:
-                source = CourseService(root=workspace_courses_root(str(record.get("id") or owner))).get(course_id)
+                source = CourseService(
+                    root=workspace_courses_root(owner_id, is_admin=owner_role == "admin")
+                ).get(course_id)
                 break
             except CourseNotFoundError:
                 continue
@@ -263,7 +267,10 @@ async def copy_course(
                 detail="You cannot copy a course into that account.",
             )
         target_service = CourseService(
-            root=workspace_courses_root(str(target_record.get("id") or target_username))
+            root=workspace_courses_root(
+                str(target_record.get("id") or target_username),
+                is_admin=str(target_record.get("role") or "") == "admin",
+            )
         )
 
     try:
