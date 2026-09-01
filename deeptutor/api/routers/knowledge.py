@@ -20,6 +20,7 @@ from uuid import uuid4
 from fastapi import (
     APIRouter,
     BackgroundTasks,
+    Depends,
     File,
     Form,
     HTTPException,
@@ -32,6 +33,8 @@ from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from deeptutor.api.utils.progress_broadcaster import ProgressBroadcaster
+from deeptutor.api.routers.auth import require_admin_or_teacher
+from deeptutor.services.auth import TokenPayload
 from deeptutor.api.utils.task_id_manager import TaskIDManager
 from deeptutor.api.utils.task_log_stream import capture_task_logs, get_task_stream_manager
 from deeptutor.knowledge.add_documents import DocumentAdder, remove_raw_document
@@ -1677,7 +1680,11 @@ async def get_kb_config(kb_name: str):
 
 
 @router.put("/{kb_name}/config")
-async def update_kb_config(kb_name: str, config: dict):
+async def update_kb_config(
+    kb_name: str,
+    config: dict,
+    _: TokenPayload = Depends(require_admin_or_teacher),
+):
     """Update configuration for a specific knowledge base."""
     try:
         from deeptutor.services.config import get_kb_config_service
@@ -2603,7 +2610,10 @@ async def delete_kb_file(kb_name: str, filename: str):
 
 
 @router.delete("/{kb_name}")
-async def delete_knowledge_base(kb_name: str):
+async def delete_knowledge_base(
+    kb_name: str,
+    _: TokenPayload = Depends(require_admin_or_teacher),
+):
     """Delete a knowledge base."""
     try:
         manager, resolved_name, _ = _writable_kb(kb_name)
@@ -2634,6 +2644,7 @@ async def stream_task_logs(task_id: str):
 async def upload_files(
     kb_name: str,
     background_tasks: BackgroundTasks,
+    _: TokenPayload = Depends(require_admin_or_teacher),
     files: list[UploadFile] = File(...),
     rag_provider: str = Form(None),
     rel_paths: list[str] = Form(None),
@@ -2723,6 +2734,7 @@ async def upload_files(
 @router.post("/create")
 async def create_knowledge_base(
     background_tasks: BackgroundTasks,
+    _: TokenPayload = Depends(require_admin_or_teacher),
     name: str = Form(...),
     files: list[UploadFile] = File(default=[]),
     group: str = Form(""),
@@ -3050,6 +3062,7 @@ async def run_reindex_task(kb_name: str, base_dir: str, task_id: str, signature_
 async def reindex_knowledge_base(
     kb_name: str,
     background_tasks: BackgroundTasks,
+    _: TokenPayload = Depends(require_admin_or_teacher),
 ):
     """Re-index ``kb_name`` through its bound RAG provider.
 
