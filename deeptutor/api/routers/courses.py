@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from deeptutor.api.routers.auth import require_auth
+from deeptutor.multi_user.classes import read_user_store
+from deeptutor.services.auth import TokenPayload
 from deeptutor.services.courses import (
     COURSE_COLORS,
     CourseNameConflictError,
     CourseNotFoundError,
     CourseResourceNotFoundError,
+    CourseService,
+    StudyCourse,
     UnknownResourceKindError,
     get_course_service,
+    workspace_courses_root,
 )
 from deeptutor.services.courses_state import (
     build_course_resource_candidates,
@@ -64,6 +70,11 @@ class AttachCourseResourceRequest(BaseModel):
     kind: str
     ref_id: str
     label: str = ""
+
+
+class CopyCourseRequest(BaseModel):
+    name: str = Field(default="", min_length=1, max_length=60)
+    target_username: str = Field(default="", max_length=80)
 
 
 @router.get("")
@@ -184,6 +195,95 @@ async def detach_course_resource(course_id: str, resource_id: str) -> dict[str, 
     except CourseResourceNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Course resource not found") from exc
     return {"deleted": True}
+
+
+@router.post("/{course_id}/copy")
+async def copy_course(
+    course_id: str,
+    payload: CopyCourseRequest,
+    current: TokenPayload | None = Depends(require_auth),
+) -> dict[str, object]:
+    """Copy a course as a fresh per-user instance (K12 课程复制).
+
+    Sources: the caller's own workspace, or any teacher/admin account's
+    workspace — the shared template pool (老师协同: each teacher copies a
+    course and adapts their own instance). Targets: the caller by default;
+    an admin may target any account, a parent one of their recorded
+    children (多孩子各得一份). The copy resets syllabus progress, never
+    carries agent notes, and re-attaches resource references.
+    """
+    requester = str(getattr(current, "username", "") or "") if current is not None else ""
+    role = str(getattr(current, "role", "") or "") if current is not None else ""
+    service = get_course_service()
+
+    source: StudyCourse | None = None
+    try:
+        source = service.get(course_id)
+    except CourseNotFoundError:
+        source = None
+    if source is None and current is not None:
+        # Staff pool scan: any teacher/admin account's workspace, read-only.
+        user_id = str(getattr(current, "user_id", "") or "")
+        for owner, record in read_user_store().items():
+            if not isinstance(record, dict):
+                continue
+            if str(record.get("role") or "") not in ("teacher", "admin"):
+                continue
+            if str(record.get("id") or owner) == user_id:
+                continue  # own workspace already tried above
+            try:
+                source = CourseService(root=workspace_courses_root(str(record.get("id") or owner))).get(course_id)
+                break
+            except CourseNotFoundError:
+                continue
+    if source is None:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    target_username = payload.target_username.strip()
+    if current is None:
+        # AUTH_ENABLED=false: the single local operator; self-copy only.
+        target_username = ""
+    if target_username in ("", requester):
+        target_service = service
+    else:
+        store = read_user_store()
+        target_record = store.get(target_username)
+        if not isinstance(target_record, dict):
+            raise HTTPException(status_code=404, detail="Target account not found")
+        allowed = role == "admin"
+        if role == "parent":
+            me = store.get(requester)
+            children = me.get("children") if isinstance(me, dict) else None
+            allowed = isinstance(children, list) and target_username in {
+                str(child) for child in children
+            }
+        if not allowed:
+            raise HTTPException(
+                status_code=403,
+                detail="You cannot copy a course into that account.",
+            )
+        target_service = CourseService(
+            root=workspace_courses_root(str(target_record.get("id") or target_username))
+        )
+
+    try:
+        course = target_service.copy(source, name=payload.name, copied_from=source.id)
+    except CourseNameConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    for resource in source.resources:
+        try:
+            target_service.attach_resource(
+                course.id, kind=resource.kind, ref_id=resource.ref_id, label=resource.label
+            )
+        except (ValueError, UnknownResourceKindError):
+            # Fail-soft: a reference the target cannot keep never blocks the copy.
+            continue
+    # Re-read so the response carries the re-attached resources, not the
+    # pre-attach snapshot ``copy()`` returned.
+    course = target_service.get(course.id)
+    return {"course": course.to_dict()}
 
 
 @router.get("/{course_id}/state")

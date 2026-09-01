@@ -19,7 +19,7 @@ Conversations are the one deliberate exception: they carry
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 import json
 from pathlib import Path
 import threading
@@ -158,6 +158,10 @@ class StudyCourse:
     status: str = "active"
     #: When it was archived, so a review can state the span it covers.
     archived_at: float = 0.0
+    #: ``id`` of the course this instance was copied from (K12 课程模板:
+    #: 老师协同 / 家长多孩子各得一份). Empty when the course was created
+    #: from scratch. Provenance only — the copy never tracks its source.
+    copied_from: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -312,6 +316,7 @@ class CourseService:
                         else "active"
                     ),
                     archived_at=float(row.get("archived_at") or 0.0),
+                    copied_from=str(row.get("copied_from") or ""),
                 )
             )
         return courses
@@ -364,6 +369,46 @@ class CourseService:
                 instructions=_clip(instructions, INSTRUCTIONS_LIMIT),
                 default_capability=str(default_capability or "").strip()[:64],
                 default_persona=str(default_persona or "").strip()[:80],
+            )
+            courses.append(course)
+            self._save(courses)
+            return course
+
+    def copy(
+        self,
+        source: StudyCourse,
+        *,
+        name: str = "",
+        copied_from: str = "",
+    ) -> StudyCourse:
+        """Clone a course (usually from another user's workspace) as a fresh
+        instance in this store.
+
+        The copy carries the teaching preset — description, conventions,
+        default capability/persona, syllabus and (via the caller re-attaching
+        them) resource references — but none of the learning state: syllabus
+        ``covered`` flags reset so the new learner starts from zero, and
+        ``agent_notes`` is never copied (the assistant's read on one learner
+        says nothing about another). Resources are re-attached by the caller
+        so ids/positions regenerate and unresolvable references fail soft.
+        """
+        with self._lock:
+            courses = self._load()
+            clean_name = self._clean_name(name or source.name)
+            self._assert_unique(courses, clean_name)
+            now = time.time()
+            course = StudyCourse(
+                id=f"course_{uuid.uuid4().hex[:12]}",
+                name=clean_name,
+                description=source.description,
+                color=self._clean_color(source.color, len(courses)),
+                created_at=now,
+                updated_at=now,
+                instructions=source.instructions,
+                default_capability=source.default_capability,
+                default_persona=source.default_persona,
+                syllabus=[replace(unit, covered=False) for unit in source.syllabus],
+                copied_from=copied_from or source.id,
             )
             courses.append(course)
             self._save(courses)
@@ -579,6 +624,22 @@ class CourseService:
 
 def get_course_service() -> CourseService:
     return CourseService()
+
+
+def workspace_courses_root(user_id: str) -> Path:
+    """Courses directory inside one specific user's workspace.
+
+    The request-scoped :func:`get_course_service` already points at the
+    caller's own workspace; this resolves *another* user's so the copy
+    endpoint can read a source course (the K12 teacher/admin template pool)
+    and write into an approved target (e.g. a parent's child). Read paths
+    only — writes go through a :class:`CourseService` built on this root.
+    """
+    from deeptutor.multi_user.paths import USERS_ROOT
+    from deeptutor.services.path_service import PathService
+
+    scope_root = (USERS_ROOT / user_id).resolve()
+    return PathService(workspace_root=scope_root).get_workspace_dir() / "courses"
 
 
 __all__ = [
