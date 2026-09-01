@@ -33,8 +33,24 @@ from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from deeptutor.api.utils.progress_broadcaster import ProgressBroadcaster
-from deeptutor.api.routers.auth import require_admin_or_teacher
+from deeptutor.api.routers.auth import require_admin_or_teacher, require_auth
 from deeptutor.services.auth import TokenPayload
+
+
+async def require_kb_writer(
+    payload: TokenPayload = Depends(require_auth),
+) -> TokenPayload:
+    """KB content writer: admin/teacher always; parent admitted as family
+    material manager (家长资料直通，老板 09-01 拍板). students never write."""
+    from deeptutor.multi_user.models import normalize_role
+
+    role = normalize_role(str(getattr(payload, "role", "") or ""))
+    if role not in ("admin", "teacher", "parent"):
+        raise HTTPException(
+            status_code=403,
+            detail="KB content upload requires admin, teacher or parent access.",
+        )
+    return payload
 from deeptutor.api.utils.task_id_manager import TaskIDManager
 from deeptutor.api.utils.task_log_stream import capture_task_logs, get_task_stream_manager
 from deeptutor.knowledge.add_documents import DocumentAdder, remove_raw_document
@@ -2644,7 +2660,7 @@ async def stream_task_logs(task_id: str):
 async def upload_files(
     kb_name: str,
     background_tasks: BackgroundTasks,
-    _: TokenPayload = Depends(require_admin_or_teacher),
+    _: TokenPayload = Depends(require_kb_writer),
     files: list[UploadFile] = File(...),
     rag_provider: str = Form(None),
     rel_paths: list[str] = Form(None),

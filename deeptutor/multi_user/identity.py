@@ -80,6 +80,12 @@ def _canonical_record(
     }
     if "book_permission" in value:
         record["book_permission"] = canonical_book_permission(value.get("book_permission"))
+    # K12: parent → children username list (family linkage, read by the
+    # parent insights view). Only stored for parent-role accounts.
+    if role == "parent" and isinstance(value.get("children"), list):
+        children = [str(c) for c in value["children"] if str(c).strip()]
+        if children:
+            record["children"] = children
     return record
 
 
