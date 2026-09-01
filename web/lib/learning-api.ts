@@ -68,6 +68,8 @@ export interface MapKnowledgePoint {
   mastery: number;
   mastery_source: "system" | "learner" | "";
   override_note: string;
+  /** M4 学件挂载: bound YuEdu visualizer ids (may be absent on old data). */
+  visualizers?: string[];
 }
 
 export interface MapModule {
