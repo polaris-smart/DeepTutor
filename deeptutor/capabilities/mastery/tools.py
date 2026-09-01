@@ -414,6 +414,35 @@ class MasteryStatusTool(BaseTool):
             "next": next_objective(progress).to_dict(),
             "map": map_summary(progress),
         }
+        # 错题视图: open (not yet graduated) error records, newest first. The
+        # full lifecycle (record → attributate → retry → graduated) already
+        # lives on the path; surfacing it here lets the tutor weave retry
+        # loops into the lesson instead of waiting for the review queue.
+        open_errors = sorted(
+            (e for e in progress.error_records if e.status != "graduated"),
+            key=lambda e: e.created_at,
+            reverse=True,
+        )
+        if open_errors:
+            payload["wrong_items"] = [
+                {
+                    "id": e.id,
+                    "knowledge_point_id": e.knowledge_point_id,
+                    "error_type": (
+                        e.error_type.value if hasattr(e.error_type, "value") else str(e.error_type)
+                    ),
+                    "self_attribution": e.self_attribution,
+                    "status": e.status,
+                    "retries": len(e.retry_history),
+                }
+                for e in open_errors[:10]
+            ]
+            payload["wrong_open_count"] = len(open_errors)
+            payload["wrong_instruction"] = (
+                "There are un-cleared wrong answers. When the current objective's "
+                "work naturally touches one of these knowledge points, re-quiz it "
+                "(mastery_quiz) and grade it — a correct retry graduates the record."
+            )
         interaction = service.store.get_active_interaction(path_id)
         if interaction is not None:
             pending_interaction = {
