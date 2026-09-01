@@ -12,7 +12,7 @@
 
 import Link from "next/link";
 import { useTranslation } from "react-i18next";
-import { BookOpen, FileSpreadsheet, GraduationCap, Crosshair, BookMarked } from "lucide-react";
+import { BookOpen, FileSpreadsheet, GraduationCap, Crosshair, BookMarked, Users } from "lucide-react";
 import { useAuthStatus } from "@/hooks/useAuthStatus";
 
 export default function HomeRoleChips({
@@ -23,10 +23,44 @@ export default function HomeRoleChips({
   const { i18n } = useTranslation();
   const zh = i18n.language?.toLowerCase().startsWith("zh");
   const { role } = useAuthStatus();
-  if (role !== "teacher" && role !== "admin" && role !== "student") return null;
+  if (
+    role !== "teacher" &&
+    role !== "admin" &&
+    role !== "student" &&
+    role !== "parent"
+  )
+    return null;
 
   const chipClass =
     "inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--card)] px-3.5 py-1.5 text-[13px] text-[var(--muted-foreground)] transition-colors hover:border-teal-500/40 hover:text-[var(--foreground)]";
+
+  if (role === "parent") {
+    // 家长视角：家庭学情（children 白名单视图）+ 互动课件入口。
+    const parentChips = [
+      {
+        key: "family",
+        icon: <Users size={13} />,
+        label: zh ? "我的孩子" : "My children",
+        href: "/family",
+      },
+      {
+        key: "book",
+        icon: <BookMarked size={13} />,
+        label: zh ? "互动课件" : "Interactive books",
+        href: "/book",
+      },
+    ];
+    return (
+      <div className="mb-6 flex w-full max-w-[960px] flex-wrap items-center justify-center gap-2">
+        {parentChips.map((chip) => (
+          <Link key={chip.key} href={chip.href} className={chipClass}>
+            {chip.icon}
+            {chip.label}
+          </Link>
+        ))}
+      </div>
+    );
+  }
 
   const isTeacher = role === "teacher" || role === "admin";
   const chips = isTeacher

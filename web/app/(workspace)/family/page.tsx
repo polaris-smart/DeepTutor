@@ -4,19 +4,17 @@ import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useTranslation } from "react-i18next";
-import { ArrowLeft, GraduationCap, RefreshCw, Users } from "lucide-react";
+import { ArrowLeft, Home, RefreshCw, Users } from "lucide-react";
 import { fetchAuthStatus } from "@/lib/auth";
 import {
-  fetchClassInsights,
-  fetchClassRosters,
+  fetchMyChildren,
   type ClassInsightsOverview,
-  type ClassRoster,
 } from "@/lib/class-insights-api";
 import { formatDate as formatLocaleDate, type Language } from "@/lib/datetime";
 
-// Teacher-facing roles for the class insights page; students are redirected
-// away at the route level (the backend enforces the same gate with 403).
-const ALLOWED_ROLES = new Set(["admin", "teacher"]);
+// 家庭视图：家长（children 白名单）与 admin（全体，运维复用）。学生/教师 403，
+// 与后端 /class-insights/my-children 门禁一致。
+const ALLOWED_ROLES = new Set(["admin", "parent"]);
 
 type Tier = "good" | "warn" | "bad";
 
@@ -48,30 +46,25 @@ function formatActive(iso: string | null, lang: Language): string {
   }
 }
 
-export default function AdminClassInsightsPage() {
+export default function FamilyInsightsPage() {
   const router = useRouter();
   const { t, i18n } = useTranslation();
   const lang: Language = i18n.language?.startsWith("zh") ? "zh" : "en";
   const [overview, setOverview] = useState<ClassInsightsOverview | null>(null);
-  const [rosters, setRosters] = useState<ClassRoster[]>([]);
-  const [selectedClass, setSelectedClass] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const load = useCallback(
-    async (classId: string = "") => {
-      setLoading(true);
-      setError("");
-      try {
-        setOverview(await fetchClassInsights(classId || undefined));
-      } catch (e) {
-        setError(e instanceof Error ? e.message : t("Failed to load class insights"));
-      } finally {
-        setLoading(false);
-      }
-    },
-    [t],
-  );
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      setOverview(await fetchMyChildren());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("Failed to load family insights"));
+    } finally {
+      setLoading(false);
+    }
+  }, [t]);
 
   useEffect(() => {
     fetchAuthStatus().then((status) => {
@@ -83,21 +76,12 @@ export default function AdminClassInsightsPage() {
         router.replace("/");
         return;
       }
-      // K12 班级过滤：rosters load failure must not block the flat view.
-      fetchClassRosters()
-        .then((r) => setRosters(r.classes))
-        .catch(() => setRosters([]));
       void load();
     });
   }, [router, load]);
 
-  const selectClass = (classId: string) => {
-    setSelectedClass(classId);
-    void load(classId);
-  };
-
-  const students = overview?.students ?? [];
-  const sorted = [...students].sort(
+  const children = overview?.students ?? [];
+  const sorted = [...children].sort(
     (a, b) => a.avg_mastery_pct - b.avg_mastery_pct,
   );
 
@@ -116,42 +100,23 @@ export default function AdminClassInsightsPage() {
           <div className="flex items-start justify-between gap-4">
             <div>
               <h1 className="font-serif text-xl font-semibold text-[var(--foreground)]">
-                {t("Class Insights")}
+                {t("My Children")}
               </h1>
               <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">
-                {overview?.class?.name ?? t("Per-student mastery overview")}
+                {t("Per-child mastery overview")}
               </p>
             </div>
-            <div className="flex items-center gap-2">
-              {rosters.length > 0 && (
-                <select
-                  value={selectedClass}
-                  onChange={(e) => selectClass(e.target.value)}
-                  className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-2.5 py-1.5
-                             text-sm text-[var(--foreground)] outline-none transition-colors
-                             hover:border-teal-500/40 focus:border-teal-500/60"
-                  aria-label={t("Filter by class")}
-                >
-                  <option value="">{t("All students")}</option>
-                  {rosters.map((roster) => (
-                    <option key={roster.id} value={roster.id}>
-                      {roster.name}
-                    </option>
-                  ))}
-                </select>
-              )}
-              <button
-                onClick={() => load(selectedClass)}
-                disabled={loading}
-                className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm
-                           border border-[var(--border)] text-[var(--muted-foreground)]
-                           hover:text-[var(--foreground)] hover:bg-[var(--card)]
-                           disabled:opacity-50 transition-colors"
-              >
-                <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
-                {t("Refresh")}
-              </button>
-            </div>
+            <button
+              onClick={load}
+              disabled={loading}
+              className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm
+                         border border-[var(--border)] text-[var(--muted-foreground)]
+                         hover:text-[var(--foreground)] hover:bg-[var(--card)]
+                         disabled:opacity-50 transition-colors"
+            >
+              <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+              {t("Refresh")}
+            </button>
           </div>
         </div>
 
@@ -164,7 +129,7 @@ export default function AdminClassInsightsPage() {
         <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] overflow-hidden shadow-sm">
           {loading ? (
             <div className="divide-y divide-[var(--border)]" aria-hidden>
-              {[0, 1, 2].map((row) => (
+              {[0, 1].map((row) => (
                 <div
                   key={row}
                   className="flex animate-pulse items-center gap-3 px-5 py-4"
@@ -179,23 +144,23 @@ export default function AdminClassInsightsPage() {
             </div>
           ) : !error && sorted.length === 0 ? (
             <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
-              <Users
+              <Home
                 size={28}
                 strokeWidth={1.5}
                 className="text-[var(--muted-foreground)]/50"
               />
               <p className="mt-3 text-sm font-medium text-[var(--foreground)]">
-                {t("No students yet")}
+                {t("No children linked yet")}
               </p>
               <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-                {t("Students with learning progress will appear here.")}
+                {t("Children linked to your account will appear here.")}
               </p>
             </div>
           ) : (
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-[var(--border)] text-left text-xs text-[var(--muted-foreground)] uppercase tracking-wider">
-                  <th className="px-5 py-3 font-medium">{t("Student")}</th>
+                  <th className="px-5 py-3 font-medium">{t("Child")}</th>
                   <th className="px-5 py-3 font-medium text-center">
                     {t("KP Total")}
                   </th>
@@ -209,11 +174,11 @@ export default function AdminClassInsightsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-[var(--border)]">
-                {sorted.map((student) => {
-                  const tier = tierOf(student.avg_mastery_pct);
+                {sorted.map((child) => {
+                  const tier = tierOf(child.avg_mastery_pct);
                   return (
                     <tr
-                      key={student.username}
+                      key={child.username}
                       className="group hover:bg-[var(--background)]/50 transition-colors"
                     >
                       <td className="px-5 py-3">
@@ -223,46 +188,50 @@ export default function AdminClassInsightsPage() {
                             aria-hidden
                           />
                           <span className="min-w-0 truncate font-medium text-[var(--foreground)]">
-                            {student.username}
+                            {child.username}
                           </span>
                         </div>
                       </td>
                       <td className="px-5 py-3 text-center text-[var(--muted-foreground)]">
-                        {student.no_data ? (
-                          <span
-                            className="inline-flex items-center rounded-full bg-[var(--muted)]/60 px-2 py-0.5 text-xs text-[var(--muted-foreground)]"
-                          >
+                        {child.no_data ? (
+                          <span className="inline-flex items-center rounded-full bg-[var(--muted)]/60 px-2 py-0.5 text-xs text-[var(--muted-foreground)]">
                             {t("No learning data yet")}
                           </span>
                         ) : (
-                          student.kp_total
+                          child.kp_total
                         )}
                       </td>
                       <td className="px-5 py-3">
-                        <div className="flex items-center gap-2">
-                          <div className="h-2 w-28 overflow-hidden rounded-full bg-[var(--muted)]/50">
-                            <div
-                              className={`h-full rounded-full ${TIER_BAR[tier]}`}
-                              style={{
-                                width: `${Math.min(100, student.avg_mastery_pct)}%`,
-                              }}
-                            />
+                        {child.no_data ? (
+                          <span className="text-xs text-[var(--muted-foreground)]">—</span>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <div className="h-2 w-28 overflow-hidden rounded-full bg-[var(--muted)]/50">
+                              <div
+                                className={`h-full rounded-full ${TIER_BAR[tier]}`}
+                                style={{
+                                  width: `${Math.min(100, child.avg_mastery_pct)}%`,
+                                }}
+                              />
+                            </div>
+                            <span
+                              className={`w-10 shrink-0 text-xs font-medium tabular-nums ${TIER_TEXT[tier]}`}
+                            >
+                              {child.avg_mastery_pct}%
+                            </span>
                           </div>
-                          <span
-                            className={`w-10 shrink-0 text-xs font-medium tabular-nums ${TIER_TEXT[tier]}`}
-                          >
-                            {student.avg_mastery_pct}%
-                          </span>
-                        </div>
+                        )}
                       </td>
                       <td className="px-5 py-3">
-                        {student.weak.length === 0 ? (
+                        {child.no_data || child.weak.length === 0 ? (
                           <span className="text-xs text-[var(--muted-foreground)]">
-                            {t("No weak knowledge points")}
+                            {child.no_data
+                              ? t("No learning data yet")
+                              : t("No weak knowledge points")}
                           </span>
                         ) : (
                           <div className="flex max-w-xs flex-wrap gap-1">
-                            {student.weak.slice(0, 5).map((kp) => (
+                            {child.weak.slice(0, 5).map((kp) => (
                               <span
                                 key={kp.kp_id}
                                 title={kp.name}
@@ -276,16 +245,16 @@ export default function AdminClassInsightsPage() {
                                 </span>
                               </span>
                             ))}
-                            {student.weak.length > 5 && (
+                            {child.weak.length > 5 && (
                               <span className="text-xs text-[var(--muted-foreground)]">
-                                +{student.weak.length - 5}
+                                +{child.weak.length - 5}
                               </span>
                             )}
                           </div>
                         )}
                       </td>
                       <td className="px-5 py-3 text-[var(--muted-foreground)]">
-                        {formatActive(student.last_active, lang)}
+                        {formatActive(child.last_active, lang)}
                       </td>
                     </tr>
                   );
@@ -297,7 +266,7 @@ export default function AdminClassInsightsPage() {
 
         {overview && (
           <p className="mt-4 flex items-center justify-center gap-1.5 text-xs text-[var(--muted-foreground)]">
-            <GraduationCap size={13} />
+            <Users size={13} />
             {t("Generated at {{time}}", {
               time: formatActive(overview.generated_at, lang),
             })}
