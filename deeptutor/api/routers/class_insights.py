@@ -24,10 +24,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 
 from deeptutor.api.routers.auth import require_admin_or_teacher, require_auth
 from deeptutor.learning.models import LearningProgress
 from deeptutor.learning.policy import display_mastery, is_mastered
+from deeptutor.multi_user import classes as rosters
 from deeptutor.services.auth import TokenPayload
 
 logger = logging.getLogger(__name__)
@@ -39,26 +41,10 @@ _WEAK_MASTERY_ROUND = 3
 
 
 def _read_user_store() -> dict:
-    """Read the account store as JSON without writing anything.
-
-    Prefers the canonical ``data/system/auth/users.json``; falls back to the
-    legacy ``data/user/auth_users.json``. Malformed stores log and return
-    empty — fail-open, never raising.
-    """
-    from deeptutor.multi_user.identity import LEGACY_USERS_FILE, USERS_FILE
-
-    for path in (USERS_FILE, LEGACY_USERS_FILE):
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            continue
-        except (OSError, json.JSONDecodeError) as exc:
-            logger.warning("Class insights: unreadable user store %s: %s", path, exc)
-            continue
-        if isinstance(loaded, dict):
-            return loaded
-        logger.warning("Class insights: user store %s is not a JSON object", path)
-    return {}
+    """Raw fail-open account-store read (single implementation lives in
+    :mod:`deeptutor.multi_user.classes` so rosters and insights can never
+    drift apart on how records are read)."""
+    return rosters.read_user_store()
 
 
 def _student_accounts() -> list[tuple[str, str]]:
@@ -184,29 +170,154 @@ def _aggregate_student(username: str, user_id: str) -> dict | None:
 
 @router.get("/overview")
 async def class_overview(
-    _: TokenPayload = Depends(require_admin_or_teacher),
+    current: TokenPayload = Depends(require_admin_or_teacher),
+    class_id: str | None = None,
 ) -> dict:
     """Return the per-student mastery aggregation for all student accounts.
 
     Students are ordered by average mastery (weakest first) so the class's
     at-risk learners surface at the top. ``generated_at`` is the server-side
     ISO timestamp of the snapshot.
+
+    ``class_id`` narrows the view to one roster (K12 班级). A filtered view
+    uses whitelist semantics: every rostered student appears, including a
+    ``no_data`` placeholder when they have no learning data yet — a missing
+    roster member is an anomaly signal, while the unfiltered flat view keeps
+    skipping dataless students. Teachers may only filter by their own class.
     """
+    class_record: dict | None = None
+    if class_id:
+        role = str(getattr(current, "role", "") or "")
+        username = str(getattr(current, "username", "") or "")
+        class_record = rosters.get_class(class_id)
+        if class_record is None:
+            raise HTTPException(status_code=404, detail="Class not found.")
+        if role != "admin" and str(class_record.get("teacher") or "") != username:
+            raise HTTPException(
+                status_code=403, detail="You can only view your own classes."
+            )
+        store = _read_user_store()
+        targets = [
+            (name, str(store.get(name, {}).get("id") or name))
+            for name in rosters.resolve_roster_live(class_record, store)
+        ]
+    else:
+        targets = _student_accounts()
+
     students: list[dict] = []
-    for username, user_id in _student_accounts():
+    for username, user_id in targets:
         try:
             student = _aggregate_student(username, user_id)
         except Exception as exc:  # noqa: BLE001 - one broken student must not kill the class
             logger.warning("Class insights: skipped student %r: %s", username, exc)
             continue
+        if student is None and class_record is not None:
+            # 班级视图白名单语义：花名册在册但还没有学习数据的学生也要出现，
+            # 与 /my-children 的家庭视图一致；平铺视图跳过无数据学生不变。
+            student = {
+                "username": username,
+                "kp_total": 0,
+                "avg_mastery_pct": 0,
+                "weak": [],
+                "last_active": None,
+                "no_data": True,
+            }
         if student is not None:
             students.append(student)
 
     students.sort(key=lambda student: (student["avg_mastery_pct"], student["username"]))
-    return {
+    response: dict = {
         "students": students,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
+    if class_record is not None:
+        response["class"] = {
+            "id": class_id,
+            "name": str(class_record.get("name") or ""),
+        }
+    return response
+
+
+class ClassCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=rosters.MAX_NAME_CHARS)
+    students: list[str] = Field(default_factory=list, max_length=rosters.MAX_STUDENTS)
+
+
+class ClassUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=rosters.MAX_NAME_CHARS)
+    students: list[str] | None = Field(default=None, max_length=rosters.MAX_STUDENTS)
+
+
+def _roster_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, rosters.ClassNotFoundError):
+        return HTTPException(status_code=404, detail="Class not found.")
+    if isinstance(exc, rosters.ClassForbiddenError):
+        return HTTPException(status_code=403, detail="You can only manage your own classes.")
+    return HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/classes")
+async def list_classes(
+    current: TokenPayload = Depends(require_admin_or_teacher),
+) -> dict:
+    """List class rosters — a teacher sees their own, an admin sees all."""
+    role = str(getattr(current, "role", "") or "")
+    username = str(getattr(current, "username", "") or "")
+    teacher = None if role == "admin" else username
+    return {"classes": rosters.list_classes(teacher=teacher)}
+
+
+@router.post("/classes")
+async def create_class(
+    body: ClassCreateRequest,
+    current: TokenPayload = Depends(require_admin_or_teacher),
+) -> dict:
+    """Create a class roster owned by the current teacher (or admin)."""
+    username = str(getattr(current, "username", "") or "")
+    try:
+        record = rosters.create_class(
+            name=body.name, teacher=username, students=body.students
+        )
+    except rosters.ClassRosterError as exc:
+        raise _roster_http_error(exc) from exc
+    return {"class": record}
+
+
+@router.put("/classes/{class_id}")
+async def update_class(
+    class_id: str,
+    body: ClassUpdateRequest,
+    current: TokenPayload = Depends(require_admin_or_teacher),
+) -> dict:
+    """Rename a class and/or replace its roster (owner or admin)."""
+    role = str(getattr(current, "role", "") or "")
+    username = str(getattr(current, "username", "") or "")
+    try:
+        record = rosters.update_class(
+            class_id,
+            caller=username,
+            is_admin=role == "admin",
+            name=body.name,
+            students=body.students,
+        )
+    except (rosters.ClassRosterError, rosters.ClassNotFoundError, rosters.ClassForbiddenError) as exc:
+        raise _roster_http_error(exc) from exc
+    return {"class": record}
+
+
+@router.delete("/classes/{class_id}")
+async def delete_class(
+    class_id: str,
+    current: TokenPayload = Depends(require_admin_or_teacher),
+) -> dict:
+    """Delete a class roster (owner or admin). Accounts are never touched."""
+    role = str(getattr(current, "role", "") or "")
+    username = str(getattr(current, "username", "") or "")
+    try:
+        rosters.delete_class(class_id, caller=username, is_admin=role == "admin")
+    except (rosters.ClassNotFoundError, rosters.ClassForbiddenError) as exc:
+        raise _roster_http_error(exc) from exc
+    return {"ok": True}
 
 
 @router.get("/my-children")

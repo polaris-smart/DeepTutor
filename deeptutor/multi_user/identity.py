@@ -249,6 +249,15 @@ def save_user(username: str, hashed_password: str, role: Role = "user") -> dict[
             "avatar": str(existing.get("avatar") or ""),
             "book_permission": canonical_book_permission(existing.get("book_permission")),
         }
+        # K12: save_user rebuilds the record from scratch, so the parent →
+        # children linkage must be carried over explicitly — dropping it would
+        # silently detach the family insights view on the next password
+        # (re)set. Only kept on parent-role records, matching the
+        # canonicalizer's whitelist.
+        if effective_role == "parent" and isinstance(existing.get("children"), list):
+            children = [str(c) for c in existing["children"] if str(c).strip()]
+            if children:
+                record["children"] = children
         users[username] = record
         _write_users(users)
     return record

@@ -33,17 +33,27 @@ from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from deeptutor.api.utils.progress_broadcaster import ProgressBroadcaster
-from deeptutor.api.routers.auth import require_admin_or_teacher, require_auth
+from deeptutor.api.routers.auth import (
+    _local_admin_token_payload,
+    require_admin_or_teacher,
+    require_auth,
+)
 from deeptutor.services.auth import TokenPayload
 
 
 async def require_kb_writer(
-    payload: TokenPayload = Depends(require_auth),
+    payload: TokenPayload | None = Depends(require_auth),
 ) -> TokenPayload:
     """KB content writer: admin/teacher always; parent admitted as family
     material manager (家长资料直通，老板 09-01 拍板). students never write."""
     from deeptutor.multi_user.models import normalize_role
 
+    if payload is None:
+        # require_auth yields None only when AUTH_ENABLED=false: the local
+        # single-user operator is the owner, same contract as
+        # require_admin_or_teacher (without this branch the normalized
+        # "user" role 403'd every local upload).
+        return _local_admin_token_payload()
     role = normalize_role(str(getattr(payload, "role", "") or ""))
     if role not in ("admin", "teacher", "parent"):
         raise HTTPException(
