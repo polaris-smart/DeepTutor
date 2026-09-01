@@ -20,7 +20,7 @@ import httpx
 from deeptutor.multi_user.paths import get_admin_path_service, get_current_path_service
 from deeptutor.services.file_io import atomic_write_json
 
-ProviderName = Literal["youtube", "invidious"]
+ProviderName = Literal["youtube", "invidious", "bilibili"]
 MAX_TRANSCRIPT_CUES = 20_000
 MAX_TRANSCRIPT_BYTES = 2 * 1024 * 1024
 MIN_SEGMENT_SECONDS = 20
@@ -63,6 +63,7 @@ DEFAULT_VIDEO_LEARNING_SETTINGS: dict[str, Any] = {
     "default_provider": "youtube",
     "youtube": {"transcript_provider": "youtube_transcript_api"},
     "invidious": {"api_base_url": "", "public_base_url": ""},
+    "bilibili": {"cc_cookie": ""},
 }
 
 
@@ -97,6 +98,54 @@ def parse_youtube_url(value: str) -> YouTubeRequest:
     canonical_query = urlencode({"t": entry}) if entry else ""
     canonical = urlunparse(("https", "youtu.be", f"/{video_id}", "", canonical_query, ""))
     return YouTubeRequest(video_id, canonical, entry)
+
+
+BILIBILI_HOSTS = {"bilibili.com", "www.bilibili.com", "m.bilibili.com"}
+BILIBILI_ID_RE = re.compile(r"^BV[0-9A-Za-z]{10}$", re.IGNORECASE)
+
+
+@dataclass(frozen=True, slots=True)
+class BilibiliRequest:
+    bvid: str
+    page: int
+    canonical_url: str
+    entry_time_seconds: int = 0
+
+    @property
+    def video_id(self) -> str:
+        """Duck-type alias so the shared resolve pipeline treats it uniformly."""
+        return f"{self.bvid}-p{self.page}"
+
+
+def parse_bilibili_url(value: str) -> BilibiliRequest:
+    """Parse a Bilibili video URL into ``(bvid, page)``.
+
+    Accepts ``bilibili.com/video/BVxxxx`` (optional ``?p=N`` for multi-page
+    videos) and the ``b23.tv`` shortener. The entry timestamp is accepted for
+    interface parity but Bilibili embeds start at the page head.
+    """
+    parsed = urlparse((value or "").strip().strip("`" + chr(39) + chr(34)))
+    if parsed.scheme not in {"http", "https"}:
+        raise TimedMediaError("Bilibili URL must use HTTP or HTTPS.")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    query = parse_qs(parsed.query)
+    bvid = ""
+    if host == "b23.tv":
+        bvid = parsed.path.strip("/").split("/", 1)[0]
+    elif host in BILIBILI_HOSTS:
+        match = re.fullmatch(r"/video/(BV[0-9A-Za-z]{10})/?", parsed.path)
+        if match:
+            bvid = match.group(1)
+        elif host == "player.bilibili.com" and parsed.path.rstrip("/") == "/player.html":
+            bvid = query.get("bvid", [""])[0]
+    if not BILIBILI_ID_RE.fullmatch(bvid):
+        raise TimedMediaError("Unsupported or invalid Bilibili URL.")
+    page = max(1, int(query.get("p", ["1"])[0] or 1))
+    canonical_query = urlencode({"p": page}) if page > 1 else ""
+    canonical = urlunparse(
+        ("https", "www.bilibili.com", f"/video/{bvid}", "", canonical_query, "")
+    )
+    return BilibiliRequest(bvid, page, canonical, 0)  # BV 号大小写敏感
 
 
 def _validate_origin(value: Any) -> str:
@@ -139,8 +188,10 @@ def _is_local_host(host: str) -> bool:
 def normalize_video_learning_settings(payload: Any) -> dict[str, Any]:
     raw = payload if isinstance(payload, dict) else {}
     provider = str(raw.get("default_provider") or "youtube").strip().lower()
-    if provider not in {"youtube", "invidious"}:
-        raise TimedMediaError("Video learning provider must be 'youtube' or 'invidious'.")
+    if provider not in {"youtube", "invidious", "bilibili"}:
+        raise TimedMediaError(
+            "Video learning provider must be 'youtube', 'invidious' or 'bilibili'."
+        )
     youtube = raw.get("youtube") if isinstance(raw.get("youtube"), dict) else {}
     transcript_provider = str(youtube.get("transcript_provider") or "youtube_transcript_api")
     if transcript_provider not in {"youtube_transcript_api", "none"}:
@@ -154,6 +205,14 @@ def normalize_video_learning_settings(payload: Any) -> dict[str, Any]:
         "version": 1,
         "default_provider": provider,
         "youtube": {"transcript_provider": transcript_provider},
+        "bilibili": {
+            "cc_cookie": str(
+                (raw.get("bilibili") if isinstance(raw.get("bilibili"), dict) else {}).get(
+                    "cc_cookie"
+                )
+                or ""
+            )[:4000]
+        },
         "invidious": {"api_base_url": api_base, "public_base_url": public_base},
     }
 
@@ -469,12 +528,59 @@ async def _invidious_resolution(request: YouTubeRequest, language: str) -> Provi
         )
 
 
+async def _bilibili_view(bvid: str, page: int) -> dict[str, Any]:
+    """Public view API: title/duration/cid for the requested page. No login."""
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
+        response = await client.get(
+            "https://api.bilibili.com/x/web-interface/view",
+            params={"bvid": bvid},
+        )
+        if response.status_code >= 400:
+            raise TimedMediaError(f"Bilibili view API returned HTTP {response.status_code}.")
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("code") != 0:
+            raise TimedMediaError("Bilibili did not recognise this bvid.")
+        data = payload.get("data") or {}
+        pages = data.get("pages") or []
+        target = next(
+            (pg for pg in pages if isinstance(pg, dict) and int(pg.get("page") or 1) == page),
+            pages[0] if pages else {},
+        )
+        return {
+            "title": str(data.get("title") or ""),
+            "duration_seconds": int(data.get("duration") or 0),
+            "cover": str(data.get("pic") or ""),
+            "page_cid": int(target.get("cid") or 0),
+            "page_part": str(target.get("part") or ""),
+        }
+
+
+async def _bilibili_resolution(
+    request: "BilibiliRequest", language: str
+) -> ProviderResolution:
+    """Bilibili resolution. Metadata via the public view API; captions need a
+    logged-in CC endpoint, so v1 degrades honestly to no cues (the immersive
+    surfaces render the embed with Q&A tutoring instead of timestamp binding).
+    """
+    view = await _bilibili_view(request.bvid, request.page)
+    metadata = {
+        "title": view["title"],
+        "author": "",
+        "lengthSeconds": view["duration_seconds"],
+        "bvid": request.bvid,
+        "page": request.page,
+        "page_cid": view["page_cid"],
+    }
+    return ProviderResolution(metadata, [], "", "bilibili_cc_unavailable", [])
+
+
 PROVIDER_RESOLVERS: dict[
     ProviderName,
-    Callable[[YouTubeRequest, str], Awaitable[ProviderResolution]],
+    Callable[[Any, str], Awaitable[ProviderResolution]],
 ] = {
     "youtube": lambda request, language: _youtube_resolution(request, language),
     "invidious": lambda request, language: _invidious_resolution(request, language),
+    "bilibili": lambda request, language: _bilibili_resolution(request, language),
 }
 
 
@@ -483,11 +589,16 @@ async def resolve_material(
     language: str = "",
     provider_override: ProviderName | None = None,
 ) -> dict[str, Any]:
-    request = parse_youtube_url(url)
+    try:
+        request = parse_youtube_url(url)
+        url_provider: ProviderName | None = None
+    except TimedMediaError:
+        request = parse_bilibili_url(url)
+        url_provider = "bilibili"
     settings = load_video_learning_settings()
     store = get_timed_media_store()
     material_id = material_id_for(request.video_id)
-    provider = provider_override or settings["default_provider"]
+    provider = provider_override or url_provider or settings["default_provider"]
     resolution = await PROVIDER_RESOLVERS[provider](request, language)
     metadata = resolution.metadata
     cues = resolution.cues

@@ -89,7 +89,7 @@ async def test_invidious(payload: VideoLearningSettingsRequest) -> dict[str, Any
 @router.post("/materials/resolve")
 async def resolve_video(payload: ResolveRequest) -> dict[str, Any]:
     try:
-        if payload.provider_override not in {None, "youtube", "invidious"}:
+        if payload.provider_override not in {None, "youtube", "invidious", "bilibili"}:
             raise TimedMediaError("Unsupported provider override.")
         return await resolve_material(
             payload.url,
