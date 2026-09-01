@@ -1,0 +1,6 @@
+status:
+  topic_required: "请先提供出题主题再生成题目。"
+  parsing_uploaded: "正在解析上传的试卷并提取模板…"
+  parsing_directory: "正在加载已解析试卷并提取模板…"
+  mimic_needs_paper: "仿写模式需要上传 PDF 或已解析的试卷。"
+  llm_call_failed: "模型调用失败。"

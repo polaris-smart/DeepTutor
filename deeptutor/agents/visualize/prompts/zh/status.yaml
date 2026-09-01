@@ -1,0 +1,6 @@
+status:
+  analyzing: "正在分析可视化需求…"
+  manim_code_prepared: "Manim 代码已就绪。"
+  rendering_video: "正在用 Manim 渲染视频…"
+  rendering_image: "正在用 Manim 渲染分镜图…"
+  llm_call_failed: "模型调用失败。"

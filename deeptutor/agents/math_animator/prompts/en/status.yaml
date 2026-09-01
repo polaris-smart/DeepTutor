@@ -1,0 +1,3 @@
+status:
+  code_prepared: "Manim code prepared."
+  llm_call_failed: "LLM call failed."

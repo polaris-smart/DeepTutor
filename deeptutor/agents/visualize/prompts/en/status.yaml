@@ -1,0 +1,6 @@
+status:
+  analyzing: "Analyzing visualization requirements..."
+  manim_code_prepared: "Manim code prepared."
+  rendering_video: "Rendering video with Manim..."
+  rendering_image: "Rendering storyboard image with Manim..."
+  llm_call_failed: "LLM call failed."
