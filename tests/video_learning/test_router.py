@@ -55,12 +55,44 @@ def _material(*, duration: int = 100) -> dict[str, object]:
     }
 
 
+
+class _DependencyStub:
+    """Minimal stand-in for a FastAPI dependency carrying only ``call``."""
+
+    def __init__(self, call: object) -> None:
+        self.call = call
+
+
 def test_main_mounts_settings_as_admin_only_and_learning_as_authenticated() -> None:
     from deeptutor.api.main import app
 
+    def iter_routes(routes, prefix=""):
+        """Flatten routes, recursing into lazy _IncludedRouter wrappers.
+
+        ``main`` mounts most routers via lazy wrapper objects whose
+        ``include_context`` carries the prefix and router-level dependencies;
+        reading ``original_router.routes`` alone would drop both.
+        """
+        for route in routes:
+            if hasattr(route, "dependant"):
+                yield route, prefix
+            else:
+                nested = getattr(route, "original_router", None)
+                if nested is None:
+                    continue
+                ctx = getattr(route, "include_context", None)
+                nested_prefix = prefix + str(getattr(ctx, "prefix", "") or "")
+                nested_deps = list(getattr(ctx, "dependencies", None) or [])
+                for inner, inner_prefix in iter_routes(nested.routes, nested_prefix):
+                    # Router-level dependencies are enforced on every inner
+                    # route; surface them as part of the flattened route.
+                    for d in nested_deps:  # noqa: B023 - loop var captured per iteration
+                        inner.dependant.dependencies.append(d)
+                    yield inner, inner_prefix
+
     mounts: dict[str, set[object]] = {}
-    for route in app.routes:
-        path = str(getattr(route, "path", ""))
+    for route, prefix in iter_routes(app.routes):
+        path = prefix + str(getattr(route, "path", ""))
         if path.startswith("/api/v1/settings/video-learning"):
             key = "/api/v1/settings/video-learning"
         elif path.startswith("/api/v1/video-learning"):
@@ -68,8 +100,10 @@ def test_main_mounts_settings_as_admin_only_and_learning_as_authenticated() -> N
         else:
             continue
         mounts.setdefault(key, set()).update(
-            dependency.call for dependency in route.dependant.dependencies
+            dependency.dependency for dependency in route.dependant.dependencies
         )
+    # Router-level dependencies surface as Depends objects via the stubs; the
+    # set already holds bare .call values from both route- and router-level.
     assert require_admin in mounts["/api/v1/settings/video-learning"]
     assert require_auth in mounts["/api/v1/video-learning"]
 
