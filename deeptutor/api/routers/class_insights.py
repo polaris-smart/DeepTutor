@@ -23,9 +23,9 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
-from deeptutor.api.routers.auth import require_admin_or_teacher
+from deeptutor.api.routers.auth import require_admin_or_teacher, require_auth
 from deeptutor.learning.models import LearningProgress
 from deeptutor.learning.policy import display_mastery, is_mastered
 from deeptutor.services.auth import TokenPayload
@@ -79,6 +79,31 @@ def _student_accounts() -> list[tuple[str, str]]:
         if not user_id:
             continue
         accounts.append((str(username), user_id))
+    return accounts
+
+
+def _children_accounts(parent_username: str, store: dict) -> list[tuple[str, str]]:
+    """``(username, user_id)`` pairs for a parent record's ``children`` list.
+
+    Only entries that resolve to an existing ``role=student`` account count —
+    a stale child name (account deleted) is silently skipped, fail-open like
+    the rest of this module.
+    """
+    record = store.get(parent_username) or {}
+    children = record.get("children") if isinstance(record, dict) else None
+    if not isinstance(children, list):
+        return []
+    accounts: list[tuple[str, str]] = []
+    for child in children:
+        name = str(child or "").strip()
+        if not name:
+            continue
+        value = store.get(name)
+        if not isinstance(value, dict):
+            continue
+        if str(value.get("role") or "") != "student":
+            continue
+        accounts.append((name, str(value.get("id") or name)))
     return accounts
 
 
@@ -176,6 +201,55 @@ async def class_overview(
             continue
         if student is not None:
             students.append(student)
+
+    students.sort(key=lambda student: (student["avg_mastery_pct"], student["username"]))
+    return {
+        "students": students,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@router.get("/my-children")
+async def my_children_overview(
+    payload: TokenPayload = Depends(require_auth),
+) -> dict:
+    """Parent view of learning mastery, restricted to their own children.
+
+    ``children`` is the username list stored on the parent account record
+    (family linkage). Admins get the same shape over all students so ops
+    tooling can reuse the endpoint. Teachers/students are rejected — they
+    have :ref:`/overview` and their own views respectively.
+    """
+    role = str(getattr(payload, "role", "") or "")
+    username = str(getattr(payload, "username", "") or "")
+    if role not in ("parent", "admin"):
+        raise HTTPException(
+            status_code=403,
+            detail="Parent insights require the parent (or admin) role.",
+        )
+    store = _read_user_store()
+    targets = _student_accounts() if role == "admin" else _children_accounts(username, store)
+
+    students: list[dict] = []
+    for child_username, child_user_id in targets:
+        try:
+            student = _aggregate_student(child_username, child_user_id)
+        except Exception as exc:  # noqa: BLE001 - one broken child must not kill the view
+            logger.warning("Parent insights: skipped child %r: %s", child_username, exc)
+            continue
+        if student is None:
+            # 家长视角完整性：孩子账号存在但还没有学习数据时也要出现，
+            # 否则家长会以为账号坏了（class 视图跳过无数据学生是合理的，
+            # 家庭视图的孩子是白名单，缺员即异常信号）。
+            student = {
+                "username": child_username,
+                "kp_total": 0,
+                "avg_mastery_pct": 0,
+                "weak": [],
+                "last_active": None,
+                "no_data": True,
+            }
+        students.append(student)
 
     students.sort(key=lambda student: (student["avg_mastery_pct"], student["username"]))
     return {
