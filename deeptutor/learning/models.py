@@ -95,6 +95,10 @@ class LearningStage(str, Enum):
 class KnowledgePoint(BaseModel):
     struct_path: str = ""
     textbook_node_id: str = ""
+    # M4 KP 挂载: declarative YuEdu visualizer ids bound to this KP
+    # (e.g. "yuedu_function_explorer"). Surfaced to the tutor agent as a
+    # manifest hint; empty for KPs without a bound interactive.
+    visualizers: list[str] = Field(default_factory=list)
     model_config = ConfigDict(extra="ignore")
 
     id: str

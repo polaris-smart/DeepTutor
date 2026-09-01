@@ -10,8 +10,11 @@ import time
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
+
+from deeptutor.api.routers.auth import require_admin_or_teacher
+from deeptutor.services.auth import TokenPayload
 from pydantic import ValidationError as PydanticValidationError
 
 from deeptutor.learning import policy as learning_policy
@@ -659,6 +662,44 @@ async def init_modules(book_id: str, body: InitModulesRequest):
     progress.current_kp_index = 0
     service.save(progress)
     return {"status": "ok", "module_count": len(modules)}
+
+
+class KpVisualizersRequest(BaseModel):
+    kp_id: str
+    visualizers: list[str] = Field(default_factory=list, max_length=8)
+
+
+@router.put("/progress/{book_id}/visualizers")
+async def set_kp_visualizers(
+    book_id: str,
+    body: KpVisualizersRequest,
+    _: TokenPayload = Depends(require_admin_or_teacher),
+) -> dict[str, object]:
+    """Bind declarative YuEdu visualizers to one knowledge point (M4 挂载).
+
+    Teacher/admin only — 学件布置是教学动作. Idempotent: the request
+    replaces the KP's binding list (empty list unbinds).
+    """
+    _validate_book_id(book_id)
+    service = get_learning_service()
+    progress = await asyncio.to_thread(service.store.load, book_id)
+    if progress is None:
+        raise HTTPException(status_code=404, detail="Mastery progress not found")
+    target = next(
+        (
+            kp
+            for module in progress.modules
+            for kp in module.knowledge_points
+            if kp.id == body.kp_id
+        ),
+        None,
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail="Knowledge point not found")
+    cleaned = list(dict.fromkeys(v.strip() for v in body.visualizers if v.strip()))[:8]
+    target.visualizers = cleaned
+    await asyncio.to_thread(service.save, progress)
+    return {"ok": True, "kp_id": body.kp_id, "visualizers": cleaned}
 
 
 @router.post("/progress/{book_id}/import-from-book")

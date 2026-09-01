@@ -321,6 +321,38 @@ def _topic_material_manifest(path_id: str) -> tuple[str, dict[str, str]]:
         return "", {}
 
 
+def _kp_visualizer_manifest(path_id: str) -> str:
+    """Bounded hint of the interactive visualizers bound to a path's KPs.
+
+    M4 KP 挂载: declarative YuEdu packages are bound per-KP (teacher/admin
+    via the visualizers endpoint); the tutor agent sees this manifest so its
+    teaching can reference the interactive instead of ignoring it. Cross-
+    capability auto-invocation is L3 chaining and deliberately out of scope.
+    """
+    try:
+        from deeptutor.learning.storage import LearningStore
+
+        store = LearningStore()
+        progress = store.load(path_id)
+        if progress is None:
+            return ""
+        rows: list[str] = []
+        for module in progress.modules:
+            for kp in module.knowledge_points:
+                if kp.visualizers:
+                    rows.append(f"- {kp.name!r}: {', '.join(kp.visualizers)}")
+        if not rows:
+            return ""
+        return (
+            "[KP Visualizers]\n"
+            "Interactive visualizers bound to this path's knowledge points "
+            "(declarative YuEdu packages, reference by id):\n" + "\n".join(rows) + "\n"
+        )
+    except Exception:
+        logger.exception("Failed to build KP visualizer manifest for %s", path_id)
+        return ""
+
+
 def _reading_action_context(
     material_id: str,
     viewport: dict[str, Any],
@@ -2691,6 +2723,15 @@ class TurnRuntimeManager:
                     source_manifest_text, mastery_topic_source_index = await asyncio.to_thread(
                         _topic_material_manifest, topic_path_id
                     )
+                    visualizer_manifest_text = await asyncio.to_thread(
+                        _kp_visualizer_manifest, topic_path_id
+                    )
+                    if visualizer_manifest_text:
+                        source_manifest_text = (
+                            f"{source_manifest_text}\n{visualizer_manifest_text}".strip()
+                            if source_manifest_text
+                            else visualizer_manifest_text
+                        )
 
             # Agentic actions receive workspace behavior through loop
             # capabilities and tools. Standalone pipelines (Quiz, Research,

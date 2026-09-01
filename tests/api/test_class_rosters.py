@@ -389,3 +389,69 @@ def test_overview_reads_v2_mastery_store(isolated: dict[str, Path]) -> None:
     assert alice.get("no_data") is None
     assert alice["kp_total"] == 1
     assert alice["avg_mastery_pct"] == 75
+
+
+def test_kp_visualizers_bind_and_manifest(isolated: dict[str, Path], monkeypatch) -> None:
+    """M4: teacher binds visualizers to a KP; the tutor manifest surfaces them."""
+    from deeptutor.api.routers import mastery_path as mastery_router_module
+    from deeptutor.api.routers.auth import require_admin_or_teacher
+    from deeptutor.learning.service import LearningService
+    from deeptutor.learning.storage import LearningStore
+    from deeptutor.services.session import turn_runtime as tr
+
+    _write_users(
+        isolated["users_file"],
+        {"t1": _user("u_t1", "teacher"), "alice": _user("u_alice", "student")},
+    )
+    learning_dir = isolated["users_root"] / "u_alice" / "user" / "workspace" / "learning"
+    store = LearningStore(root=learning_dir / "mastery")
+    store.save(_progress("bk_viz", [("kp_v_1", "函数图像", "concept", 0.0)]))
+
+    # Route the endpoint's service at the tmp store (the router resolves the
+    # request-scoped default, which tests redirect via module override).
+    monkeypatch.setattr(
+        mastery_router_module,
+        "get_learning_service",
+        lambda: LearningService(store=LearningStore(root=learning_dir / "mastery")),
+    )
+    app = FastAPI()
+    app.include_router(mastery_router_module.router, prefix="/api/v1/learning")
+    app.dependency_overrides[require_admin_or_teacher] = lambda: TokenPayload(
+        username="t1", role="teacher", user_id="u_t1"
+    )
+    client = TestClient(app)
+
+    # Bind one visualizer.
+    response = client.put(
+        "/api/v1/learning/progress/bk_viz/visualizers",
+        json={"kp_id": "kp_v_1", "visualizers": ["yuedu_function_explorer"]},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["visualizers"] == ["yuedu_function_explorer"]
+
+    # Stored on the KP.
+    progress = store.load("bk_viz")
+    kp = progress.modules[0].knowledge_points[0]
+    assert kp.visualizers == ["yuedu_function_explorer"]
+
+    # Tutor manifest surfaces the binding.
+    import deeptutor.learning.storage as ls_module
+
+    original_init = ls_module.LearningStore.__init__
+    monkeypatch.setattr(
+        ls_module.LearningStore,
+        "__init__",
+        lambda self, root=None: original_init(self, root=learning_dir / "mastery"),
+    )
+    text = tr._kp_visualizer_manifest("bk_viz")
+    assert "yuedu_function_explorer" in text
+    assert "函数图像" in text
+
+    # Unknown KP → 404; student gate is covered by require_admin_or_teacher tests.
+    assert (
+        client.put(
+            "/api/v1/learning/progress/bk_viz/visualizers",
+            json={"kp_id": "kp_missing", "visualizers": []},
+        ).status_code
+        == 404
+    )
