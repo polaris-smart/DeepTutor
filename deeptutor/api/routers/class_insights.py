@@ -106,19 +106,44 @@ def _student_learning_dir(user_id: str) -> Path:
 def _load_student_books(user_id: str) -> list[LearningProgress]:
     """Load every readable :class:`LearningProgress` for one student.
 
-    A missing directory yields ``[]``; a corrupt book file is logged and
-    skipped so the student's remaining books still count (fail-open).
+    The V2 mastery store (``learning/mastery/mastery.sqlite3``) is the source
+    of truth — the app-owned migration moved path state off the legacy
+    per-book JSON files, and this aggregation used to read only those,
+    silently reporting every v2 student as ``no_data``. Legacy JSON books are
+    still read when no v2 store exists. A corrupt book is logged and skipped
+    so the student's remaining books still count (fail-open).
     """
     learning_dir = _student_learning_dir(user_id)
     if not learning_dir.is_dir():
         return []
     books: list[LearningProgress] = []
-    for path in sorted(learning_dir.glob("*.json")):
+
+    store_root = learning_dir / "mastery"
+    if (store_root / "mastery.sqlite3").is_file():
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            books.append(LearningProgress.model_validate(data))
-        except Exception as exc:  # noqa: BLE001 - any corrupt file is one book, not the class
-            logger.warning("Class insights: skipped unreadable progress %s: %s", path, exc)
+            from deeptutor.learning.storage import LearningStore
+
+            store = LearningStore(root=store_root)
+            for path_id in store.list_all():
+                try:
+                    progress = store.load(path_id)
+                except Exception as exc:  # noqa: BLE001 - one corrupt path is not the student
+                    logger.warning(
+                        "Class insights: skipped unreadable path %s: %s", path_id, exc
+                    )
+                    continue
+                if progress is not None:
+                    books.append(progress)
+        except Exception as exc:  # noqa: BLE001 - a broken store degrades to legacy files
+            logger.warning("Class insights: v2 store unreadable for %s: %s", user_id, exc)
+
+    if not books:
+        for path in sorted(learning_dir.glob("*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                books.append(LearningProgress.model_validate(data))
+            except Exception as exc:  # noqa: BLE001 - any corrupt file is one book, not the class
+                logger.warning("Class insights: skipped unreadable progress %s: %s", path, exc)
     return books
 
 

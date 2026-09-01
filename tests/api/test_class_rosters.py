@@ -353,3 +353,39 @@ def test_save_user_preserves_parent_children(isolated: dict[str, Path]) -> None:
     # A fresh parent account has no linkage until one is recorded.
     record = identity.save_user("p2", "hash", role="parent")
     assert "children" not in record
+
+
+def test_overview_reads_v2_mastery_store(isolated: dict[str, Path]) -> None:
+    """The aggregation reads the V2 mastery sqlite store, not just legacy JSON."""
+    from deeptutor.learning.storage import LearningStore
+
+    _write_users(
+        isolated["users_file"],
+        {
+            "t1": _user("u_t1", "teacher"),
+            "alice": _user("u_alice", "student"),
+        },
+    )
+    learning_dir = isolated["users_root"] / "u_alice" / "user" / "workspace" / "learning"
+    store = LearningStore(root=learning_dir / "mastery")
+    store.save(
+        _progress(
+            "bk_v2",
+            [("kp_v2_1", "KP V2", "memory", 0.75)],
+        )
+    )
+
+    t1 = _client(role="teacher", username="t1")
+    class_id = t1.post(
+        "/api/v1/class-insights/classes",
+        json={"name": "v2班", "students": ["alice"]},
+    ).json()["class"]["id"]
+    body = t1.get(
+        "/api/v1/class-insights/overview", params={"class_id": class_id}
+    ).json()
+    students = {s["username"]: s for s in body["students"]}
+    assert "alice" in students
+    alice = students["alice"]
+    assert alice.get("no_data") is None
+    assert alice["kp_total"] == 1
+    assert alice["avg_mastery_pct"] == 75
