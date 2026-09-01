@@ -18,7 +18,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import FileResponse, HTMLResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from deeptutor.services.config import load_auth_settings
 
@@ -43,10 +43,12 @@ from deeptutor.services.auth import (
     decode_token,
     delete_user,
     get_user_info,
+    hash_password,
     is_first_user,
     list_users,
     register_pb,
     set_avatar,
+    set_children,
     set_role,
 )
 from deeptutor.services.codex_auth.contracts import CodexAuthError
@@ -891,3 +893,96 @@ async def update_user_role(
         f"Admin '{current.username if current else 'local'}' set '{username}' role to {body.role!r}"
     )
     return {"ok": True, "username": username, "role": body.role}
+
+
+class SetChildrenRequest(BaseModel):
+    """Payload for the PUT /users/{username}/children endpoint."""
+
+    children: list[str] = Field(default_factory=list, max_length=20)
+
+
+@router.put("/users/{username}/children", status_code=status.HTTP_200_OK)
+async def update_user_children(
+    username: str,
+    body: SetChildrenRequest,
+    current: TokenPayload = Depends(require_admin),
+) -> dict:
+    """Set the parent → children family linkage (K12 家长学情视图的名单).
+
+    Only parent-role accounts carry a children list, and every entry must
+    resolve to a live student account — a typo'd child name would silently
+    strand the family insights view otherwise.
+    """
+    if POCKETBASE_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Family linkage is not available with PocketBase auth.",
+        )
+    info = get_user_info(username)
+    if not info:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if str(info.get("role") or "") != "parent":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only parent accounts carry a children list",
+        )
+
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in body.children:
+        name = str(raw).strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        cleaned.append(name)
+    if username in seen:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A parent cannot be listed as their own child",
+        )
+    for child in cleaned:
+        child_info = get_user_info(child)
+        if not child_info or str(child_info.get("role") or "") != "student":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Child {child!r} is not an existing student account",
+            )
+
+    if not set_children(username, cleaned):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    logger.info(
+        f"Admin '{current.username if current else 'local'}' set children of "
+        f"'{username}' to {cleaned}"
+    )
+    return {"ok": True, "username": username, "children": cleaned}
+
+
+class ResetPasswordRequest(BaseModel):
+    """Payload for the PUT /users/{username}/password endpoint."""
+
+    password: str = Field(min_length=8, max_length=128)
+
+
+@router.put("/users/{username}/password", status_code=status.HTTP_200_OK)
+async def admin_reset_password(
+    username: str,
+    body: ResetPasswordRequest,
+    current: TokenPayload = Depends(require_admin),
+) -> dict:
+    """Admin password reset. Re-saving keeps the record's role and family
+    linkage (``save_user`` carries the parent ``children`` list over)."""
+    if POCKETBASE_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password resets are managed by PocketBase.",
+        )
+    info = get_user_info(username)
+    if not info:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    from deeptutor.multi_user.identity import save_user
+
+    save_user(username, hash_password(body.password), role=str(info.get("role") or "user"))
+    logger.info(
+        f"Admin '{current.username if current else 'local'}' reset the password of '{username}'"
+    )
+    return {"ok": True, "username": username}

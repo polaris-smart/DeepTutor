@@ -191,6 +191,21 @@ def set_role(username: str, role: str) -> bool:
     return True
 
 
+def set_children(username: str, children: list[str]) -> bool:
+    """
+    Set the parent → children family linkage (K12). Returns True on success.
+
+    Only parent-role accounts accept a children list; entry validation lives
+    in the router (each name must resolve to a live student account).
+    """
+    from deeptutor.multi_user.identity import set_children as _set_children
+
+    if not _set_children(username, children):
+        return False
+    logger.info(f"User '{username}' children set to {children!r}")
+    return True
+
+
 def set_avatar(username: str, avatar: str) -> bool:
     """
     Update the avatar marker for an existing user. Returns True on success.

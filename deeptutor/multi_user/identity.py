@@ -425,6 +425,32 @@ def set_role(username: str, role: Role) -> bool:
     return True
 
 
+def set_children(username: str, children: list[str]) -> bool:
+    """Set the parent → children family linkage on a parent account (K12).
+
+    Only parent-role records accept a children list, matching the store
+    canonicalizer's whitelist. Entry validation (each name resolves to a live
+    student account) is the caller's job — the router does it against the
+    live store before calling this.
+    """
+    if not USERS_FILE.exists():
+        return False
+    with _USERS_WRITE_LOCK:
+        users = load_users()
+        record = users.get(username)
+        if record is None:
+            return False
+        if str(record.get("role") or "") != "parent":
+            return False
+        cleaned = [str(c).strip() for c in children if str(c).strip()]
+        if cleaned:
+            record["children"] = cleaned
+        else:
+            record.pop("children", None)
+        _write_users(users)
+    return True
+
+
 def load_or_create_auth_secret() -> str:
     migrate_legacy_multi_user_tree()
     _migrate_secret()
