@@ -394,7 +394,7 @@ def test_overview_reads_v2_mastery_store(isolated: dict[str, Path]) -> None:
 def test_kp_visualizers_bind_and_manifest(isolated: dict[str, Path], monkeypatch) -> None:
     """M4: teacher binds visualizers to a KP; the tutor manifest surfaces them."""
     from deeptutor.api.routers import mastery_path as mastery_router_module
-    from deeptutor.api.routers.auth import require_admin_or_teacher
+    from deeptutor.api.routers.auth import require_auth
     from deeptutor.learning.service import LearningService
     from deeptutor.learning.storage import LearningStore
     from deeptutor.services.session import turn_runtime as tr
@@ -416,8 +416,8 @@ def test_kp_visualizers_bind_and_manifest(isolated: dict[str, Path], monkeypatch
     )
     app = FastAPI()
     app.include_router(mastery_router_module.router, prefix="/api/v1/learning")
-    app.dependency_overrides[require_admin_or_teacher] = lambda: TokenPayload(
-        username="t1", role="teacher", user_id="u_t1"
+    app.dependency_overrides[require_auth] = lambda: TokenPayload(
+        username="alice", role="student", user_id="u_alice"
     )
     client = TestClient(app)
 
@@ -447,7 +447,8 @@ def test_kp_visualizers_bind_and_manifest(isolated: dict[str, Path], monkeypatch
     assert "yuedu_function_explorer" in text
     assert "函数图像" in text
 
-    # Unknown KP → 404; student gate is covered by require_admin_or_teacher tests.
+    # Unknown KP → 404. Per-user store isolation makes cross-user binding
+    # unreachable by construction; the manifest test asserts self-service binding.
     assert (
         client.put(
             "/api/v1/learning/progress/bk_viz/visualizers",

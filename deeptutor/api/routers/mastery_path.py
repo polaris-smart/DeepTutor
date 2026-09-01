@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
-from deeptutor.api.routers.auth import require_admin_or_teacher
+from deeptutor.api.routers.auth import require_auth
 from deeptutor.services.auth import TokenPayload
 from pydantic import ValidationError as PydanticValidationError
 
@@ -673,12 +673,15 @@ class KpVisualizersRequest(BaseModel):
 async def set_kp_visualizers(
     book_id: str,
     body: KpVisualizersRequest,
-    _: TokenPayload = Depends(require_admin_or_teacher),
+    _: TokenPayload = Depends(require_auth),
 ) -> dict[str, object]:
     """Bind declarative YuEdu visualizers to one knowledge point (M4 挂载).
 
-    Teacher/admin only — 学件布置是教学动作. Idempotent: the request
-    replaces the KP's binding list (empty list unbinds).
+    The mastery store is per-user isolated (each learner's workspace), so
+    this is inherently self-service: a learner binds interactives on their
+    own path, and the store boundary makes cross-user binding unreachable by
+    construction. Idempotent: the request replaces the KP's binding list
+    (empty list unbinds).
     """
     _validate_book_id(book_id)
     service = get_learning_service()
