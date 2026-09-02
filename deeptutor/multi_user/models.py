@@ -6,7 +6,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+# K12 fork 五角色 ⊕ 上游 AccountPreset（两套正交：role=授权身份，preset=账号画像模板；
+# student ↔ learner preset，标准账号 ↔ standard preset）。
 Role = Literal["admin", "teacher", "student", "parent", "user"]
+AccountPreset = Literal["standard", "learner", "custom"]
 ScopeKind = Literal["admin", "user"]
 
 #: K12 fork: four roles. Role-bearing stores/validators must accept all four;
@@ -31,6 +34,11 @@ class UserRecord:
     # version is bumped on every upload so clients can cache-bust).
     avatar: str = ""
 
+    # Account presets describe how a normal ``user`` is configured. They are
+    # deliberately not a third identity role: admins remain admins and every
+    # preset remains an ordinary account.
+    preset: AccountPreset = "standard"
+
     def public_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -39,6 +47,7 @@ class UserRecord:
             "created_at": self.created_at,
             "disabled": self.disabled,
             "avatar": self.avatar,
+            "preset": self.preset,
         }
 
 

@@ -24,11 +24,11 @@ from deeptutor.multi_user.models import CurrentUser, UserScope
 from deeptutor.services.partners.scope import PARTNER_USER_PREFIX
 
 CODEX_ROUTES = [
-    ("post", "/api/v1/settings/providers/openai-codex/oauth/start"),
-    ("get", "/api/v1/settings/providers/openai-codex/oauth/status"),
-    ("post", "/api/v1/settings/providers/openai-codex/oauth/cancel"),
-    ("post", "/api/v1/settings/providers/openai-codex/oauth/logout"),
-    ("post", "/api/v1/settings/providers/openai-codex/models/refresh"),
+    ("post", "/api/settings/providers/openai-codex/oauth/start"),
+    ("get", "/api/settings/providers/openai-codex/oauth/status"),
+    ("post", "/api/settings/providers/openai-codex/oauth/cancel"),
+    ("post", "/api/settings/providers/openai-codex/oauth/logout"),
+    ("post", "/api/settings/providers/openai-codex/models/refresh"),
 ]
 
 
@@ -78,7 +78,7 @@ def client(tmp_path, monkeypatch) -> tuple[TestClient, _Service, dict[str, Curre
     monkeypatch.setattr(settings_router, "get_current_user", lambda: current["user"])
 
     app = FastAPI()
-    app.include_router(settings_router.router, prefix="/api/v1/settings")
+    app.include_router(settings_router.router, prefix="/api/settings")
     return TestClient(app), service, current
 
 
@@ -92,6 +92,18 @@ def test_an_ordinary_user_drives_their_own_codex_lifecycle(client, method, path)
     assert service.calls, "the request must reach the owner-scoped service"
 
 
+def test_an_ordinary_user_sets_their_own_codex_reasoning_effort(client) -> None:
+    test_client, service, _current = client
+
+    response = test_client.post(
+        "/api/settings/providers/openai-codex/models/reasoning-effort",
+        json={"model": "gpt-5.6-sol", "reasoning_effort": "high"},
+    )
+
+    assert response.status_code == 200
+    assert service.calls == ["reasoning:gpt-5.6-sol:high"]
+
+
 @pytest.mark.parametrize(("method", "path"), CODEX_ROUTES)
 def test_a_partner_is_refused(client, tmp_path, method, path) -> None:
     """A partner inherits its owner's login at call time; letting it in here
@@ -100,6 +112,19 @@ def test_a_partner_is_refused(client, tmp_path, method, path) -> None:
     current["user"] = _user(f"{PARTNER_USER_PREFIX}ada", role="user", root=tmp_path / "partner-ada")
 
     response = getattr(test_client, method)(path)
+
+    assert response.status_code == 403
+    assert service.calls == []
+
+
+def test_a_partner_cannot_change_their_owners_reasoning_effort(client, tmp_path) -> None:
+    test_client, service, current = client
+    current["user"] = _user(f"{PARTNER_USER_PREFIX}ada", role="user", root=tmp_path / "partner-ada")
+
+    response = test_client.post(
+        "/api/settings/providers/openai-codex/models/reasoning-effort",
+        json={"model": "gpt-5.6-sol", "reasoning_effort": "high"},
+    )
 
     assert response.status_code == 403
     assert service.calls == []

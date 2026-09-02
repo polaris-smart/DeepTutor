@@ -13,6 +13,7 @@ from deeptutor.services.config import (
     PROJECT_ROOT,
     SUPPORTED_SEARCH_PROVIDERS,
     load_config_with_main,
+    load_system_settings,
     resolve_search_runtime_config,
 )
 
@@ -26,6 +27,7 @@ from .providers import (
     get_providers_info,
     list_providers,
 )
+from .source_filter import filter_web_search_response, settings_from_config
 from .types import Citation, SearchResult, WebSearchResponse
 
 _logger = logging.getLogger(__name__)
@@ -38,6 +40,17 @@ def _get_web_search_config() -> dict[str, Any]:
     except Exception as exc:
         _logger.debug(f"Could not load config: {exc}")
     return {}
+
+
+def _get_source_filter_settings() -> dict[str, Any]:
+    """Resolve the post-provider reference policy from runtime system JSON."""
+    try:
+        system = load_system_settings()
+    except Exception as exc:
+        _logger.warning("Could not load web-search source policy: %s", exc)
+        system = {}
+    raw = system.get("web_search_source_filtering", {})
+    return settings_from_config({"source_filtering": raw})
 
 
 def _save_results(result: dict[str, Any], output_dir: str, provider: str) -> str:
@@ -70,6 +83,37 @@ def _assert_provider_supported(provider_name: str) -> None:
         )
 
 
+def _disabled_result(
+    query: str,
+    provider: str,
+    *,
+    error_code: str,
+    answer: str,
+) -> dict[str, Any]:
+    return {
+        "timestamp": datetime.now().isoformat(),
+        "query": query,
+        "answer": answer,
+        "citations": [],
+        "search_results": [],
+        "provider": provider,
+        "error_code": error_code,
+    }
+
+
+def _run_provider(
+    provider_name: str,
+    query: str,
+    provider_kwargs: dict[str, Any],
+) -> tuple[WebSearchResponse, bool]:
+    """Run one query through *provider_name*, also reporting answer support."""
+    search_provider = get_provider(provider_name, **provider_kwargs)
+    _logger.info(f"[{search_provider.name}] Searching: {query[:50]}...")
+    response = search_provider.search(query, **provider_kwargs)
+    return response, search_provider.supports_answer
+
+
+
 def web_search(
     query: str,
     output_dir: str | None = None,
@@ -97,6 +141,7 @@ def web_search(
             "provider": "disabled",
         }
 
+
     resolved = resolve_search_runtime_config()
     provider_name = (provider or resolved.provider).strip().lower()
     _assert_provider_supported(provider_name)
@@ -109,6 +154,7 @@ def web_search(
             "search_results": [],
             "provider": "none",
         }
+
 
     if provider_name in {"brave", "tavily", "jina"}:
         api_key = _resolve_provider_key(provider_name, resolved.api_key)
@@ -143,6 +189,13 @@ def web_search(
     except Exception as exc:
         _logger.error(f"[{search_provider.name}] Search failed: {exc}")
         raise Exception(f"{search_provider.name} search failed: {exc}") from exc
+
+    response = filter_web_search_response(response, **_get_source_filter_settings())
+    if response.metadata.get("source_filter", {}).get("answer_invalidated"):
+        # A provider-authored answer may have relied on a rejected source. Run
+        # the ordinary safe-results consolidator instead of returning prose
+        # whose citations no longer support it.
+        supports_answer = False
 
     # Auto-consolidate for providers that don't generate their own answers.
     if not search_provider.supports_answer:
@@ -188,6 +241,7 @@ def get_current_config() -> dict[str, Any]:
         "supported_providers": sorted(SUPPORTED_SEARCH_PROVIDERS),
         "deprecated_providers": sorted(DEPRECATED_SEARCH_PROVIDERS),
         "consolidation_template": config.get("consolidation_template") or None,
+        "source_filtering": _get_source_filter_settings(),
         "template_providers": list(PROVIDER_TEMPLATES.keys()),
     }
 
@@ -206,6 +260,7 @@ __all__ = [
     "Citation",
     "SearchResult",
     "AnswerConsolidator",
+    "filter_web_search_response",
     "PROVIDER_TEMPLATES",
     "BaseSearchProvider",
     "SearchProvider",

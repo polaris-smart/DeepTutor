@@ -33,6 +33,7 @@ log_dir = config.get("paths", {}).get("user_log_dir") or config.get("logging", {
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+ws_router = APIRouter()
 
 
 class PaperReorderApiRequest(BaseModel):
@@ -132,6 +133,10 @@ def export_paper_reorder(body: PaperExportApiRequest) -> Response:
 
 
 @router.websocket("/mimic")
+
+
+@ws_router.websocket("/mimic")
+
 async def websocket_mimic_generate(websocket: WebSocket):
     """
     WebSocket endpoint for mimic exam paper question generation.
@@ -441,7 +446,7 @@ async def websocket_mimic_generate(websocket: WebSocket):
                 pass
 
 
-@router.websocket("/generate")
+@ws_router.websocket("/generate")
 async def websocket_question_generate(websocket: WebSocket):
     from deeptutor.api.routers.auth import ws_auth_failed, ws_require_auth
     from deeptutor.multi_user.context import reset_current_user
