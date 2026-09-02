@@ -4588,6 +4588,15 @@
   "Lease TTL must be between 5 and 300 seconds.": "Lease TTL must be between 5 and 300 seconds.",
   "Recovery interval must be between 1 and 60 seconds.": "Recovery interval must be between 1 and 60 seconds.",
   "Already signed in as": "Already signed in as",
+  "Delete failed.": "Delete failed.",
+  "Delete topic “{{name}}”?": "Delete topic “{{name}}”?",
+  "Finish the first diagnostic exercise to enter the learning stage": "Finish the first diagnostic exercise to enter the learning stage",
+  "Generate modules from a book": "Generate modules from a book",
+  "Import a textbook to build the route, or delete this topic and start over.": "Import a textbook to build the route, or delete this topic and start over.",
+  "Loading failed.": "Loading failed.",
+  "Pick a textbook — each chapter becomes a module, and its learning objectives become the knowledge points.": "Pick a textbook — each chapter becomes a module, and its learning objectives become the knowledge points.",
   "Signing out…": "Signing out…",
-  "Switch account": "Switch account"
+  "Switch account": "Switch account",
+  "This book has no chapters to import yet.": "This book has no chapters to import yet.",
+  "This topic has no modules yet.": "This topic has no modules yet."
 }

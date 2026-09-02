@@ -39,9 +39,10 @@ import { useTranslation } from "react-i18next";
 import { useCapabilityAccess } from "@/components/access/CapabilityAccessContext";
 import {
   NAV_BY_HREF,
-  PRIMARY_NAV_HREFS,
   isNavActive,
+  primaryNavHrefsFor,
 } from "@/components/sidebar/nav-entries";
+import { useAuthStatus } from "@/hooks/useAuthStatus";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { useDragSort, type DragSort } from "@/hooks/useDragSort";
 import { placeMenu, type FloatingMenuPosition } from "@/lib/floating-menu";
@@ -87,6 +88,12 @@ export function SidebarNav({
   const pathname = usePathname();
   const { t } = useTranslation();
   const { has } = useCapabilityAccess();
+  // Role-scoped nav: learner roles (student/parent/user, and the pre-auth
+  // blank) never see the producer tools, so their arrangement can't be
+  // polluted with rows they can't open. The auth status resolves async and
+  // starts blank, so a learner gets their trimmed list on the first paint and
+  // a staff role merely grows into the full list a beat later.
+  const { role } = useAuthStatus();
 
   const [layout, setLayout] = useState<SidebarNavLayout>(DEFAULT_NAV_LAYOUT);
   const [moreExpanded, setMoreExpanded] = useState(false);
@@ -104,9 +111,14 @@ export function SidebarNav({
     setMoreExpanded(browserStorage.readRaw("local", MORE_EXPANDED_KEY) === "1");
   }, []);
 
+  const primaryHrefs = useMemo(
+    () => primaryNavHrefsFor(role),
+    [role],
+  );
+
   const resolved = useMemo(
-    () => resolveNavLayout(PRIMARY_NAV_HREFS, layout),
-    [layout],
+    () => resolveNavLayout(primaryHrefs, layout),
+    [primaryHrefs, layout],
   );
   /** Always edit the resolved order: the stored one may still be empty. */
   const editable = useMemo<SidebarNavLayout>(

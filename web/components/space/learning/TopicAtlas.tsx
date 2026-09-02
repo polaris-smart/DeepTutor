@@ -23,6 +23,9 @@ export function TopicAtlas({
   onCreate,
   onRetry,
   scopeChip,
+  stages = {},
+  onTopicDeleted,
+  onTopicImported,
 }: {
   topics: MasteryTopic[];
   loading: boolean;
@@ -31,11 +34,21 @@ export function TopicAtlas({
   onRetry: () => void;
   /** Rendered beside the eyebrow when this visit belongs to one course. */
   scopeChip?: React.ReactNode;
+  /** path_id → current_stage from the progress summaries. */
+  stages?: Record<string, string>;
+  onTopicDeleted: (pathId: string) => void;
+  onTopicImported: (pathId: string, moduleCount: number) => void;
 }) {
   const { t } = useTranslation();
-  const activeTopics = topics.filter(
-    (topic) => topic.metadata.status === "active",
-  );
+  const activeTopics = topics
+    .filter((topic) => topic.metadata.status === "active")
+    // Empty topics have no route to work through yet — keep them behind the
+    // actionable maps so the first screen is always the learner's next step.
+    // The sort is stable, so server order is preserved within each group.
+    .sort(
+      (a, b) =>
+        (a.map.modules.length > 0 ? 0 : 1) - (b.map.modules.length > 0 ? 0 : 1),
+    );
   const dueCount = activeTopics.reduce(
     (count, topic) =>
       count + topic.reviews.filter((review) => review.due).length,
@@ -138,7 +151,13 @@ export function TopicAtlas({
             className="mt-9 grid gap-6 md:grid-cols-2 xl:grid-cols-3"
           >
             {activeTopics.map((topic) => (
-              <TopicMapCard key={topic.path_id} topic={topic} />
+              <TopicMapCard
+                key={topic.path_id}
+                topic={topic}
+                stage={stages[topic.path_id]}
+                onDeleted={onTopicDeleted}
+                onImported={onTopicImported}
+              />
             ))}
           </section>
         ) : !error ? (

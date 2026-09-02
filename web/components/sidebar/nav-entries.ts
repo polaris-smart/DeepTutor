@@ -15,6 +15,13 @@ import {
 
 import type { Capability } from "@/lib/capability-routes";
 
+/**
+ * Roles the backend issues in AuthStatus (`/api/auth/status`). "user" is the
+ * signed-in account with no role assigned yet; the empty string covers the
+ * unauthenticated / status-pending case.
+ */
+export type NavRole = "admin" | "teacher" | "student" | "parent" | "user";
+
 export interface NavEntry {
   href: string;
   label: string;
@@ -22,6 +29,40 @@ export interface NavEntry {
   tooltipKey?: string;
   /** Model capability this feature needs; locked when the user lacks it. */
   requires?: Capability;
+  /**
+   * Roles this entry is *visible* to. Omit it for an entry every role sees.
+   *
+   * This is the visibility whitelist only — routes and pages stay reachable
+   * (no gating happens here), so a learner who lands on a hidden URL still
+   * gets the page, exactly like a folded feature. Producer-side tools
+   * (Partners, Agents, Co-Writer) and admin consoles (Memory, Knowledge
+   * Center) list ["teacher", "admin"] so the learner sidebar stays on task.
+   */
+  roles?: readonly NavRole[];
+}
+
+/** Roles that see every nav entry — the staff view. Everyone else (student,
+ *  parent, "user", unauthenticated) gets the learner set. */
+const FULL_NAV_ROLES: ReadonlySet<string> = new Set(["teacher", "admin"]);
+
+/** Whether ``role`` may see ``entry``. Unknown/empty roles read as a learner
+ *  (student view), which also keeps the first pre-auth render deterministic. */
+export function isNavEntryVisible(entry: NavEntry, role: string): boolean {
+  if (!entry.roles) return true;
+  if (FULL_NAV_ROLES.has(role)) return true;
+  return entry.roles.includes(role as NavRole);
+}
+
+/** Primary nav hrefs ``role`` may see, in shipped order. */
+export function primaryNavHrefsFor(role: string): string[] {
+  return PRIMARY_NAV.filter((entry) => isNavEntryVisible(entry, role)).map(
+    (entry) => entry.href,
+  );
+}
+
+/** Secondary nav entries ``role`` may see, in shipped order. */
+export function secondaryNavFor(role: string): NavEntry[] {
+  return SECONDARY_NAV.filter((entry) => isNavEntryVisible(entry, role));
 }
 
 /**
@@ -47,6 +88,7 @@ export const PRIMARY_NAV: NavEntry[] = [
     icon: HeartHandshake,
     tooltipKey: "Partners tooltip",
     requires: "llm",
+    roles: ["teacher", "admin"],
   },
   {
     // My Agents is its own top-level feature (pulled out of the Learning
@@ -57,6 +99,7 @@ export const PRIMARY_NAV: NavEntry[] = [
     label: "My Agents",
     icon: Bot,
     tooltipKey: "Agents tooltip",
+    roles: ["teacher", "admin"],
   },
   {
     href: "/co-writer",
@@ -64,6 +107,7 @@ export const PRIMARY_NAV: NavEntry[] = [
     icon: PenLine,
     tooltipKey: "Co-Writer tooltip",
     requires: "llm",
+    roles: ["teacher", "admin"],
   },
   {
     href: "/books",
@@ -107,6 +151,7 @@ export const SECONDARY_NAV: NavEntry[] = [
     label: "Memory",
     icon: Brain,
     tooltipKey: "Memory tooltip",
+    roles: ["teacher", "admin"],
   },
   {
     // Knowledge Center sits just above Settings: it's a console for managing
@@ -116,10 +161,13 @@ export const SECONDARY_NAV: NavEntry[] = [
     label: "Knowledge Center",
     icon: BookOpen,
     tooltipKey: "Knowledge tooltip",
+    roles: ["teacher", "admin"],
   },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
+/** Every primary href in shipped order, unfiltered by role. Rendering goes
+ *  through ``primaryNavHrefsFor`` so hidden roles never enter the layout. */
 export const PRIMARY_NAV_HREFS = PRIMARY_NAV.map((entry) => entry.href);
 
 export const NAV_BY_HREF = new Map(

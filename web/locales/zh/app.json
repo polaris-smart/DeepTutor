@@ -4784,6 +4784,15 @@
   "Lease TTL must be between 5 and 300 seconds.": "租约 TTL 必须在 5 到 300 秒之间。",
   "Recovery interval must be between 1 and 60 seconds.": "恢复间隔必须在 1 到 60 秒之间。",
   "Already signed in as": "当前已登录为",
+  "Delete failed.": "删除失败。",
+  "Delete topic “{{name}}”?": "删除主题「{{name}}」？",
+  "Finish the first diagnostic exercise to enter the learning stage": "完成首次诊断练习后进入正式学习",
+  "Generate modules from a book": "从教材生成模块",
+  "Import a textbook to build the route, or delete this topic and start over.": "可从教材导入章节生成学习路线，或删除该主题后重新创建。",
+  "Loading failed.": "加载失败。",
+  "Pick a textbook — each chapter becomes a module, and its learning objectives become the knowledge points.": "选择一本教材——每一章将生成一个模块，章节的学习目标将成为知识点。",
   "Signing out…": "正在退出…",
-  "Switch account": "切换账号"
+  "Switch account": "切换账号",
+  "This book has no chapters to import yet.": "这本书还没有可导入的章节。",
+  "This topic has no modules yet.": "该主题还没有模块。"
 }

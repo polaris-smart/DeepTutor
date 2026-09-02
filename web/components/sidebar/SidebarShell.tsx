@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -28,7 +29,8 @@ import type { ReadingCollectionLabel } from "@/lib/reading-workspace-api";
 import { masteryPathIdOf, readingWorkspaceIdOf } from "@/lib/mastery-session";
 import type { StudyCourse } from "@/lib/courses-api";
 import { SidebarNav } from "@/components/sidebar/SidebarNav";
-import { SECONDARY_NAV, isNavActive } from "@/components/sidebar/nav-entries";
+import { isNavActive, secondaryNavFor } from "@/components/sidebar/nav-entries";
+import { useAuthStatus } from "@/hooks/useAuthStatus";
 import {
   mergeManualOrder,
   readSessionOrder,
@@ -86,6 +88,12 @@ export function SidebarShell({
   const { isMobile } = useDevice();
   const drawer = useSidebarDrawer();
   const recentsScrollRef = useRef<HTMLDivElement>(null);
+  // Role-scoped secondary nav: learner roles only keep Settings here —
+  // Memory and Knowledge Center are staff consoles. One filtered list feeds
+  // both the collapsed rail and the expanded footer, so the drawer (mobile)
+  // and the rail can never drift apart.
+  const { role } = useAuthStatus();
+  const secondaryNav = useMemo(() => secondaryNavFor(role), [role]);
 
   // Inside the mobile drawer the icon-only rail is pointless — the panel is
   // already hidden when you don't want it, so it always opens fully expanded
@@ -202,7 +210,7 @@ export function SidebarShell({
         {/* Secondary nav + footer */}
         <div className="flex w-full flex-col items-center gap-1 px-1.5">
           <div className="my-1 h-px w-7 bg-[var(--border)]/40" />
-          {SECONDARY_NAV.map((item) => {
+          {secondaryNav.map((item) => {
             const active = isNavActive(pathname, item.href);
             return (
               <Link
@@ -359,7 +367,7 @@ export function SidebarShell({
 
       {/* Secondary nav + footer */}
       <div className="border-t border-[var(--border)]/40 px-2 py-2">
-        {SECONDARY_NAV.map((item) => {
+        {secondaryNav.map((item) => {
           const active = isNavActive(pathname, item.href);
           return (
             <Link
