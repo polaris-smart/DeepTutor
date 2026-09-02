@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import SpaceSectionHeader from "@/components/space/SpaceSectionHeader";
 import { useAuthStatus } from "@/hooks/useAuthStatus";
-import { listKnowledgeBases, type KnowledgeBaseSummary } from "@/lib/knowledge-api";
+import { listKnowledgeBases, type KnowledgeBaseSummary } from "@/features/knowledge/api/catalog";
 import {
   assembleExamPaper,
   getQuestionsByStruct,
