@@ -475,6 +475,18 @@ def save_avatar_file(user_id: str, data: bytes, ext: str) -> Path:
     return target
 
 
+def is_learner_account(role: str | None, preset: str | None) -> bool:
+    """Whether a local account carries the learner profile.
+
+    Organizational roles other than admin may carry the learner preset;
+    upstream learner-only surfaces must accept them instead of hard-coding
+    ``role == "user"`` (fusion-mapping-163, domain 1).
+    """
+    if (role or "user") == "admin":
+        return False
+    return (preset or "standard") == "learner"
+
+
 def delete_avatar_file(user_id: str) -> None:
     for ext in AVATAR_EXTENSIONS:
         (_avatar_dir() / f"{user_id}.{ext}").unlink(missing_ok=True)

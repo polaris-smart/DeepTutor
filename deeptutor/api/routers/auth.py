@@ -38,7 +38,7 @@ from deeptutor.multi_user.device_credentials import (
     list_device_credentials,
     revoke_device_credential,
 )
-from deeptutor.multi_user.identity import get_user_by_id
+from deeptutor.multi_user.identity import get_user_by_id, is_learner_account
 from deeptutor.multi_user.learning_access import learning_policy_for_user
 from deeptutor.multi_user.models import AccountPreset
 from deeptutor.multi_user.paths import local_admin_user
@@ -1040,14 +1040,10 @@ async def get_users(_: TokenPayload = Depends(require_admin)) -> list[UserInfo]:
 def _require_local_learner(current: TokenPayload) -> tuple[str, dict]:
     """Resolve a self-service profile request to its local learner account."""
 
-    if current.role != "user":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Learner profile required"
-        )
     account = get_user_by_id(current.user_id)
     if account is None or account[0] != current.username:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    if str(account[1].get("preset") or "standard") != "learner":
+    if not is_learner_account(current.role, account[1].get("preset")):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Learner profile required"
         )

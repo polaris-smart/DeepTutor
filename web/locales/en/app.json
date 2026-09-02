@@ -4586,5 +4586,8 @@
   "Configure Redis before enabling multiple workers.": "Configure Redis before enabling multiple workers.",
   "Development reload and multiple workers cannot run together.": "Development reload and multiple workers cannot run together.",
   "Lease TTL must be between 5 and 300 seconds.": "Lease TTL must be between 5 and 300 seconds.",
-  "Recovery interval must be between 1 and 60 seconds.": "Recovery interval must be between 1 and 60 seconds."
+  "Recovery interval must be between 1 and 60 seconds.": "Recovery interval must be between 1 and 60 seconds.",
+  "Already signed in as": "Already signed in as",
+  "Signing out…": "Signing out…",
+  "Switch account": "Switch account"
 }

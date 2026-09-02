@@ -4,7 +4,8 @@ import { Suspense, useCallback, useState, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useTranslation } from "react-i18next";
-import { login, fetchAuthStatus, checkIsFirstUser } from "@/lib/auth";
+import { login, fetchAuthStatus, logout, checkIsFirstUser } from "@/lib/auth";
+import type { AuthStatus } from "@/lib/auth";
 import {
   inheritLoginHash,
   normalizeInternalReturnPath,
@@ -30,12 +31,15 @@ function LoginPageContent() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [current, setCurrent] = useState<AuthStatus | null>(null);
+  const [switching, setSwitching] = useState(false);
 
   useEffect(() => {
-    // If already authenticated, skip login
     fetchAuthStatus().then((status) => {
       if (status?.authenticated) {
-        router.replace(resolvedNext());
+        // Show "already signed in" instead of silently bouncing, so a
+        // different role can sign in without hunting for the sidebar icon.
+        setCurrent(status);
         return;
       }
       // No users registered yet — send straight to the registration page
@@ -44,6 +48,16 @@ function LoginPageContent() {
       });
     });
   }, [router, resolvedNext]);
+
+  async function handleSwitchAccount() {
+    setSwitching(true);
+    try {
+      await logout();
+    } finally {
+      setCurrent(null);
+      setSwitching(false);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -71,6 +85,35 @@ function LoginPageContent() {
           {t("Sign in to your account")}
         </p>
       </div>
+
+      {/* Already signed in — offer to continue or switch account */}
+      {current?.authenticated && (
+        <div className="mb-4 rounded-lg border border-[var(--border)] bg-[var(--card)] px-4 py-3 text-sm">
+          <p className="text-[var(--foreground)]">
+            {t("Already signed in as")}
+            {" "}
+            <span className="font-medium">{current.username}</span>
+            {current.role ? (
+              <span className="text-[var(--muted-foreground)]">（{current.role}）</span>
+            ) : null}
+          </p>
+          <div className="mt-2.5 flex gap-2">
+            <button
+              onClick={() => router.replace(resolvedNext())}
+              className="rounded-lg px-3 py-1.5 text-sm font-medium bg-[var(--primary)] text-[var(--primary-foreground)] hover:opacity-90 transition-opacity"
+            >
+              {t("Continue")}
+            </button>
+            <button
+              onClick={() => void handleSwitchAccount()}
+              disabled={switching}
+              className="rounded-lg px-3 py-1.5 text-sm font-medium border border-[var(--border)] text-[var(--foreground)] hover:bg-[var(--background)]/60 disabled:opacity-50 transition-opacity"
+            >
+              {switching ? t("Signing out…") : t("Switch account")}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Registered success notice */}
       {registered && (
