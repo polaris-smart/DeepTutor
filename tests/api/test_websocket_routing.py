@@ -6,6 +6,21 @@ from deeptutor.api.main import app
 from deeptutor.api.routers.auth import require_learning_surface
 
 
+
+def _flatten_app_routes(routes, prefix=""):
+    """Expand lazy fastapi _IncludedRouter wrappers into concrete routes."""
+    for route in routes:
+        if hasattr(route, "path"):
+            yield prefix + str(route.path), route
+        else:
+            ctx = getattr(route, "include_context", None)
+            nested = getattr(route, "original_router", None)
+            if nested is None:
+                continue
+            nested_prefix = prefix + str(getattr(ctx, "prefix", "") or "")
+            yield from _flatten_app_routes(nested.routes, nested_prefix)
+
+
 def test_websocket_routes_share_one_canonical_namespace() -> None:
     expected_paths = {
         "/ws",
@@ -19,8 +34,8 @@ def test_websocket_routes_share_one_canonical_namespace() -> None:
         "/ws/partner-groups/{group_id}",
     }
     websocket_routes = {
-        route.path: route
-        for route in app.routes
+        path: route
+        for path, route in _flatten_app_routes(app.routes)
         if isinstance(route, APIWebSocketRoute)
     }
 

@@ -105,10 +105,10 @@ def test_main_mounts_settings_as_admin_only_and_learning_as_authenticated() -> N
     mounts: dict[str, set[object]] = {}
     for route, prefix in iter_routes(app.routes):
         path = prefix + str(getattr(route, "path", ""))
-        if path.startswith("/api/v1/settings/video-learning"):
-            key = "/api/v1/settings/video-learning"
-        elif path.startswith("/api/v1/video-learning"):
-            key = "/api/v1/video-learning"
+        if path.startswith("/api/settings/video-learning"):
+            key = "/api/settings/video-learning"
+        elif path.startswith("/api/video-learning"):
+            key = "/api/video-learning"
         else:
             continue
         mounts.setdefault(key, set()).update(
@@ -116,8 +116,8 @@ def test_main_mounts_settings_as_admin_only_and_learning_as_authenticated() -> N
         )
     # Router-level dependencies surface as Depends objects via the stubs; the
     # set already holds bare .call values from both route- and router-level.
-    assert require_admin in mounts["/api/v1/settings/video-learning"]
-    assert require_auth in mounts["/api/v1/video-learning"]
+    assert require_admin in mounts["/api/settings/video-learning"]
+    assert require_learning_surface in mounts["/api/video-learning"]
 
 
 def test_progress_clamps_to_duration_and_unknown_material_is_404(client: TestClient) -> None:

@@ -49,6 +49,7 @@ from .._turn_runtime_shared import (
     _stamp_ask_user_content_offset,
     _timed_media_id,
     _timed_media_viewport,
+    _kp_visualizer_manifest,
     _topic_material_manifest,
     _TurnExecution,
     _workspace_mode,
@@ -619,6 +620,15 @@ class TurnExecutor:
                     source_manifest_text, mastery_topic_source_index = await asyncio.to_thread(
                         _topic_material_manifest, topic_path_id
                     )
+                    visualizer_manifest_text = await asyncio.to_thread(
+                        _kp_visualizer_manifest, topic_path_id
+                    )
+                    if visualizer_manifest_text:
+                        source_manifest_text = (
+                            f"{source_manifest_text}\n{visualizer_manifest_text}".strip()
+                            if source_manifest_text
+                            else visualizer_manifest_text
+                        )
 
             # Agentic actions receive workspace behavior through loop
             # capabilities and tools. Standalone pipelines (Quiz, Research,
@@ -849,7 +859,7 @@ class TurnExecutor:
                 # settings，gate_skill 的声明式启用落点待重设计（候选：mastery
                 # path state 或用户级开关）。当前 get_session 不再返回 settings，
                 # 此块恒为 no-op——不阻塞，khan 门禁无生产流量。
-                from deeptutor.api.gates.skill_gate import (
+                from deeptutor.services.gates.skill_gate import (
                     check_and_remedy,
                     init_gate_state,
                     update_gate_state,

@@ -132,9 +132,6 @@ def export_paper_reorder(body: PaperExportApiRequest) -> Response:
     )
 
 
-@router.websocket("/mimic")
-
-
 @ws_router.websocket("/mimic")
 
 async def websocket_mimic_generate(websocket: WebSocket):

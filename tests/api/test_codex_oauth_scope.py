@@ -58,6 +58,14 @@ class _Service:
         self.calls.append("refresh")
         return {"connection": "connected"}
 
+    async def set_reasoning_effort(
+        self,
+        model: str,
+        reasoning_effort: str | None,
+    ) -> dict[str, Any]:
+        self.calls.append(f"reasoning:{model}:{reasoning_effort}")
+        return {"connection": "connected"}
+
 
 def _user(uid: str, *, role: str, root) -> CurrentUser:
     return CurrentUser(

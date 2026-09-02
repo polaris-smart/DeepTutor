@@ -3154,12 +3154,6 @@ async def run_reindex_task(kb_name: str, base_dir: str, task_id: str, signature_
                     meta_err,
                 )
 
-            # Flip the KB's on-disk .progress.json to completed, exactly like
-            # the create/upload paths do. Without this the reindex success path
-            # leaves .progress.json stuck at the last embedding-batch snapshot
-            # (stage=processing_documents), so GET /{kb}/progress and the
-            # progress WebSocket report a perpetual "processing" banner even
-            # though kb_config.json has already been promoted to "ready".
             progress_tracker.update(
                 ProgressStage.COMPLETED,
                 "Re-index complete",
@@ -3168,24 +3162,6 @@ async def run_reindex_task(kb_name: str, base_dir: str, task_id: str, signature_
                 indexed_count=len(file_paths),
                 index_changed=True,
                 index_action="reindex",
-            )
-
-            manager = get_kb_manager()
-            manager.update_kb_status(
-                name=kb_name,
-                status="ready",
-                progress={
-                    "stage": "completed",
-                    "message": "Re-index complete",
-                    "percent": 100,
-                    "current": len(file_paths),
-                    "total": len(file_paths),
-                    "task_id": task_id,
-                    "timestamp": completed_at,
-                    "indexed_count": len(file_paths),
-                    "index_changed": True,
-                    "index_action": "reindex",
-                },
             )
             try:
                 with open(progress_tracker.progress_file, encoding="utf-8") as handle:
@@ -3237,18 +3213,20 @@ async def run_reindex_task(kb_name: str, base_dir: str, task_id: str, signature_
 
             error_msg = str(e)
             trace = _tb.format_exc()
+            failure_metadata = _exception_failure_metadata(e)
             _task_log(task_id, f"Re-index failed: {error_msg}", level="error")
-            _task_log(task_id, f"Stack trace:\n{trace}", level="error")
+            _server_task_trace(task_id, trace)
             task_manager.update_task_status(task_id, "error", error=error_msg)
             try:
                 ProgressTracker(kb_name, Path(base_dir)).update(
                     ProgressStage.ERROR,
                     f"Re-index failed: {error_msg}",
                     error=error_msg,
+                    **failure_metadata,
                 )
             except Exception:
                 pass
-            task_stream_manager.emit_failed(task_id, error_msg, details=trace)
+            task_stream_manager.emit_failed(task_id, error_msg, **failure_metadata)
 
 
 @router.post("/knowledge-bases/{kb_name}/reindex")

@@ -68,7 +68,7 @@ def _docstore(*nodes: _Node):
 
 def _questions_client(monkeypatch: pytest.MonkeyPatch, docstore) -> TestClient:
     app = FastAPI()
-    app.include_router(knowledge_module.router, prefix="/api/v1/knowledge")
+    app.include_router(knowledge_module.router, prefix="/api")
     monkeypatch.setattr(
         knowledge_module,
         "_load_kb_docstore",
@@ -79,7 +79,7 @@ def _questions_client(monkeypatch: pytest.MonkeyPatch, docstore) -> TestClient:
 
 def _questions_client_without_docstore(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     app = FastAPI()
-    app.include_router(knowledge_module.router, prefix="/api/v1/knowledge")
+    app.include_router(knowledge_module.router, prefix="/api")
     monkeypatch.setattr(
         knowledge_module,
         "_load_kb_docstore",
@@ -167,7 +167,7 @@ def _teacher_edition_docstore() -> SimpleNamespace:
 def test_questions_by_struct_returns_is_question_nodes(monkeypatch: pytest.MonkeyPatch) -> None:
     with _questions_client(monkeypatch, _teacher_edition_docstore()) as client:
         response = client.get(
-            "/api/v1/knowledge/数学/questions/by-struct",
+            "/api/数学/questions/by-struct",
             params={"struct_path": "必修一/第1章"},
         )
 
@@ -226,7 +226,7 @@ def test_questions_by_struct_reads_serialized_qa_split_metadata(
     )
     with _questions_client(monkeypatch, docstore) as client:
         response = client.get(
-            "/api/v1/knowledge/数学/questions/by-struct",
+            "/api/数学/questions/by-struct",
             params={"struct_path": "必修一/第1章"},
         )
 
@@ -254,7 +254,7 @@ def test_questions_by_struct_prefix_does_not_leak_into_longer_chapter_numbers(
     """“第1章” must match 第1章… but never 第11章… (segment-aware prefix)."""
     with _questions_client(monkeypatch, _teacher_edition_docstore()) as client:
         response = client.get(
-            "/api/v1/knowledge/数学/questions/by-struct",
+            "/api/数学/questions/by-struct",
             params={"struct_path": "第1章"},
         )
 
@@ -266,7 +266,7 @@ def test_questions_by_struct_prefix_does_not_leak_into_longer_chapter_numbers(
 def test_questions_by_struct_matches_full_book_path(monkeypatch: pytest.MonkeyPatch) -> None:
     with _questions_client(monkeypatch, _teacher_edition_docstore()) as client:
         response = client.get(
-            "/api/v1/knowledge/数学/questions/by-struct",
+            "/api/数学/questions/by-struct",
             params={"struct_path": "必修二/第11章 统计"},
         )
 
@@ -280,7 +280,7 @@ def test_questions_by_struct_requires_nonempty_struct_path(
 ) -> None:
     with _questions_client(monkeypatch, _teacher_edition_docstore()) as client:
         response = client.get(
-            "/api/v1/knowledge/数学/questions/by-struct",
+            "/api/数学/questions/by-struct",
             params={},
         )
 
@@ -296,7 +296,7 @@ def test_questions_by_struct_returns_empty_with_hint_when_no_doc_intel(
     )
     with _questions_client(monkeypatch, docstore) as client:
         response = client.get(
-            "/api/v1/knowledge/讲义库/questions/by-struct",
+            "/api/讲义库/questions/by-struct",
             params={"struct_path": "第1章"},
         )
 
@@ -312,7 +312,7 @@ def test_questions_by_struct_returns_empty_with_hint_for_empty_index(
 ) -> None:
     with _questions_client_without_docstore(monkeypatch) as client:
         response = client.get(
-            "/api/v1/knowledge/空库/questions/by-struct",
+            "/api/空库/questions/by-struct",
             params={"struct_path": "第1章"},
         )
 
@@ -498,5 +498,5 @@ def test_exam_paper_and_questions_routes_registered_in_main_app() -> None:
     )
     assert (
         api_main.app.url_path_for("get_questions_by_struct", kb_name="数学")
-        == "/api/v1/knowledge/数学/questions/by-struct"
+        == "/api/数学/questions/by-struct"
     )

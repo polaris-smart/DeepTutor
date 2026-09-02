@@ -44,7 +44,22 @@ def _patch_runtime(
     )
     monkeypatch.setattr(
         "deeptutor.services.search.resolve_search_runtime_config",
-        lambda: ResolvedSearchConfig(
+        lambda: resolved,
+    )
+    monkeypatch.setattr(
+        "deeptutor.services.search.search_fallback_candidates",
+        lambda _provider: list(kwargs.get("candidates", [])),
+    )
+    monkeypatch.setattr(
+        "deeptutor.services.search.search_provider_credentials",
+        lambda provider: kwargs.get("credentials", {}).get(provider, ("", "")),
+    )
+
+
+def test_web_search_rejects_deprecated_provider(monkeypatch) -> None:
+    _patch_runtime(
+        monkeypatch,
+        ResolvedSearchConfig(
             provider="exa",
             requested_provider="exa",
             unsupported_provider=True,
@@ -74,13 +89,9 @@ def test_web_search_none_provider_returns_actionable_configuration_error(monkeyp
 
 
 def test_web_search_perplexity_missing_key_hard_fails(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "deeptutor.services.search._get_web_search_config",
-        lambda: {"enabled": True},
-    )
-    monkeypatch.setattr(
-        "deeptutor.services.search.resolve_search_runtime_config",
-        lambda: ResolvedSearchConfig(
+    _patch_runtime(
+        monkeypatch,
+        ResolvedSearchConfig(
             provider="perplexity",
             requested_provider="perplexity",
             api_key="",
@@ -88,7 +99,6 @@ def test_web_search_perplexity_missing_key_hard_fails(monkeypatch) -> None:
             missing_credentials=True,
         ),
     )
-    monkeypatch.setattr("deeptutor.services.search._resolve_provider_key", lambda _p, _k: "")
     with pytest.raises(ValueError, match="perplexity requires api_key"):
         web_search("hello")
 
@@ -101,13 +111,9 @@ def test_web_search_missing_key_falls_back_to_duckduckgo(monkeypatch) -> None:
         captured["kwargs"] = kwargs
         return _FakeProvider(name)
 
-    monkeypatch.setattr(
-        "deeptutor.services.search._get_web_search_config",
-        lambda: {"enabled": True},
-    )
-    monkeypatch.setattr(
-        "deeptutor.services.search.resolve_search_runtime_config",
-        lambda: ResolvedSearchConfig(
+    _patch_runtime(
+        monkeypatch,
+        ResolvedSearchConfig(
             provider="brave",
             requested_provider="brave",
             api_key="",
@@ -116,7 +122,6 @@ def test_web_search_missing_key_falls_back_to_duckduckgo(monkeypatch) -> None:
             proxy="http://127.0.0.1:7890",
         ),
     )
-    monkeypatch.setattr("deeptutor.services.search._resolve_provider_key", lambda _p, _k: "")
     monkeypatch.setattr("deeptutor.services.search.get_provider", _fake_get_provider)
     result = web_search("hello")
     assert captured["provider"] == "duckduckgo"
@@ -134,13 +139,9 @@ def test_web_search_searxng_uses_base_url(monkeypatch) -> None:
         captured["kwargs"] = kwargs
         return _FakeProvider(name)
 
-    monkeypatch.setattr(
-        "deeptutor.services.search._get_web_search_config",
-        lambda: {"enabled": True},
-    )
-    monkeypatch.setattr(
-        "deeptutor.services.search.resolve_search_runtime_config",
-        lambda: ResolvedSearchConfig(
+    _patch_runtime(
+        monkeypatch,
+        ResolvedSearchConfig(
             provider="searxng",
             requested_provider="searxng",
             base_url="https://searx.example.com",

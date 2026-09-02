@@ -481,7 +481,6 @@ from deeptutor.api.routers import (
     book,
     capabilities,
     capabilities_settings,
-    chat,
     class_insights,
     co_writer,
     courses,

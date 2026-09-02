@@ -64,7 +64,7 @@ def _client(role: str, monkeypatch: pytest.MonkeyPatch) -> TestClient:
 def test_student_cannot_write_kb_config(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _client("student", monkeypatch)
     response = client.put(
-        "/api/v1/knowledge/数学/config", json={"rag_provider": "llamaindex"}
+        "/api/v1/knowledge/knowledge-bases/数学/config", json={"rag_provider": "llamaindex"}
     )
     assert response.status_code == 403
 
@@ -72,7 +72,7 @@ def test_student_cannot_write_kb_config(monkeypatch: pytest.MonkeyPatch) -> None
 def test_teacher_can_write_kb_config(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _client("teacher", monkeypatch)
     response = client.put(
-        "/api/v1/knowledge/数学/config", json={"rag_provider": "llamaindex"}
+        "/api/v1/knowledge/knowledge-bases/数学/config", json={"rag_provider": "llamaindex"}
     )
     assert response.status_code == 200
 
@@ -80,7 +80,7 @@ def test_teacher_can_write_kb_config(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_admin_can_write_kb_config(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _client("admin", monkeypatch)
     response = client.put(
-        "/api/v1/knowledge/数学/config", json={"rag_provider": "llamaindex"}
+        "/api/v1/knowledge/knowledge-bases/数学/config", json={"rag_provider": "llamaindex"}
     )
     assert response.status_code == 200
 
@@ -123,6 +123,6 @@ def test_config_write_still_denies_parent(monkeypatch: pytest.MonkeyPatch) -> No
     """直通只限资料上传：parent 改 KB 配置仍 403（config=admin/teacher）。"""
     client = _client("parent", monkeypatch)
     response = client.put(
-        "/api/v1/knowledge/数学/config", json={"rag_provider": "llamaindex"}
+        "/api/v1/knowledge/knowledge-bases/数学/config", json={"rag_provider": "llamaindex"}
     )
     assert response.status_code == 403

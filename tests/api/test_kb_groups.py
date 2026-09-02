@@ -115,7 +115,7 @@ def test_create_with_group_persists_group(api_client) -> None:
     client, manager = api_client
 
     response = client.post(
-        "/api/v1/knowledge/create",
+        "/api/v1/knowledge/knowledge-bases",
         data={"name": "test-kb-1", "group": "Group A"},
         files=_upload(),
     )
@@ -128,7 +128,7 @@ def test_create_without_group_persists_empty_group(api_client) -> None:
     client, manager = api_client
 
     response = client.post(
-        "/api/v1/knowledge/create",
+        "/api/v1/knowledge/knowledge-bases",
         data={"name": "test-kb-1"},
         files=_upload(),
     )
@@ -144,8 +144,8 @@ def test_list_filters_by_group(api_client) -> None:
         "test-kb-2": {"path": "test-kb-2", "group": "", "status": "ready"},
     }
 
-    response = client.get("/api/v1/knowledge/list", params={"group": "Group A"})
-    uncategorized_response = client.get("/api/v1/knowledge/list", params={"group": ""})
+    response = client.get("/api/v1/knowledge/knowledge-bases", params={"group": "Group A"})
+    uncategorized_response = client.get("/api/v1/knowledge/knowledge-bases", params={"group": ""})
 
     assert response.status_code == 200
     assert [(item["name"], item["group"]) for item in response.json()] == [
