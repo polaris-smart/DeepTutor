@@ -33,6 +33,44 @@ from deeptutor.utils.document_validator import DocumentValidator
 #: this must stay comfortably below the 1000-char chunk budget.
 _DI_BLOCK_META_BUDGET = 600
 
+#: Total serialized-size budget for a Document's metadata. LlamaIndex rejects
+#: documents whose metadata exceeds the chunk size (1000), and metadata is
+#: assembled from several sources (file identity, doc_intel classification,
+#: tree, block bridge data) — enforce a hard cap here as the last line of
+#: defence, shedding optional fields largest-first while keeping the file
+#: identity keys intact.
+_METADATA_TOTAL_BUDGET = 900
+
+
+def _enforce_metadata_budget(metadata: dict) -> dict:
+    """Shed optional metadata fields until the serialized size fits the budget."""
+    import json as _json
+
+    def _size(m: dict) -> int:
+        return len(_json.dumps(m, ensure_ascii=False, default=str))
+
+    if _size(metadata) <= _METADATA_TOTAL_BUDGET:
+        return metadata
+    slim = dict(metadata)
+    # Shed largest-first among the known optional blobs.
+    for shed_key in ("di_block_meta", "doc_tree", "doc_intel_classification"):
+        if shed_key in slim and _size(slim) <= _METADATA_TOTAL_BUDGET:
+            break
+        slim.pop(shed_key, None)
+    # Still over — truncate every non-identity value to a short head.
+    if _size(slim) > _METADATA_TOTAL_BUDGET:
+        identity = {
+            k: slim[k]
+            for k in ("file_name", "file_path")
+            if k in slim
+        }
+        rest = {k: str(v)[:160] for k, v in slim.items() if k not in identity}
+        slim = {**rest, **identity}
+        while _size(slim) > _METADATA_TOTAL_BUDGET and len(rest) > 1:
+            rest.pop(next(iter(rest)))
+            slim = {**rest, **identity}
+    return slim
+
 from .config import image_description_limits
 
 IMAGE_DESCRIPTION_SYSTEM_PROMPT = (
@@ -710,7 +748,7 @@ class LlamaIndexDocumentLoader:
             documents.append(
                 Document(
                     text=text,
-                    metadata=metadata,
+                    metadata=_enforce_metadata_budget(metadata),
                 )
             )
             self.logger.info(
