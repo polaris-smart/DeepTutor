@@ -16,7 +16,11 @@ function LoginPageContent() {
   const { t } = useTranslation();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const next = normalizeInternalReturnPath(searchParams.get("next"));
+  // No ``?next`` at all must stay falsy: normalizeInternalReturnPath's
+  // default fallback is "/" and its truthiness would pin every learner to
+  // the chat home, dead-ending the role landing below.
+  const rawNext = searchParams.get("next");
+  const next = rawNext === null ? "" : normalizeInternalReturnPath(rawNext, "");
   const resolvedNext = useCallback(
     () =>
       inheritLoginHash(

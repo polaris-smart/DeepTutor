@@ -459,6 +459,8 @@ def _learning_surface_for_path(path: str) -> str:
         ("/api/question", "chat"),
         ("/api/question-notebook", "chat"),
         ("/api/sessions", "chat"),
+        ("/api/daily-plan", "daily-plan"),
+        ("/api/assignments", "assignments"),
     ):
         if normalized == root or normalized.startswith(f"{root}/"):
             return surface
