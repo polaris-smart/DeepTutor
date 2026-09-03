@@ -479,6 +479,7 @@ except Exception:
 from deeptutor.api.routers import (
     agent_config,
     attachments,
+    assignments,
     auth,
     book,
     capabilities,
@@ -570,6 +571,12 @@ app.include_router(
     daily_plan.router,
     prefix="/api/daily-plan",
     tags=["daily-plan"],
+    dependencies=_auth,
+)
+app.include_router(
+    assignments.router,
+    prefix="/api/assignments",
+    tags=["assignments"],
     dependencies=_auth,
 )
 # WebSocket handlers authenticate inside the connection before ``accept``.

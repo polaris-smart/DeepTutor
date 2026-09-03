@@ -20,6 +20,7 @@ import {
 
 import { SPACE_MCP_SURFACE, loadMcpSurface } from "@/components/mcp/surface";
 import TodayLearningCard from "@/components/space/TodayLearningCard";
+import AssignmentsCard from "@/components/space/AssignmentsCard";
 import { getCliApps } from "@/lib/cli-apps-api";
 import { listSessions } from "@/lib/session-api";
 import { listNotebooks, listNotebookEntries } from "@/lib/notebook-api";
@@ -288,8 +289,9 @@ export default function SpaceDashboard() {
         </p>
       </header>
 
-      <div className="mb-9">
+      <div className="mb-9 space-y-3">
         <TodayLearningCard />
+        <AssignmentsCard />
       </div>
 
       <div className="space-y-9">

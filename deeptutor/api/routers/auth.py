@@ -429,6 +429,28 @@ async def require_admin_or_teacher(
     return payload
 
 
+async def require_teacher(
+    payload: TokenPayload | None = Depends(require_auth),
+) -> TokenPayload:
+    """
+    FastAPI dependency that requires the caller to be a teacher.
+
+    Guards the teacher-only assignment flow (布置/判分统计), mirroring
+    :func:`require_admin`. When AUTH_ENABLED=false, all requests are treated
+    as admin and pass through with the local admin payload — the same
+    convention :func:`require_admin` uses.
+    """
+    if not AUTH_ENABLED:
+        return _local_admin_token_payload()
+
+    if payload is None or payload.role != "teacher":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Teacher access required",
+        )
+    return payload
+
+
 def _learning_surface_for_path(path: str) -> str:
     normalized = "/" + str(path or "").lstrip("/")
     for root, surface in (
