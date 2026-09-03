@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useTranslation } from "react-i18next";
 import { login, fetchAuthStatus, logout, checkIsFirstUser } from "@/lib/auth";
 import type { AuthStatus } from "@/lib/auth";
+import { landingHrefFor } from "@/components/sidebar/nav-entries";
 import {
   inheritLoginHash,
   normalizeInternalReturnPath,
@@ -23,6 +24,23 @@ function LoginPageContent() {
         typeof window === "undefined" ? "" : window.location.hash,
       ),
     [next],
+  );
+
+  /**
+   * Where to go once signed in. An explicit ``?next=`` return path always
+   * wins; otherwise learner-facing roles land straight in the Learning Space
+   * (their sidebar is pruned to the learning flow) instead of the generic
+   * home, while staff keep today's landing. The role comes from the same
+   * ``AuthStatus`` the ``useAuthStatus`` hook exposes — no new role logic.
+   */
+  const resolveTarget = useCallback(
+    (status: AuthStatus | null) => {
+      // No confirmed session (e.g. the status fetch failed) — fall back to
+      // the return path / home rather than guessing a role landing.
+      if (next || !status?.authenticated) return resolvedNext();
+      return landingHrefFor(status.role ?? "");
+    },
+    [next, resolvedNext],
   );
 
   const registered = searchParams.get("registered") === "1";
@@ -67,7 +85,9 @@ function LoginPageContent() {
     const result = await login(username, password);
 
     if (result.ok) {
-      router.replace(resolvedNext());
+      // login() already dropped the status cache, so this is the fresh role.
+      const status = await fetchAuthStatus();
+      router.replace(resolveTarget(status));
     } else {
       setError(result.error ?? t("Login failed"));
       setLoading(false);
@@ -99,7 +119,7 @@ function LoginPageContent() {
           </p>
           <div className="mt-2.5 flex gap-2">
             <button
-              onClick={() => router.replace(resolvedNext())}
+              onClick={() => router.replace(resolveTarget(current))}
               className="rounded-lg px-3 py-1.5 text-sm font-medium bg-[var(--primary)] text-[var(--primary-foreground)] hover:opacity-90 transition-opacity"
             >
               {t("Continue")}

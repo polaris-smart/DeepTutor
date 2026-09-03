@@ -65,6 +65,27 @@ export function secondaryNavFor(role: string): NavEntry[] {
   return SECONDARY_NAV.filter((entry) => isNavEntryVisible(entry, role));
 }
 
+/** The hub feature learner-facing roles land on after signing in. Also the
+ *  href ``isNavActive`` special-cases, so it stays defined in one place. */
+const LEARNING_SPACE_HREF = "/space";
+
+/**
+ * Where ``role`` lands when it signs in without an explicit return path.
+ *
+ * Staff keep the generic home. Learner-facing roles have their nav pruned to
+ * the learning flow, so send them straight to the Learning Space — the hub of
+ * the nav they actually see — instead of the chat home they'd have to leave.
+ * Falls back to the first entry their nav still shows if the Learning Space
+ * ever leaves the learner set.
+ */
+export function landingHrefFor(role: string): string {
+  if (FULL_NAV_ROLES.has(role)) return "/";
+  const hrefs = primaryNavHrefsFor(role);
+  return hrefs.includes(LEARNING_SPACE_HREF)
+    ? LEARNING_SPACE_HREF
+    : (hrefs[0] ?? "/");
+}
+
 /**
  * The workspace features, in the order they ship in.
  *
