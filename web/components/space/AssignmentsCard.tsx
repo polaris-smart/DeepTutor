@@ -300,9 +300,10 @@ function QuestionBlock({
   index: number;
   item: AssignmentItem;
   selected: string | undefined;
-  onSelect: (letter: string) => void;
+  onSelect: (value: string) => void;
   tr: (l: Lang) => string;
 }) {
+  const isShort = item.type === "short";
   return (
     <div className="rounded-lg border border-[var(--border)] p-3">
       <p className="text-[13.5px] font-medium leading-relaxed text-[var(--foreground)]">
@@ -311,36 +312,51 @@ function QuestionBlock({
         </span>
         {item.stem}
       </p>
-      <div className="mt-2 space-y-1.5">
-        {item.options.map((body, optionIndex) => {
-          const letter = optionLetter(optionIndex);
-          const checked = selected === letter;
-          return (
-            <label
-              key={letter}
-              className={`flex cursor-pointer items-start gap-2 rounded-lg border px-2.5 py-1.5 text-[13px] transition-colors ${
-                checked
-                  ? "border-teal-500/60 bg-teal-500/10 text-[var(--foreground)]"
-                  : "border-[var(--border)] text-[var(--foreground)] hover:border-teal-500/40"
-              }`}
-            >
-              <input
-                type="radio"
-                name={`q-${item.kp_id}-${item.q_idx}`}
-                className="mt-0.5 accent-teal-600"
-                checked={checked}
-                onChange={() => onSelect(letter)}
-              />
-              <span className="min-w-0 flex-1 leading-relaxed">
-                <span className="mr-1 font-medium">{letter}.</span>
-                {body}
-              </span>
-            </label>
-          );
-        })}
-      </div>
+      {isShort ? (
+        // 数学填空: 单行输入,判分交给后端的数学归一化 (1/2 ≡ 0.5)。
+        <input
+          type="text"
+          value={selected ?? ""}
+          maxLength={500}
+          onChange={(e) => onSelect(e.target.value)}
+          placeholder={tr({ zh: "输入答案…", en: "Type your answer…" })}
+          aria-label={tr({ zh: "填空答案", en: "Fill-in answer" })}
+          className="mt-2 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2.5 py-1.5 text-[13px] text-[var(--foreground)] outline-none transition-colors hover:border-teal-500/40 focus:border-teal-500/60"
+        />
+      ) : (
+        <div className="mt-2 space-y-1.5">
+          {item.options.map((body, optionIndex) => {
+            const letter = optionLetter(optionIndex);
+            const checked = selected === letter;
+            return (
+              <label
+                key={letter}
+                className={`flex cursor-pointer items-start gap-2 rounded-lg border px-2.5 py-1.5 text-[13px] transition-colors ${
+                  checked
+                    ? "border-teal-500/60 bg-teal-500/10 text-[var(--foreground)]"
+                    : "border-[var(--border)] text-[var(--foreground)] hover:border-teal-500/40"
+                }`}
+              >
+                <input
+                  type="radio"
+                  name={`q-${item.kp_id}-${item.q_idx}`}
+                  className="mt-0.5 accent-teal-600"
+                  checked={checked}
+                  onChange={() => onSelect(letter)}
+                />
+                <span className="min-w-0 flex-1 leading-relaxed">
+                  <span className="mr-1 font-medium">{letter}.</span>
+                  {body}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      )}
       <p className="sr-only">
-        {tr({ zh: "选择一个选项", en: "Pick one option" })}
+        {isShort
+          ? tr({ zh: "输入你的答案", en: "Type your answer" })
+          : tr({ zh: "选择一个选项", en: "Pick one option" })}
       </p>
     </div>
   );

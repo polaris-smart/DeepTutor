@@ -116,7 +116,7 @@ export default function AssignmentsPage() {
         due_at: dueAt || undefined,
       });
       const skipped = result.skipped.length
-        ? ` (${t("Skipped {{count}} knowledge points without a choice question", {
+        ? ` (${t("Skipped {{count}} knowledge points without an assignable question", {
             count: result.skipped.length,
           })})`
         : "";
@@ -259,7 +259,9 @@ export default function AssignmentsPage() {
                           </span>
                           {kp.preview && (
                             <span className="mt-0.5 block truncate text-xs text-[var(--muted-foreground)]">
-                              {kp.preview.stem} · {kp.preview.options.join(" / ")}
+                              {kp.preview.stem}
+                              {kp.preview.options.length > 0 &&
+                                ` · ${kp.preview.options.join(" / ")}`}
                             </span>
                           )}
                           {!kp.has_question && (
@@ -365,6 +367,9 @@ export default function AssignmentsPage() {
                         <th className="px-5 py-2 font-medium">
                           {t("Per knowledge point")}
                         </th>
+                        <th className="px-5 py-2 font-medium">
+                          {t("Per question type")}
+                        </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[var(--border)]">
@@ -400,6 +405,21 @@ export default function AssignmentsPage() {
                                   className="inline-flex items-center rounded-full bg-[var(--muted)]/60 px-2 py-0.5 text-xs tabular-nums text-[var(--muted-foreground)]"
                                 >
                                   {kp.correct}/{kp.total}
+                                </span>
+                              ))}
+                            </div>
+                          </td>
+                          <td className="px-5 py-2.5">
+                            <div className="flex flex-wrap gap-1">
+                              {student.per_type.map((byType) => (
+                                <span
+                                  key={byType.type}
+                                  className="inline-flex items-center gap-1 rounded-full bg-[var(--muted)]/60 px-2 py-0.5 text-xs tabular-nums text-[var(--muted-foreground)]"
+                                >
+                                  {byType.type === "short"
+                                    ? t("Short answer")
+                                    : t("Choice")}
+                                  {byType.correct}/{byType.total}
                                 </span>
                               ))}
                             </div>

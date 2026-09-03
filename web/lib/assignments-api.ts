@@ -14,6 +14,9 @@ export interface AssignmentItem {
   kp_id: string;
   q_idx: number;
   stem: string;
+  /** "choice" renders option radios; "short" renders a fill-in input. */
+  type: "choice" | "short";
+  /** Empty for a short item. */
   options: string[];
 }
 
@@ -35,6 +38,8 @@ export interface StudentAssignmentStat {
   correct: number;
   total: number;
   per_kp: { kp_id: string; correct: number; total: number }[];
+  /** Same accuracy broken out by question type (choice / short). */
+  per_type: { type: "choice" | "short"; correct: number; total: number }[];
 }
 
 export interface TeacherAssignment extends AssignmentSummary {
@@ -62,6 +67,16 @@ export interface SubmitResult {
   correct: boolean;
 }
 
+/**
+ * Where the wrong answers went: ``linked`` counts error records written into
+ * the student's own mastery store; ``skipped`` names why nothing was written
+ * (e.g. the student has no LearningProgress for the book yet).
+ */
+export interface ErrorLinkReport {
+  linked: number;
+  skipped: string | null;
+}
+
 export interface StudentAssignment {
   assignment_id: string;
   class_id: string;
@@ -83,6 +98,7 @@ export interface SubmitResponse {
   correct_count: number;
   total: number;
   results: SubmitResult[];
+  error_link: ErrorLinkReport;
 }
 
 /** One KP row of the teacher picker (with an optional question preview). */
@@ -91,7 +107,7 @@ export interface KpQuestionOption {
   name: string;
   module: string;
   has_question: boolean;
-  preview: { stem: string; options: string[] } | null;
+  preview: { stem: string; type: "choice" | "short"; options: string[] } | null;
 }
 
 export interface KpQuestionsResponse {

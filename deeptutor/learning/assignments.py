@@ -8,8 +8,9 @@ atomic-write / single-process write lock conventions as the roster store.
 
 Record shape (one entry per assignment id)::
 
-    { assignment_id, class_id, teacher_id, title, created_at, due_at?,
-      items: [{kp_id, question: {stem, options[], answer, explanation?}}],
+    { assignment_id, class_id, book_id?, teacher_id, title, created_at, due_at?,
+      items: [{kp_id, question: {stem, type: "choice"|"short", options[],
+               answer, explanation?}}],
       submissions: { student_id: {submitted_at, results: [{kp_id, q_idx,
                     answer, correct}] } } }
 

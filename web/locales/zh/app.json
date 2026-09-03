@@ -4931,7 +4931,6 @@
   "Select a book first": "请先选择书本",
   "Enter a title and select at least one knowledge point": "请填写标题并至少选择一个知识点",
   "Assignment created": "作业已布置",
-  "Skipped {{count}} knowledge points without a choice question": "已跳过 {{count}} 个没有选择题的知识点",
   "Failed to create assignment": "布置作业失败",
   "Failed to load knowledge points": "知识点加载失败",
   "New assignment": "布置新作业",
@@ -4942,5 +4941,9 @@
   "Due {{date}}": "截止 {{date}}",
   "{{submitted}}/{{total}} submitted": "{{submitted}}/{{total}} 人已提交",
   "Not submitted": "未提交",
-  "Per knowledge point": "分知识点"
+  "Per knowledge point": "分知识点",
+  "Per question type": "分题型",
+  "Choice": "选择",
+  "Short answer": "填空",
+  "Skipped {{count}} knowledge points without an assignable question": "已跳过 {{count}} 个没有可布置题目的知识点"
 }
