@@ -486,6 +486,7 @@ from deeptutor.api.routers import (
     class_insights,
     co_writer,
     courses,
+    daily_plan,
     dashboard,
     exam_paper,
     imports,
@@ -563,6 +564,12 @@ app.include_router(
     mastery_path.router,
     prefix="/api/mastery-paths",
     tags=["mastery-path"],
+    dependencies=_auth,
+)
+app.include_router(
+    daily_plan.router,
+    prefix="/api/daily-plan",
+    tags=["daily-plan"],
     dependencies=_auth,
 )
 # WebSocket handlers authenticate inside the connection before ``accept``.

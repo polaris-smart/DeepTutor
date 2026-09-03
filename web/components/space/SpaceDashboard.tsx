@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 
 import { SPACE_MCP_SURFACE, loadMcpSurface } from "@/components/mcp/surface";
+import TodayLearningCard from "@/components/space/TodayLearningCard";
 import { getCliApps } from "@/lib/cli-apps-api";
 import { listSessions } from "@/lib/session-api";
 import { listNotebooks, listNotebookEntries } from "@/lib/notebook-api";
@@ -286,6 +287,10 @@ export default function SpaceDashboard() {
           })}
         </p>
       </header>
+
+      <div className="mb-9">
+        <TodayLearningCard />
+      </div>
 
       <div className="space-y-9">
         {groups.map((group) => (
