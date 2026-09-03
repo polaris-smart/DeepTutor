@@ -491,6 +491,7 @@ from deeptutor.api.routers import (
     dashboard,
     exam_paper,
     imports,
+    ingest_pipeline,
     knowledge,
     marginnote4,
     mastery_path,
@@ -577,6 +578,15 @@ app.include_router(
     assignments.router,
     prefix="/api/assignments",
     tags=["assignments"],
+    dependencies=_auth,
+)
+# Ingest pipeline (素材四段编排器): every route carries its own
+# require_admin_or_teacher gate; router-level _auth keeps the module
+# consistent with every other workspace router.
+app.include_router(
+    ingest_pipeline.router,
+    prefix="/api/ingest-pipeline",
+    tags=["ingest-pipeline"],
     dependencies=_auth,
 )
 # WebSocket handlers authenticate inside the connection before ``accept``.
