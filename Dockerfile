@@ -495,16 +495,7 @@ FROM production AS development
 # went FATAL, and the image looked broken (#906). Taking the builder's tree
 # wholesale also stops the list from drifting each time web/ grows a
 # top-level entry. `--chown` during the copy avoids re-layering node_modules.
-COPY --chown=deeptutor:deeptutor --from=frontend-builder /app/web ./web
 
-# `next dev` runs as the unprivileged deeptutor user (via `user=deeptutor` in
-# the supervisord config) and must create/write its build cache under
-# /app/web/.next, so give that user ownership of the web dir and the cache.
-# The production build copied in above is not reusable by `next dev`, so it
-# starts from an empty cache rather than a half-valid one.
-RUN rm -rf /app/web/.next \
-    && mkdir -p /app/web/.next \
-    && chown deeptutor:deeptutor /app/web /app/web/.next
 
 # Install development tools
 RUN sed -i 's|deb.debian.org|mirrors.ustc.edu.cn|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
@@ -523,32 +514,6 @@ RUN pip install --no-cache-dir \
 # Development overrides only the program definitions (uvicorn --reload and
 # `next dev`); the shared daemon-level /etc/supervisor/supervisord.conf from
 # the production stage is reused as-is.
-RUN cat > /etc/supervisor/conf.d/programs.conf <<'EOF'
-[program:backend]
-command=/bin/bash -c "exec python -m uvicorn deeptutor.api.main:app --host 0.0.0.0 --port ${BACKEND_PORT:-8001} --reload --no-access-log --ws-max-size $(python -c 'from deeptutor.services.config import get_ws_max_size; print(get_ws_max_size())' 2>/dev/null || echo 16777216) --timeout-keep-alive $(python -c 'from deeptutor.services.config import HTTP_KEEP_ALIVE_TIMEOUT; print(HTTP_KEEP_ALIVE_TIMEOUT)' 2>/dev/null || echo 300)"
-directory=/app
-user=deeptutor
-autostart=true
-autorestart=true
-stdout_logfile=/dev/fd/1
-stdout_logfile_maxbytes=0
-stderr_logfile=/dev/fd/2
-stderr_logfile_maxbytes=0
-environment=PYTHONPATH="/app",PYTHONUNBUFFERED="1"
-
-[program:frontend]
-command=/bin/bash -c "cd /app/web && node scripts/dev.mjs -H 0.0.0.0 -p ${FRONTEND_PORT:-3782}"
-directory=/app/web
-user=deeptutor
-autostart=true
-autorestart=true
-startsecs=5
-stdout_logfile=/dev/fd/1
-stdout_logfile_maxbytes=0
-stderr_logfile=/dev/fd/2
-stderr_logfile_maxbytes=0
-environment=NODE_ENV="development"
-EOF
 
 RUN sed -i 's/\r$//' /etc/supervisor/conf.d/programs.conf
 
