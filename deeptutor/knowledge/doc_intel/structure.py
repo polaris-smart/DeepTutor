@@ -1,4 +1,4 @@
-"""Textbook structure tree extraction: 单元 → 课 → 节.
+"""Textbook structure tree extraction: 单元 → 课/章 → 节 → 目.
 
 Signals, in priority order:
 1. ``text_level`` on title/text blocks (MinerU v1 content_list) — level 1 is
@@ -6,6 +6,15 @@ Signals, in priority order:
 2. v2 ``title`` blocks with ``content.level``.
 3. Heading regex fallback (第X单元 / 第X课 / X.X 节) when levels are absent
    (vlm products emit plain text blocks with levels only sometimes).
+4. 目级 KP headings (level 4, ``type: "mu"``), the finest granularity K12
+   textbooks carry:
+   - MinerU ``text_level >= 3`` heading blocks (统编政史地/语文: 单元→课→目,
+     MinerU tags the 目 with level 3+);
+   - three-part numbered sub-sections (``6.2.1 排列`` under 节 ``6.2`` —
+     MinerU flattens them to level 2, so numbering depth, not level, is the
+     tell; verified on 人教A数学选必三 real products);
+   - un-leveled text blocks carrying bold markers (``**目名**``) that strip
+     to a ≤20-char 目-shaped noun phrase — the 黑体目级小标题 path.
 
 Output: per-block ``struct_path`` like ``必修一/第1章 集合/1.1 集合的概念``,
 plus the doc-level tree for the T021 textbook-tree API. Every tree node also
@@ -20,6 +29,8 @@ from dataclasses import dataclass, field
 import hashlib
 import re
 from typing import Any
+
+from deeptutor.textbook_struct.column_blacklist import COLUMN_BLACKLIST
 
 # Heading patterns for Chinese K12 textbooks / workbooks.
 _UNIT_RE = re.compile(r"^第\s*[一二三四五六七八九十\d]+\s*(单元|部分|章)([　\s.、:：]*(.*))?$")
@@ -41,6 +52,85 @@ _BOOK_FURNITURE_RE = re.compile(
     r"^(普通高中教科书|义务教育教科书|高中数学|数学\s*[A-Za-z ]*|语文|英语|物理|化学|生物|政治|历史|地理|"
     r"SHU\s*XUE|CHINESE|目录|目\s*录|致同学|前言|编写说明|本书符号|部分参考答案)$"
 )
+
+# ── 目级 (level 4) signals ──────────────────────────────────────────────
+#: A mu candidate is a noun phrase: CJK-bearing, no sentence punctuation,
+#: short (K12 目 names never run past ~20 chars once bold marks are gone).
+_MU_MAX_LEN = 20
+#: Three-part sub-section numbering ("6.2.1 排列") — a 目 under 节 6.2.
+_SUB_SUB_NUM_RE = re.compile(r"^\d{1,2}[.．]\d{1,2}[.．]\d{1,2}[　\s.、:：]*(.*)$")
+#: Inline bold markers as MinerU v1 emits them (markdown-flavoured text).
+_BOLD_MARK_RE = re.compile(r"\*\*")
+#: Sentence punctuation: a body sentence, never a 目 heading.
+_MU_SENTENCE_RE = re.compile(r"[。？！?!；;，,：:]")
+
+
+def _strip_bold(text: str) -> tuple[str, bool]:
+    """Strip markdown bold markers; return ``(clean_text, had_bold)``."""
+    if "**" not in text:
+        return text, False
+    return _norm(text.replace("**", "")), True
+
+
+def _mu_phrase_ok(text: str) -> bool:
+    """True when *text* is a 目-shaped noun phrase (判据 2 phrase form)."""
+    if not text or len(text) > _MU_MAX_LEN:
+        return False
+    if not _has_cjk(text):
+        return False
+    if _MU_SENTENCE_RE.search(text):
+        return False
+    if _norm(text) in COLUMN_BLACKLIST:
+        return False
+    if _PRACTICE_RE.match(text) or _BARE_NUM_RE.match(text) or _BOOK_FURNITURE_RE.match(text):
+        return False
+    # Higher-structure shapes belong to levels 1-3 — numbered 节 ("1.1 …"),
+    # 课/框/章. Three-part numbering (6.2.1) is itself a 目, so it passes.
+    if _SUB_SUB_NUM_RE.match(text) is None and _TITLED_SECTION_RE.match(text):
+        return False
+    if _PART_RE.match(text) or _UNIT_RE.match(text) or _LESSON_RE.match(text):
+        return False
+    if _FRAME_RE.match(text) or _CHAPTER_NUM_RE.match(text):
+        return False
+    return True
+
+
+def _mu_level(block: dict, text: str) -> int | None:
+    """4 when the block is a 目 heading (level-4 KP node), else None.
+
+    Deterministic only — no LLM. Fires on (判据 1) explicit MinerU levels
+    ≥3, (X.Y.Z) three-part sub-section numbering, and (判据 2) bold-marked
+    short noun phrases on un-leveled blocks. 栏目黑名单 and furniture
+    filters apply to every path.
+    """
+    if not text:
+        return None
+    raw = block.get("text_level")
+    if not isinstance(raw, int) or raw <= 0:
+        raw = None  # v1 only; v2 titles come through content.level upstream
+    if raw is not None:
+        if raw >= 3 and _content_level_mu_ok(text):
+            return 4
+        return None  # explicit level ≤2: mu can only come from numbering
+    # No explicit level — the bold path (判据 2).
+    stripped, had_bold = _strip_bold(text)
+    if had_bold and _mu_phrase_ok(stripped):
+        return 4
+    return None
+
+
+def _content_level_mu_ok(text: str) -> bool:
+    """Furniture guard shared by the level≥3 mu path."""
+    if _PRACTICE_RE.match(text) or _BARE_NUM_RE.match(text):
+        return False
+    if _norm(text) in COLUMN_BLACKLIST:
+        return False
+    # Numbered exercise stems / body sentences mis-tagged as headings: a
+    # short heading may carry a colon ("目标导学：xx"), a long punctuated
+    # line is body text.
+    if _MU_SENTENCE_RE.search(text) and len(text) > 12:
+        return False
+    return True
 
 
 def _norm(text: str) -> str:
@@ -93,7 +183,9 @@ def _block_level(block: dict, text: str) -> int | None:
         and _has_cjk(text)
     ):
         return 3
-    return None
+    # Bold-marked 目 phrase (判据 2) — checked last so structural shapes above
+    # keep their levels 1-3.
+    return _mu_level(block, text)
 
 
 def _has_cjk(text: str) -> bool:
@@ -110,11 +202,16 @@ def _has_cjk(text: str) -> bool:
 def _content_level(text: str, mineru_level: int) -> int | None:
     """Map a MinerU heading level to a tree level, dropping page furniture.
 
-    Real K12 structure is unit(1) → lesson/chapter(2) → section(3). Practice
-    headers (练习/习题/感受·理解…) and bare numeric labels are content
-    furniture, not structure — demote to None so they stay body blocks.
+    Real K12 structure is unit(1) → lesson/chapter(2) → section(3), with 目
+    (4) beneath sections. Practice headers (练习/习题/感受·理解…) and bare
+    numeric labels are content furniture, not structure — demote to None so
+    they stay body blocks.
     """
     if not text or _PRACTICE_RE.match(text) or _BARE_NUM_RE.match(text):
+        return None
+    # 栏目黑名单（判据 3）: 探究与分享/相关链接/思考与讨论 … are activity
+    # columns MinerU tags as headings — never structure at ANY level.
+    if _norm(text) in COLUMN_BLACKLIST:
         return None
     # Numbered exercise stems mis-tagged as headings ("5. 设 A 是一个集合…"):
     # a heading is short and carries no sentence punctuation. The stem number
@@ -122,12 +219,22 @@ def _content_level(text: str, mineru_level: int) -> int | None:
     # second group is digits, and what follows is the section's own name.
     if re.match(r"^\d{1,3}[.、．](?!\d)\s*\S", text) and (len(text) > 12 or re.search(r"[。？?！!,，]", text)):
         return None
+    # Three-part sub-section numbering ("6.2.1 排列") is a 目 under 节 6.2
+    # regardless of the MinerU level (人教A数学 flattens it to level 2);
+    # depth of the numbering, not the level, is the structural tell.
+    m = _SUB_SUB_NUM_RE.match(text)
+    if m and _has_cjk(m.group(1)) and len(text) <= 30 and not _MU_SENTENCE_RE.search(text):
+        return 4
     if _PART_RE.match(text) or _UNIT_RE.match(text):
         return 1
     if _LESSON_RE.match(text) or _CHAPTER_NUM_RE.match(text):
         return 2
     if _FRAME_RE.match(text) or (_TITLED_SECTION_RE.match(text) and _has_cjk(text)):
         return 3
+    # Unnumbered headings deeper than the 节 level are 目 (统编政史地/语文:
+    # 单元→课→目, MinerU tags the 目 level 3+). 判据 1.
+    if mineru_level >= 3 and _content_level_mu_ok(text):
+        return 4
     # MinerU L1 on the cover ("普通高中教科书") is book furniture when it
     # appears before any real unit; treat generic L1 as lesson-level.
     return 2 if mineru_level <= 2 else 3
@@ -159,6 +266,10 @@ class StructureNode:
     # 印刷页码（页脚 page_number 直读；None=页脚法未覆盖该课）。随 to_dict 落盘，
     # 供阅读器"跳教材页"与坐标校验使用。
     printed_page: int | None = None
+    # Node kind: "mu" for level-4 目 nodes (KP granularity); "" for the
+    # structural levels 1-3. Serialized only when set so the textbook-tree
+    # API keeps its existing shape for older levels.
+    node_type: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         d = {
@@ -168,6 +279,8 @@ class StructureNode:
             "node_id": self.node_id,
             "children": [c.to_dict() for c in self.children],
         }
+        if self.node_type:
+            d["type"] = self.node_type
         if self.printed_page is not None:
             d["printed_page"] = self.printed_page
         return d
@@ -177,11 +290,12 @@ def build_tree(blocks: list[dict], *, text_fn=_block_text_v1, doc_id: str = "") 
     """Return ``(tree_dict_or_None, per_block_struct_paths)``.
 
     ``per_block_struct_paths[i]`` is the ``a/b/c`` path of block *i* ("" for
-    pre-heading front matter). The tree keeps only unit/lesson/section levels
-    (1-3); deeper heading levels are folded into the path but not the tree.
-    Every tree node carries its ``struct_path`` and a stable ``node_id``
-    derived from ``doc_id`` (see :func:`stable_node_id`); pass the same
-    ``doc_id`` (e.g. the file path) across re-indexes so node ids survive.
+    pre-heading front matter). The tree keeps unit/lesson/section levels
+    (1-3) plus 目 nodes (level 4, ``type: "mu"``) — the KP granularity
+    beneath sections. Every tree node carries its ``struct_path`` and a
+    stable ``node_id`` derived from ``doc_id`` (see :func:`stable_node_id`);
+    pass the same ``doc_id`` (e.g. the file path) across re-indexes so node
+    ids survive.
     """
     paths: list[str] = []
     stack: list[tuple[int, str]] = []  # (level, title) — current heading chain
@@ -272,9 +386,18 @@ def build_tree(blocks: list[dict], *, text_fn=_block_text_v1, doc_id: str = "") 
             paths.append("")
             continue
 
-        if level is not None and level <= 3:
+        if level is not None and level <= 4:
+            if level == 4 and not node_stack:
+                # A 目 with no open 课/节 to hang under: no parent, no node
+                # (判据 4 — 目节点挂在最近的节之下; bare-root mus are noise).
+                paths.append("")
+                continue
             if not doc_title and level == 1 and i < 3:
                 doc_title = text  # first top heading ~ document title
+            if level == 4:
+                # Bold-marked mus carry markdown markers; the tree stores the
+                # clean 目名 so paths/ids are marker-free.
+                text, _ = _strip_bold(text)
             # Pop deeper/equal levels from BOTH stacks in lockstep (the bug
             # before: node_stack only popped when non-empty, desyncing it and
             # re-parenting later chapters under stale nodes).
@@ -300,6 +423,7 @@ def build_tree(blocks: list[dict], *, text_fn=_block_text_v1, doc_id: str = "") 
                 struct_path=struct_path,
                 node_id=stable_node_id(doc_id, struct_path),
                 printed_page=footer_register.get(_squash(text)),
+                node_type="mu" if level == 4 else "",
             )
             if node_stack:
                 node_stack[-1].children.append(node)

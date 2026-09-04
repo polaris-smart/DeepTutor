@@ -41,6 +41,82 @@ _DI_BLOCK_META_BUDGET = 600
 #: identity keys intact.
 _METADATA_TOTAL_BUDGET = 900
 
+#: Serialized-size budget (chars) for the doc_tree blob. Above this the tree
+#: downgrades one tier (full slim tree → 目名压缩列表 → 课名列表) rather than
+#: being dropped outright — the textbook tree is the KP navigation spine.
+_DI_TREE_BUDGET = _DI_BLOCK_META_BUDGET * 4
+
+#: Max chars kept per title in the downgrade tiers.
+_MU_TITLE_MAX = 20
+_CHAPTER_TITLE_MAX = 40
+
+
+def _slim_tree(node: dict) -> dict:
+    """Slim a tree node to the bridge keys only (title/level/id/path/type)."""
+    slim = {
+        k: node[k]
+        for k in ("title", "level", "node_id", "struct_path", "type")
+        if node.get(k) not in (None, "")
+    }
+    kids = node.get("children") or []
+    if kids:
+        slim["children"] = [_slim_tree(c) for c in kids]
+    return slim
+
+
+def _doc_tree_mu_summary(tree: dict) -> dict:
+    """Tier-2 downgrade shape: keep every branch's compressed 目-name list.
+
+    ``{"title": <doc title>, "mujis": [{"t": <chapter title>, "m": [<目名>…]}]}``
+    — the KP navigation data survives (compressed), only the tree nesting is
+    flattened.
+    """
+
+    def branch_mus(node: dict, acc: list[str]) -> None:
+        for child in node.get("children") or []:
+            if not isinstance(child, dict):
+                continue
+            if child.get("type") == "mu":
+                acc.append(str(child.get("title") or "")[:_MU_TITLE_MAX])
+            branch_mus(child, acc)
+
+    branches = []
+    for top in tree.get("children") or []:
+        if not isinstance(top, dict):
+            continue
+        mus: list[str] = []
+        branch_mus(top, mus)
+        if mus:
+            branches.append({"t": str(top.get("title") or "")[:_CHAPTER_TITLE_MAX], "m": mus})
+    return {"title": tree.get("title") or "", "mujis": branches}
+
+
+def _doc_tree_metadata(tree: dict, tree_blob: str) -> str:
+    """Tier the serialized doc_tree: full slim tree → 目名压缩列表 → 课名列表.
+
+    The full tree can exceed the chunk budget on huge outlines (判据 5):
+    first shed the nesting but keep every branch's mu names, and only fall
+    back to the bare chapter-title list (the old shape) when even the
+    compressed form is too fat. Indexing must never fail on tree size; the
+    full tree stays available via the textbook-tree API (rebuilt on demand).
+    """
+    import json as _json
+
+    if len(tree_blob) <= _DI_TREE_BUDGET:
+        return tree_blob
+    mu_blob = _json.dumps(_doc_tree_mu_summary(tree), ensure_ascii=False)
+    if len(mu_blob) <= _DI_TREE_BUDGET:
+        return mu_blob
+    top_titles = [
+        str(c.get("title") or "")[:_CHAPTER_TITLE_MAX]
+        for c in (tree.get("children") or [])
+        if isinstance(c, dict)
+    ]
+    return _json.dumps(
+        {"title": tree.get("title") or "", "chapters": top_titles},
+        ensure_ascii=False,
+    )
+
 
 def _enforce_metadata_budget(metadata: dict) -> dict:
     """Shed optional metadata fields until the serialized size fits the budget."""
@@ -665,37 +741,14 @@ class LlamaIndexDocumentLoader:
                         # Same chunk-budget rule as di_block_meta (review
                         # follow-up): a parsed PDF's full tree can exceed the
                         # chunk size and LlamaIndex rejects the whole document.
-                        # Store a slimmed tree — title/level/id keys only.
-                        def _slim_tree(node: dict) -> dict:
-                            slim = {
-                                k: node[k]
-                                for k in ("title", "level", "node_id", "struct_path")
-                                if node.get(k) not in (None, "")
-                            }
-                            kids = node.get("children") or []
-                            if kids:
-                                slim["children"] = [_slim_tree(c) for c in kids]
-                            return slim
-
+                        # Tiered downgrade (判据 5): full slim tree → every
+                        # branch's compressed 目-name list → chapter titles.
                         tree_blob = _json.dumps(
                             _slim_tree(payload["tree"]), ensure_ascii=False
                         )
-                        if len(tree_blob) > _DI_BLOCK_META_BUDGET * 4:
-                            # Still too fat (huge outlines) — collapse to a
-                            # chapter title list only so indexing never fails
-                            # on tree size; the full tree stays in the API's
-                            # textbook-tree view (rebuilt from cache on demand).
-                            top_titles = [
-                                c.get("title", "")[:40]
-                                for c in (payload["tree"].get("children") or [])
-                            ]
-                            metadata["doc_tree"] = _json.dumps(
-                                {"title": payload["tree"].get("title", ""),
-                                 "chapters": top_titles},
-                                ensure_ascii=False,
-                            )
-                        else:
-                            metadata["doc_tree"] = tree_blob
+                        metadata["doc_tree"] = _doc_tree_metadata(
+                            payload["tree"], tree_blob
+                        )
                     # Per-block struct_path/textbook_node_id/q_id: chunk-level
                     # bridge data. The doc-level Document's metadata carries
                     # them for downstream chunkers that split this document —

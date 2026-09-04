@@ -434,3 +434,85 @@ def test_loader_skips_images_when_llm_client_is_unavailable(
     assert "requires both multimodal embedding and multimodal LLM support" in caplog.text
     assert "LLM client is unavailable" in caplog.text
     assert "no LLM configured" in caplog.text
+
+
+# ── doc_tree metadata downgrade tiers (B2-a 判据 5) ─────────────────────
+
+
+def _big_mu_tree(n_mus: int = 400) -> dict:
+    """A textbook tree fat enough to overflow the 2400-char doc_tree budget."""
+    kids = []
+    for i in range(n_mus):
+        kids.append(
+            {
+                "title": f"探究性学习活动设计中的核心概念辨析之{i}",
+                "level": 4,
+                "type": "mu",
+                "node_id": f"{i:012d}",
+                "struct_path": f"第一章 导语/1.1 概述/目{i}",
+            }
+        )
+    return {
+        "title": "普通高中教科书",
+        "children": [{"title": "第一章 导语", "level": 1, "node_id": "abc", "children": kids}],
+    }
+
+
+def test_doc_tree_metadata_keeps_slim_tree_under_budget() -> None:
+    pytest.importorskip("llama_index.core")
+    from deeptutor.services.rag.pipelines.llamaindex.document_loader import (
+        _doc_tree_metadata,
+        _slim_tree,
+        _DI_TREE_BUDGET,
+    )
+    import json
+
+    tree = _big_mu_tree(n_mus=2)
+    blob = json.dumps(_slim_tree(tree), ensure_ascii=False)
+    out = _doc_tree_metadata(tree, blob)
+    assert out == blob  # tier 0: full slim tree passes untouched
+    assert len(out) <= _DI_TREE_BUDGET
+
+
+def test_doc_tree_metadata_downgrades_to_mu_name_list_when_too_fat() -> None:
+    pytest.importorskip("llama_index.core")
+    from deeptutor.services.rag.pipelines.llamaindex.document_loader import (
+        _doc_tree_metadata,
+        _slim_tree,
+        _DI_TREE_BUDGET,
+    )
+    import json
+
+    tree = _big_mu_tree(n_mus=60)
+    blob = json.dumps(_slim_tree(tree), ensure_ascii=False)
+    assert len(blob) > _DI_TREE_BUDGET  # precondition: full tree is too fat
+    out = _doc_tree_metadata(tree, blob)
+    assert len(out) <= _DI_TREE_BUDGET
+    payload = json.loads(out)
+    # Tier 1: every branch's compressed 目-name list survives.
+    assert payload["title"] == "普通高中教科书"
+    assert payload["mujis"] == [
+        {
+            "t": "第一章 导语",
+            "m": [f"探究性学习活动设计中的核心概念辨析之{i}"[:20] for i in range(60)],
+        }
+    ]
+
+
+def test_doc_tree_metadata_final_fallback_is_chapter_titles() -> None:
+    pytest.importorskip("llama_index.core")
+    from deeptutor.services.rag.pipelines.llamaindex.document_loader import (
+        _doc_tree_metadata,
+        _DI_TREE_BUDGET,
+    )
+    import json
+
+    tree = _big_mu_tree(n_mus=4000)
+    blob = "x" * (_DI_TREE_BUDGET + 1)  # simulate an over-budget slim blob
+    out = _doc_tree_metadata(tree, blob)
+    assert len(out) <= _DI_TREE_BUDGET
+    payload = json.loads(out)
+    # Tier 2: even the mu list is too fat → bare chapter titles (old shape).
+    assert payload["title"] == "普通高中教科书"
+    assert payload["chapters"] == ["第一章 导语"]
+    assert "mujis" not in payload
