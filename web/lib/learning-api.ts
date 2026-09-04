@@ -374,7 +374,7 @@ export async function fetchSixDimensionSnapshot(
   const suffix = query.size > 0 ? `?${query.toString()}` : "";
   const res = await apiFetch(
     apiUrl(
-      `/api/v1/learning/progress/${encodeURIComponent(bookId)}/six-dimensions${suffix}`,
+      `/api/mastery-paths/progress/${encodeURIComponent(bookId)}/six-dimensions${suffix}`,
     ),
   );
   if (!res.ok)

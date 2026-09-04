@@ -21,7 +21,7 @@ export interface ClassStudentInsight {
   no_data?: boolean;
 }
 
-/** Response of GET /api/v1/class-insights/overview. */
+/** Response of GET /api/class-insights/overview. */
 export interface ClassInsightsOverview {
   students: ClassStudentInsight[];
   generated_at: string;
@@ -38,7 +38,7 @@ export interface ClassRoster {
   created_at: string;
 }
 
-/** Response of GET /api/v1/class-insights/classes. */
+/** Response of GET /api/class-insights/classes. */
 export interface ClassRostersResponse {
   classes: ClassRoster[];
 }
@@ -54,20 +54,20 @@ export async function fetchClassInsights(
   classId?: string,
 ): Promise<ClassInsightsOverview> {
   const qs = classId ? `?class_id=${encodeURIComponent(classId)}` : "";
-  const res = await apiFetch(apiUrl(`/api/v1/class-insights/overview${qs}`));
+  const res = await apiFetch(apiUrl(`/api/class-insights/overview${qs}`));
   if (!res.ok) return parseError(res, "Failed to fetch class insights");
   return res.json();
 }
 
 export async function fetchClassRosters(): Promise<ClassRostersResponse> {
-  const res = await apiFetch(apiUrl("/api/v1/class-insights/classes"));
+  const res = await apiFetch(apiUrl("/api/class-insights/classes"));
   if (!res.ok) return parseError(res, "Failed to fetch class rosters");
   return res.json();
 }
 
 /** Parent (or admin) view: mastery of the linked children. */
 export async function fetchMyChildren(): Promise<ClassInsightsOverview> {
-  const res = await apiFetch(apiUrl("/api/v1/class-insights/my-children"));
+  const res = await apiFetch(apiUrl("/api/class-insights/my-children"));
   if (!res.ok) return parseError(res, "Failed to fetch children insights");
   return res.json();
 }

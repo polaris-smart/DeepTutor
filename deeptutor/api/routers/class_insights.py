@@ -1,6 +1,6 @@
 """Class insights router — admin/teacher overview of student learning.
 
-``GET /api/v1/class-insights/overview`` aggregates mastery for every
+``GET /api/class-insights/overview`` aggregates mastery for every
 ``role=student`` account. Per-student progress is read from each student's
 own per-user workspace (``data/users/<uid>/user/workspace/learning/*.json``,
 the same root ``LearningStore`` uses for a per-user request), so the numbers

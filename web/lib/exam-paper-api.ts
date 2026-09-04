@@ -6,7 +6,7 @@ import type {
   TextbookSummary,
 } from "@/app/(utility)/space/questions/types";
 
-/** Response envelope of GET /api/v1/knowledge/{kb_name}/textbook-tree. */
+/** Response envelope of GET /api/{kb_name}/textbook-tree. */
 export interface TextbookTreeResponse {
   kb_name: string;
   textbooks: TextbookSummary[];
@@ -18,7 +18,7 @@ export interface TextbookTreeResponse {
  */
 export async function getTextbookTree(kbName: string): Promise<TextbookTreeResponse> {
   const response = await apiFetch(
-    apiUrl(`/api/v1/knowledge/${encodeURIComponent(kbName)}/textbook-tree`),
+    apiUrl(`/api/${encodeURIComponent(kbName)}/textbook-tree`),
     { cache: "no-store" },
   );
   if (!response.ok) {
@@ -38,7 +38,7 @@ export async function getQuestionsByStruct(
   const query = new URLSearchParams({ struct_path: structPath });
   const response = await apiFetch(
     apiUrl(
-      `/api/v1/knowledge/${encodeURIComponent(kbName)}/questions/by-struct?${query.toString()}`,
+      `/api/${encodeURIComponent(kbName)}/questions/by-struct?${query.toString()}`,
     ),
     { cache: "no-store" },
   );
@@ -55,7 +55,7 @@ export async function getQuestionsByStruct(
 export async function assembleExamPaper(
   payload: ExamPaperAssemblePayload,
 ): Promise<Response> {
-  return apiFetch(apiUrl("/api/v1/exam-paper/assemble"), {
+  return apiFetch(apiUrl("/api/exam-paper/assemble"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),

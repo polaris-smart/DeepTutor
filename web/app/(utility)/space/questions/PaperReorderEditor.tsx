@@ -161,7 +161,7 @@ export default function PaperReorderEditor() {
     setError(null);
     try {
       const response = await apiFetch(
-        apiUrl("/api/v1/question/paper-reorder/preview"),
+        apiUrl("/api/question/paper-reorder/preview"),
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -184,7 +184,7 @@ export default function PaperReorderEditor() {
     setError(null);
     try {
       const response = await apiFetch(
-        apiUrl("/api/v1/question/paper-reorder/export"),
+        apiUrl("/api/question/paper-reorder/export"),
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },

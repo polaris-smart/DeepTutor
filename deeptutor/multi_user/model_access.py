@@ -135,7 +135,19 @@ def allowed_llm_options() -> dict[str, Any]:
         for item in redacted_model_access(user.id).get("llm", [])
         if item.get("available")
     ]
-    return {"active": None, "options": options}
+    # A turn without an explicit selection pins the first available grant in
+    # request_preparer. Expose that same effective default to the selector.
+    active = (
+        {
+            "profile_id": options[0].get("profile_id"),
+            "model_id": options[0].get("model_id"),
+        }
+        if options
+        else None
+    )
+    if options:
+        options[0]["is_active_default"] = True
+    return {"active": active, "options": options}
 
 
 def has_capability_access(capability: str, user_id: str | None = None) -> bool:

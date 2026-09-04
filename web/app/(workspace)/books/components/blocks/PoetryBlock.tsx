@@ -107,7 +107,7 @@ export default function PoetryBlock({ block }: { block: Block }) {
 
     setPlayState("loading");
     try {
-      const response = await apiFetch(apiUrl("/api/v1/voice/tts"), {
+      const response = await apiFetch(apiUrl("/api/voice/tts"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: speakText }),

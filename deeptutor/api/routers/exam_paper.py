@@ -50,7 +50,7 @@ _TEACHER_ROLES = {"admin", "teacher"}
 
 
 class ExamPaperAssembleRequest(BaseModel):
-    """Body of ``POST /api/v1/exam-paper/assemble``."""
+    """Body of ``POST /api/exam-paper/assemble``."""
 
     kb_name: str = Field(min_length=1)
     q_ids: list[str] = Field(min_length=1, max_length=500)

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import {
   configFromBlock,
   defaultConfigForType,
-} from "@/app/(workspace)/book/components/blocks/math/mathBlockAdapter";
+} from "@/app/(workspace)/books/components/blocks/math/mathBlockAdapter";
 
 test("desmos: extracts expressions and joins first as expression", () => {
   const cfg = configFromBlock({

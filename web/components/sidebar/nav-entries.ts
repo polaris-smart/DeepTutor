@@ -40,6 +40,10 @@ export interface NavEntry {
    * Center) list ["teacher", "admin"] so the learner sidebar stays on task.
    */
   roles?: readonly NavRole[];
+  /** Server surface required by a learner-policy account. */
+  learningSurface?: "chat" | "reading";
+  /** Remains available when a learning policy redacts the workspace. */
+  alwaysAvailableToLearningAccounts?: boolean;
 }
 
 /** Roles that see every nav entry — the staff view. Everyone else (student,
@@ -103,6 +107,7 @@ export const PRIMARY_NAV: NavEntry[] = [
     icon: House,
     tooltipKey: "Home tooltip",
     requires: "llm",
+    learningSurface: "chat",
   },
   {
     href: "/partners",
@@ -153,6 +158,7 @@ export const PRIMARY_NAV: NavEntry[] = [
     icon: BookText,
     tooltipKey: "Immersive Reading tooltip",
     requires: "llm",
+    learningSurface: "reading",
   },
   {
     // 教师作业闭环: 布置/统计是教师侧工作台，学生只在 Learning Space 的
@@ -164,10 +170,13 @@ export const PRIMARY_NAV: NavEntry[] = [
     roles: ["teacher"],
   },
   {
+    // The learner hub: its APIs (daily plan, assignments, courses) are exactly
+    // the surfaces a learning policy grants, so it stays visible there.
     href: "/space",
     label: "Learning Space",
     icon: LayoutGrid,
     tooltipKey: "Space tooltip",
+    alwaysAvailableToLearningAccounts: true,
   },
 ];
 
@@ -194,7 +203,12 @@ export const SECONDARY_NAV: NavEntry[] = [
     tooltipKey: "Knowledge tooltip",
     roles: ["teacher", "admin"],
   },
-  { href: "/settings", label: "Settings", icon: Settings },
+  {
+    href: "/settings",
+    label: "Settings",
+    icon: Settings,
+    alwaysAvailableToLearningAccounts: true,
+  },
 ];
 
 /** Every primary href in shipped order, unfiltered by role. Rendering goes
@@ -213,4 +227,18 @@ export function isNavActive(pathname: string, href: string) {
     );
   }
   return pathname === href || pathname.startsWith(`${href}/`);
+}
+
+export function isNavEntryAllowedForLearningPolicy(
+  entry: NavEntry,
+  learningPolicy: { allowed_surfaces?: string[] } | null | undefined,
+): boolean {
+  if (!learningPolicy) return true;
+  const allowedSurfaces = Array.isArray(learningPolicy.allowed_surfaces)
+    ? learningPolicy.allowed_surfaces
+    : ["chat", "reading"];
+  if (entry.learningSurface) {
+    return allowedSurfaces.includes(entry.learningSurface);
+  }
+  return Boolean(entry.alwaysAvailableToLearningAccounts);
 }

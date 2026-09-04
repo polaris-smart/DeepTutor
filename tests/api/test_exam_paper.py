@@ -494,7 +494,7 @@ def test_exam_paper_and_questions_routes_registered_in_main_app() -> None:
     # so a hit proves the router reached the assembled app with its prefix.
     assert (
         api_main.app.url_path_for("assemble_exam_paper")
-        == "/api/v1/exam-paper/assemble"
+        == "/api/exam-paper/assemble"
     )
     assert (
         api_main.app.url_path_for("get_questions_by_struct", kb_name="数学")

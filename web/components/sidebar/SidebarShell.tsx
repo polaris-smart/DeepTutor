@@ -28,7 +28,11 @@ import type { MasteryTopicLabel } from "@/lib/learning-api";
 import type { ReadingCollectionLabel } from "@/lib/reading-workspace-api";
 import type { StudyCourse } from "@/lib/courses-api";
 import { SidebarNav } from "@/components/sidebar/SidebarNav";
-import { isNavActive, secondaryNavFor } from "@/components/sidebar/nav-entries";
+import {
+  isNavActive,
+  isNavEntryAllowedForLearningPolicy,
+  secondaryNavFor,
+} from "@/components/sidebar/nav-entries";
 import { useAuthStatus } from "@/hooks/useAuthStatus";
 import {
   mergeManualOrder,
@@ -94,8 +98,16 @@ export function SidebarShell({
   // Memory and Knowledge Center are staff consoles. One filtered list feeds
   // both the collapsed rail and the expanded footer, so the drawer (mobile)
   // and the rail can never drift apart.
-  const { role } = useAuthStatus();
-  const secondaryNav = useMemo(() => secondaryNavFor(role), [role]);
+  const { role, learningPolicy } = useAuthStatus();
+  // Same learning-policy pass as the primary nav: entries the server policy
+  // does not grant (or keep) disappear from both rail and drawer.
+  const secondaryNav = useMemo(
+    () =>
+      secondaryNavFor(role).filter((entry) =>
+        isNavEntryAllowedForLearningPolicy(entry, learningPolicy),
+      ),
+    [role, learningPolicy],
+  );
 
   // Inside the mobile drawer the icon-only rail is pointless — the panel is
   // already hidden when you don't want it, so it always opens fully expanded

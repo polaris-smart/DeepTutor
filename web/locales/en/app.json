@@ -2365,6 +2365,7 @@
   "Budget per exploring-loop round (notes + tool calls).": "Budget per exploring-loop round (notes + tool calls).",
   "Cap on the explore loop before planning.": "Cap on the explore loop before planning.",
   "Couldn't load capability settings": "Couldn't load capability settings",
+  "Couldn't load memory settings": "Couldn't load memory settings",
   "Deep question (quiz) generation pipeline.": "Deep question (quiz) generation pipeline.",
   "Deep research pipeline. Iteration count is controlled per request via the depth selector (quick / standard / deep / manual) in the chat input, not here.": "Deep research pipeline. Iteration count is controlled per request via the depth selector (quick / standard / deep / manual) in the chat input, not here.",
   "Deep solve runs as one agent loop with a plan / finish-step / replan spine.": "Deep solve runs as one agent loop with a plan / finish-step / replan spine.",
@@ -3720,6 +3721,7 @@
   "Selected text": "Selected text",
   "Ask anything about the selected text.": "Ask anything about the selected text.",
   "My courses": "My courses",
+  "Courses could not load": "Courses could not load",
   "Create a course": "Create a course",
   "Create your first course": "Create your first course",
   "Course name": "Course name",
@@ -4795,5 +4797,7 @@
   "Overall": "Overall",
   "Retry this stage": "Retry this stage",
   "Checking access…": "Checking access…",
-  "Failed to load pipeline status": "Failed to load pipeline status"
+  "Failed to load pipeline status": "Failed to load pipeline status",
+  "Assigned models": "Assigned models",
+  "No assigned models": "No assigned models"
 }

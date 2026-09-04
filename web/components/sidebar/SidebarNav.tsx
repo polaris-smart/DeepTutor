@@ -40,6 +40,7 @@ import { useCapabilityAccess } from "@/components/access/CapabilityAccessContext
 import {
   NAV_BY_HREF,
   isNavActive,
+  isNavEntryAllowedForLearningPolicy,
   primaryNavHrefsFor,
 } from "@/components/sidebar/nav-entries";
 import { useAuthStatus } from "@/hooks/useAuthStatus";
@@ -93,7 +94,7 @@ export function SidebarNav({
   // polluted with rows they can't open. The auth status resolves async and
   // starts blank, so a learner gets their trimmed list on the first paint and
   // a staff role merely grows into the full list a beat later.
-  const { role } = useAuthStatus();
+  const { role, learningPolicy } = useAuthStatus();
 
   const [layout, setLayout] = useState<SidebarNavLayout>(DEFAULT_NAV_LAYOUT);
   const [moreExpanded, setMoreExpanded] = useState(false);
@@ -111,9 +112,17 @@ export function SidebarNav({
     setMoreExpanded(browserStorage.readRaw("local", MORE_EXPANDED_KEY) === "1");
   }, []);
 
+  // Learning-policy nav: a configured learning account only keeps the features
+  // the server policy grants (or explicitly keeps). This mirrors the server
+  // surface gate — hiding here is for the sidebar's sake, the deny happens
+  // server-side either way.
   const primaryHrefs = useMemo(
-    () => primaryNavHrefsFor(role),
-    [role],
+    () =>
+      primaryNavHrefsFor(role).filter((href) => {
+        const entry = NAV_BY_HREF.get(href);
+        return !entry || isNavEntryAllowedForLearningPolicy(entry, learningPolicy);
+      }),
+    [role, learningPolicy],
   );
 
   const resolved = useMemo(
