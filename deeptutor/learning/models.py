@@ -95,6 +95,12 @@ class LearningStage(str, Enum):
 class KnowledgePoint(BaseModel):
     struct_path: str = ""
     textbook_node_id: str = ""
+    # 前置 KP id 列表（canonical 树推导或人工编排；空=无前置）。
+    prerequisite_ids: list[str] = Field(default_factory=list)
+    # 课标要求层级：了解/理解/掌握/应用；""=未标注（旧 state 兼容兜底）。
+    curriculum_level: str = ""
+    # 印刷页起止 [start, end]（doc_intel 页脚法 printed_page）；None=未标注。
+    page_span: list[int] | None = None
     # M4 KP 挂载: declarative YuEdu visualizer ids bound to this KP
     # (e.g. "yuedu_function_explorer"). Surfaced to the tutor agent as a
     # manifest hint; empty for KPs without a bound interactive.

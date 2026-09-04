@@ -232,3 +232,63 @@ def build_map(
         "unmapped": unmapped,
     }
     return mapping, report
+
+
+def _kp_entry(kp: Any) -> dict[str, str]:
+    """归一化单条 KP（dict 或 KnowledgePoint 兼容对象）→ {id,title,node}。"""
+    if not isinstance(kp, dict):
+        dump = getattr(kp, "model_dump", None)
+        kp = dump() if callable(dump) else {}
+    if not isinstance(kp, dict):
+        return {"id": "", "title": "", "node": ""}
+    return {
+        "id": str(kp.get("kp_id") or kp.get("id") or ""),
+        "title": normalize_title(kp.get("name") or kp.get("title")),
+        "node": str(kp.get("textbook_node_id") or ""),
+    }
+
+
+def map_question_to_kp(
+    question_kw: str,
+    kps: list[Any],
+    threshold: float = DEFAULT_THRESHOLD,
+) -> dict[str, Any] | None:
+    """KP 级单题映射（B2-b）：题目关键词 → KP（精确优先，模糊兜底）。
+
+    与 :func:`build_map`（chapter_id → 树节点）互补：这里的目标是既有的
+    KP 列表（dict 或 pydantic KnowledgePoint，读 id/name/textbook_node_id）。
+    kw 与 KP 名归一化后精确命中优先；否则 difflib 相似度 >= 阈值（默认
+    0.6）取最高，同分取遍历首个。低于阈值或无可匹配时返回 None。
+
+    返回 ``{"kp_id", "textbook_node_id", "match_type", "score"}`` 或 ``None``。
+    """
+    kw = normalize_title(question_kw)
+    if not kw:
+        return None
+
+    entries = [_kp_entry(kp) for kp in kps or []]
+    entries = [e for e in entries if e["id"] and e["title"]]
+
+    exact = next((e for e in entries if e["title"] == kw), None)
+    if exact is not None:
+        return {
+            "kp_id": exact["id"],
+            "textbook_node_id": exact["node"],
+            "match_type": "exact",
+            "score": 1.0,
+        }
+
+    best: dict[str, Any] | None = None
+    best_score = 0.0
+    for entry in entries:
+        score = difflib.SequenceMatcher(None, kw, entry["title"]).ratio()
+        if best is None or score > best_score + SCORE_EPS:
+            best, best_score = entry, score
+    if best is not None and best_score >= threshold:
+        return {
+            "kp_id": best["id"],
+            "textbook_node_id": best["node"],
+            "match_type": "fuzzy",
+            "score": round(best_score, 4),
+        }
+    return None

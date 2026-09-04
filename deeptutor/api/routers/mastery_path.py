@@ -17,6 +17,7 @@ from deeptutor.api.routers.auth import require_auth
 from deeptutor.services.auth import TokenPayload
 from pydantic import ValidationError as PydanticValidationError
 
+from deeptutor.book.storage import get_book_storage
 from deeptutor.learning import policy as learning_policy
 from deeptutor.learning import prompts as learning_prompts
 from deeptutor.learning.models import (
@@ -58,6 +59,68 @@ def _validate_book_id(book_id: str) -> None:
 def _bridge_str(value: Any) -> str:
     """Coerce a KP textbook-bridge field to ``str`` (missing/None → "")."""
     return value if isinstance(value, str) else ""
+
+
+def _modules_from_canonical_tree(book_id: str, tree: dict[str, Any]) -> list[LearningModule]:
+    """Build 目级 modules from the canonical KP tree cached in the manifest.
+
+    Mirrors the doc_tree rule in doc_intel: a ``type: "mu"`` node is a KP and
+    hangs off its nearest non-mu ancestor — that ancestor (节 or 课/单元,
+    depending on the book's depth) becomes the module. Structural nodes with
+    no mu underneath produce nothing (a module must carry KPs to be
+    runnable), and consecutive mus under the same ancestor share one module.
+    Each KP keeps the tree's stable ``node_id`` as its ``textbook_node_id``
+    bridge and the full ``struct_path``.
+    """
+    groups: list[list[Any]] = []  # [anchor_title, mu_nodes]
+    last_anchor: dict[str, Any] | None = None
+
+    def walk(node: Any, anchor: dict[str, Any] | None) -> None:
+        nonlocal last_anchor
+        if not isinstance(node, dict):
+            return
+        if node.get("type") == "mu":
+            if groups and anchor is last_anchor:
+                groups[-1][1].append(node)
+            else:
+                groups.append([str((anchor or {}).get("title") or ""), [node]])
+                last_anchor = anchor
+        child_anchor = anchor if node.get("type") == "mu" else node
+        for child in node.get("children") or []:
+            walk(child, child_anchor)
+
+    root_children = tree.get("children")
+    if isinstance(root_children, list):
+        for child in root_children:
+            walk(child, None)
+
+    modules: list[LearningModule] = []
+    for i, (anchor_title, mus) in enumerate(groups):
+        module_id = f"{book_id}_ch{i}"
+        kps = [
+            KnowledgePoint(
+                id=f"{module_id}_kp{j}",
+                name=_bridge_str(mu.get("title")),
+                type=KnowledgeType("concept"),
+                module_id=module_id,
+                struct_path=_bridge_str(mu.get("struct_path")),
+                textbook_node_id=_bridge_str(mu.get("node_id")),
+            )
+            for j, mu in enumerate(mus)
+            if _bridge_str(mu.get("title"))
+        ]
+        if not kps:
+            continue
+        modules.append(
+            LearningModule(
+                id=module_id,
+                name=anchor_title or f"Chapter {i + 1}",
+                order=i,
+                pass_threshold=0.7,
+                knowledge_points=kps,
+            )
+        )
+    return modules
 
 
 def _parse_modules(body_modules: list[dict]) -> list[LearningModule]:
@@ -751,31 +814,37 @@ async def set_kp_visualizers(
 @router.post("/progress/{book_id}/import-from-book")
 async def import_from_book(book_id: str, body: ImportFromBookRequest):
     _validate_book_id(book_id)
-    modules = []
-    for i, ch in enumerate(body.chapters):
-        kps = [
-            KnowledgePoint(
-                id=f"{book_id}_ch{i}_kp{j}",
-                name=kp_name,
-                type=KnowledgeType("concept"),
-                module_id=f"{book_id}_ch{i}",
-                # Bridge to the textbook-tree node the chapter came from; the
-                # whole chapter shares one anchor (per-KP anchors can be sent
-                # through init-modules instead).
-                struct_path=_bridge_str(ch.struct_path),
-                textbook_node_id=_bridge_str(ch.textbook_node_id),
+    # Canonical KP tree cached in the book manifest (B2-b) wins: it carries
+    # 目级 KPs with real textbook-tree bridges, where the request chapters are
+    # only a mechanical 课/章-level sketch. Missing/empty cache or a tree that
+    # yields no runnable module falls back to the mechanical path below.
+    tree = get_book_storage().load_canonical_kp_tree(book_id)
+    modules = _modules_from_canonical_tree(book_id, tree) if tree else []
+    if not modules:
+        for i, ch in enumerate(body.chapters):
+            kps = [
+                KnowledgePoint(
+                    id=f"{book_id}_ch{i}_kp{j}",
+                    name=kp_name,
+                    type=KnowledgeType("concept"),
+                    module_id=f"{book_id}_ch{i}",
+                    # Bridge to the textbook-tree node the chapter came from; the
+                    # whole chapter shares one anchor (per-KP anchors can be sent
+                    # through init-modules instead).
+                    struct_path=_bridge_str(ch.struct_path),
+                    textbook_node_id=_bridge_str(ch.textbook_node_id),
+                )
+                for j, kp_name in enumerate(ch.knowledge_points)
+            ]
+            modules.append(
+                LearningModule(
+                    id=f"{book_id}_ch{i}",
+                    name=ch.title or f"Chapter {i + 1}",
+                    order=i,
+                    pass_threshold=0.7,
+                    knowledge_points=kps,
+                )
             )
-            for j, kp_name in enumerate(ch.knowledge_points)
-        ]
-        modules.append(
-            LearningModule(
-                id=f"{book_id}_ch{i}",
-                name=ch.title or f"Chapter {i + 1}",
-                order=i,
-                pass_threshold=0.7,
-                knowledge_points=kps,
-            )
-        )
     _validate_runnable_modules(modules)
     await _cancel_active_learning_turn(book_id)
     service = get_learning_service()
