@@ -174,6 +174,34 @@ class BookStorage:
             logger.warning(f"Failed to validate Book {book_id}: {exc}")
             return None
 
+    # ── Canonical KP tree (manifest metadata cache) ─────────────────────
+
+    def save_canonical_kp_tree(self, book_id: str, tree: dict[str, Any]) -> bool:
+        """Cache the canonical KP tree in the book manifest's ``metadata``.
+
+        The tree follows the doc_tree 目级 shape (nodes with
+        ``title/level/struct_path/node_id/children`` and ``type: "mu"`` on
+        KP-granularity leaves) so import-from-book can rebuild modules from
+        it without re-deriving structure. Cache is best-effort: it returns
+        ``False`` — and writes nothing — when no readable manifest exists,
+        never fabricating a book.
+        """
+        book = self.load_book(book_id)
+        if book is None:
+            logger.warning("Cannot cache canonical KP tree: no manifest for %s", book_id)
+            return False
+        book.metadata = {**(book.metadata or {}), "canonical_kp_tree": tree}
+        self.save_book(book)
+        return True
+
+    def load_canonical_kp_tree(self, book_id: str) -> dict[str, Any] | None:
+        """Read the cached canonical KP tree; ``None`` when absent/invalid."""
+        book = self.load_book(book_id)
+        if book is None:
+            return None
+        tree = (book.metadata or {}).get("canonical_kp_tree")
+        return tree if isinstance(tree, dict) else None
+
     # ── Inputs (immutable snapshot) ─────────────────────────────────────
 
     def save_inputs(self, book_id: str, inputs: BookInputs) -> None:
