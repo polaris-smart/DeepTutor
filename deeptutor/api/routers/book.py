@@ -1031,6 +1031,15 @@ async def canonicalize_book(req: CanonicalizeRequest) -> dict[str, Any]:
     book.updated_at = time.time()
     engine.storage.save_book(book)
 
+    # P0: auto-cache the canonical KP tree. The textbook's doc_intel 目级 tree
+    # (docstore doc_tree metadata from the source KBs) is the one import-from-book
+    # prefers over the chapter-level mechanical sketch. Best-effort: no tree, a
+    # degraded doc_tree tier, or any storage failure only logs a warning — the
+    # canonicalized book itself is unaffected.
+    from deeptutor.book.canonical_tree import cache_canonical_tree_for_book
+
+    cache_canonical_tree_for_book(book.id, req.knowledge_bases, storage=engine.storage)
+
     return {
         "book": book.model_dump(mode="json"),
         "spine": final_spine.model_dump(mode="json"),
