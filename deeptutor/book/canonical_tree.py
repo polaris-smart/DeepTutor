@@ -167,6 +167,95 @@ def _doc_trees_for_kb(kb_name: str, seen_doc_ids: set[str]) -> list[dict[str, An
     return trees
 
 
+def _content_list_from_layout(layout: dict[str, Any]) -> list[dict[str, Any]]:
+    """Flatten a MinerU layout dict into content_list-style blocks.
+
+    ``doc_intel.build_tree`` consumes the MinerU v1 content_list shape —
+    blocks with ``type`` / ``text`` / ``text_level``. The layout dict a
+    canonicalize request carries instead nests that text one level down
+    (``pdf_info[].para_blocks`` with ``lines[].spans[].content``, heading
+    level in ``level`` rather than ``text_level``). This re-flattens it so
+    the inline tree rebuild (P7【1】) can feed ``doc_intel.enrich`` directly
+    with what the canonicalize request already has in hand.
+    """
+
+    from deeptutor.textbook_struct.chapter_rebuild import block_text
+
+    blocks: list[dict[str, Any]] = []
+    for page in layout.get("pdf_info") or []:
+        if not isinstance(page, dict):
+            continue
+        for para in page.get("para_blocks") or []:
+            if not isinstance(para, dict):
+                continue
+            # Group blocks (figure captions etc.) wrap their children in
+            # ``blocks`` — walk one level down, the shape MinerU emits.
+            children = (
+                para.get("blocks") if isinstance(para.get("blocks"), list) else [para]
+            )
+            for block in children:
+                if not isinstance(block, dict) or block.get("type") == "image":
+                    continue
+                text = block_text(block)
+                if not text:
+                    continue
+                item: dict[str, Any] = {
+                    "type": "title" if block.get("type") == "title" else "text",
+                    "text": text,
+                }
+                level = block.get("level") or block.get("text_level")
+                if isinstance(level, (int, float)) and int(level) > 0:
+                    item["text_level"] = int(level)
+                blocks.append(item)
+    return blocks
+
+
+def rebuild_canonical_tree_from_layout(
+    book_id: str,
+    layout: dict[str, Any],
+    *,
+    filename: str = "",
+    markdown: str = "",
+    storage: BookStorage | None = None,
+) -> bool:
+    """P7【1】inline canonical KP tree rebuild from the canonicalize layout.
+
+    The P0 auto-cache reads the KB docstore's ``doc_tree`` metadata, which a
+    大部头 downgraded-tier doc_tree can fail to produce. The canonicalize
+    request itself carries the MinerU layout, so this productizes the old
+    p1-cache-tree patch: rebuild the doc_intel tree from the layout's
+    ``para_blocks`` right here in the request path and cache it.
+
+    Best-effort like the P0 hook: returns ``False`` — never raises — when the
+    layout yields no usable tree, so canonicalization is never interrupted.
+    """
+    try:
+        blocks = _content_list_from_layout(layout)
+        if not blocks:
+            logger.warning("canonical KP tree inline rebuild: no para_blocks for %s", book_id)
+            return False
+        from deeptutor.knowledge.doc_intel.enrich import enrich
+
+        result = enrich(
+            blocks,
+            markdown=markdown,
+            filename=filename or f"{book_id}.pdf",
+            doc_id="",
+        )
+        tree = result.get("tree") if isinstance(result, dict) else None
+        # The full-shape gate rejects degraded trees — caching one would
+        # shadow a future good rebuild the same way a degraded doc_tree would.
+        slim = canonical_tree_from_doc_trees([tree] if isinstance(tree, dict) else None)
+        if slim is None:
+            logger.warning("canonical KP tree inline rebuild: no usable tree for %s", book_id)
+            return False
+        store = storage or get_book_storage()
+        return store.save_canonical_kp_tree(book_id, slim)
+    except Exception:  # noqa: BLE001 — inline rebuild is best-effort, never fatal
+        logger.warning("canonical KP tree inline rebuild failed for %s", book_id, exc_info=True)
+        return False
+
+
 def cache_canonical_tree_for_book(
     book_id: str, kb_names: list[str] | None, *, storage: BookStorage | None = None
 ) -> bool:

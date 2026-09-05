@@ -6,6 +6,7 @@ Handles knowledge base CRUD operations, file uploads, and initialization.
 """
 
 import asyncio
+from typing import Any
 from contextlib import contextmanager
 from datetime import datetime
 import json
@@ -1128,6 +1129,18 @@ async def run_upload_processing_task(
             task_stream_manager.emit_complete(
                 task_id, f"Successfully processed {num_processed} files for '{kb_name}'"
             )
+
+            # P7【2】ingest 尾部事件链: with the KB manifest's auto_pipeline
+            # flag on, the uploaded textbook continues parse→canonicalize→
+            # import untouched. Only files that indexed cleanly enter the
+            # chain; the upload task itself is already complete above, so a
+            # chain failure can never retro-fail it.
+            await _maybe_run_auto_pipeline(
+                kb_name=kb_name,
+                base_dir=base_dir,
+                file_paths=[str(f) for f in (processed_files or staged_files)],
+                task_id=task_id,
+            )
         except Exception as e:
             import traceback as _tb
 
@@ -1161,6 +1174,97 @@ async def run_upload_processing_task(
                 error_code=failure_metadata.get("error_code"),
                 retryable=failure_metadata.get("retryable"),
             )
+
+
+async def _maybe_run_auto_pipeline(
+    kb_name: str,
+    base_dir: str,
+    file_paths: list[str],
+    task_id: str,
+) -> None:
+    """P7【2】ingest 尾部事件链: parse→canonicalize→import for staged files.
+
+    Runs only when the KB manifest (kb_config.json entry's ``metadata``) has
+    ``auto_pipeline: true`` — the explicit switch keeps every existing KB's
+    upload behaviour byte-for-byte identical. Whatever happens inside the
+    chain, this must never turn a successful upload into a failed task: the
+    chain persists its own per-file state into the KB manifest's
+    ``metadata.pipeline`` for the status endpoint to surface.
+    """
+    from deeptutor.api.routers.book import CanonicalizeRequest, canonicalize_book
+    from deeptutor.api.routers.mastery_path import ImportFromBookRequest, import_from_book
+    from deeptutor.knowledge.auto_pipeline import auto_pipeline_enabled, run_auto_pipeline
+
+    try:
+        if not file_paths or not auto_pipeline_enabled(kb_name, base_dir=base_dir):
+            return
+    except Exception:  # noqa: BLE001 — a broken manifest must not fail the upload
+        logger.warning("auto_pipeline flag check failed for KB '%s'", kb_name, exc_info=True)
+        return
+
+    _task_log(task_id, f"auto_pipeline enabled for '{kb_name}': chaining {len(file_paths)} file(s)")
+    try:
+        await run_auto_pipeline(
+            kb_name,
+            file_paths,
+            base_dir=base_dir,
+            task_id=task_id,
+            log=lambda message, level="info": _task_log(
+                task_id, f"[auto_pipeline] {message}", level=level
+            ),
+            # The chain composes API endpoints; domain code can't import the
+            # adapter layer (architecture boundary), so they come in from here.
+            canonicalize=(canonicalize_book, CanonicalizeRequest),
+            import_from_book=import_from_book,
+            import_request_model=ImportFromBookRequest,
+        )
+    except Exception as e:  # noqa: BLE001
+        _task_log(task_id, f"auto_pipeline crashed: {e}", level="error")
+        logger.error(f"auto_pipeline crashed for KB '{kb_name}': {e}", exc_info=True)
+
+
+@router.get("/knowledge-bases/{kb_name}/pipeline")
+async def get_kb_pipeline(kb_name: str) -> dict[str, Any]:
+    """P7【3】per-file four-stage auto-pipeline state for one KB.
+
+    Data source is the KB manifest's ``metadata.pipeline`` (written by the
+    ingest event chain); files the chain never touched simply don't appear.
+    Four stages per file: ``raw`` (staged into raw/) → ``parsed`` →
+    ``canonicalized`` → ``imported``, each with its timestamp and payload,
+    plus an overall ``status`` and the failure reason when a stage broke.
+    """
+    manager = get_kb_manager()
+    if manager.get_kb_entry(kb_name) is None:
+        raise HTTPException(status_code=404, detail=f"Knowledge base '{kb_name}' not found")
+    from deeptutor.knowledge.auto_pipeline import (
+        STAGE_KEYS,
+        auto_pipeline_enabled,
+        read_pipeline_state,
+    )
+
+    base_dir = str(manager.base_dir)
+    state = read_pipeline_state(kb_name, base_dir=base_dir)
+    files = []
+    for name, record in sorted(state.items()):
+        stages = {
+            stage: record.get(stage)
+            for stage in STAGE_KEYS
+            if isinstance(record, dict) and isinstance(record.get(stage), dict)
+        }
+        files.append(
+            {
+                "file": name,
+                "status": (record or {}).get("status", "ok"),
+                "error": (record or {}).get("error"),
+                "stages": stages,
+                "updated_at": (record or {}).get("updated_at"),
+            }
+        )
+    return {
+        "kb_name": kb_name,
+        "auto_pipeline": auto_pipeline_enabled(kb_name, base_dir=base_dir),
+        "files": files,
+    }
 
 
 @router.get("/knowledge-bases/health")
