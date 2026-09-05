@@ -15,6 +15,11 @@ Signals, in priority order:
      tell; verified on 人教A数学选必三 real products);
    - un-leveled text blocks carrying bold markers (``**目名**``) that strip
      to a ≤20-char 目-shaped noun phrase — the 黑体目级小标题 path.
+5. 政治档 (P5): when a book's heading levels are flattened to
+   ``text_level <= 2`` (封面 lvl1, 单元/课/目 all lvl2 — 必修3 实锤) AND its
+   lvl2 blocks carry ≥3 ``第N课`` shapes, level comes from shape + 目录反查
+   instead of the MinerU level: ``第N单元`` → 2, ``第N课`` → 3, other lvl2
+   short blocks through the 栏目黑名单 + TOC reverse lookup → 目 (4).
 
 Output: per-block ``struct_path`` like ``必修一/第1章 集合/1.1 集合的概念``,
 plus the doc-level tree for the T021 textbook-tree API. Every tree node also
@@ -63,6 +68,120 @@ _SUB_SUB_NUM_RE = re.compile(r"^\d{1,2}[.．]\d{1,2}[.．]\d{1,2}[　\s.、:：]
 _BOLD_MARK_RE = re.compile(r"\*\*")
 #: Sentence punctuation: a body sentence, never a 目 heading.
 _MU_SENTENCE_RE = re.compile(r"[。？！?!；;，,：:]")
+
+
+# ── 政治档（低层级书适配, P5）───────────────────────────────────────────
+# 政治/道法类教材 MinerU 常把全书标题压平在 text_level 2（封面 lvl1，单元/
+# 课/目全部 lvl2），B2-a 的三层判据（level≥3 / X.Y.Z / 加粗短块）全不命中。
+# 判级改靠形态 + 目录反查：第N单元 → level 2，第N课 → level 3，其余 lvl2
+# 短块过栏目黑名单 + 目录页反查 → 目 (4)。
+_POLITICS_UNIT_RE = re.compile(r"^第\s*[一二三四五六七八九十百\d]+\s*单元")
+_POLITICS_LESSON_RE = re.compile(r"^第\s*[一二三四五六七八九十百\d]+\s*课")
+#: 触发门槛：lvl2 中 第N课 标题 ≥3 且全书 max(text_level)≤2（政治书实锤，
+#: 必修3 的 9 课中 5 课被压在 lvl2，正文小标题同为 lvl2）。
+_POLITICS_MIN_LESSONS = 3
+#: 目录反查窗：书前部前 N 块内的目录块。
+_POLITICS_TOC_WINDOW = 60
+#: 目名登记的最短长度（"目 录"这类两字行不登记）。
+_POLITICS_MU_MIN_LEN = 4
+#: 政治固定栏目黑名单（COLUMN_BLACKLIST 的政治档扩展，封闭词表可续加）。
+POLITICS_COLUMN_BLACKLIST: frozenset[str] = frozenset(
+    {"学思之窗", "名言", "演示", "决策", "历史回声"}
+)
+#: 目录行形态（去空白后）：CJK/标点串 + 尾随页码数字。
+_POLITICS_TOC_ROW_RE = re.compile(r"([一-鿿][一-鿿：:、，,。；;·（）()\-—]*?)\d+")
+#: 整块目录形态：≥3 个"目名+页码"行连续相接（出版页/封面数字串不满足）。
+_POLITICS_TOC_BLOCK_RE = re.compile(
+    r"(?:[一-鿿][一-鿿：:、，,。；;·（）()\-—]{3,}\d+){3,}"
+)
+#: 首尾装饰符号（◆◆◆ 名词点击 / 严格执法 |）。
+_POLITICS_DECOR_RE = re.compile(r"^[^一-鿿]+|[^一-鿿]+$")
+#: 目名里的间隔标点——截断处的前缀也登记（"人民代表大会制度：我国的根本
+#: 政治制度"的正文子标题"人民代表大会制度的优势"靠前缀命中）。
+_POLITICS_NAME_SPLIT_RE = re.compile(r"[：:、，,。；;·]")
+
+
+def _politics_deco(text: str) -> str:
+    """Strip decorative leading/trailing non-CJK symbols from a heading."""
+    return _POLITICS_DECOR_RE.sub("", (text or "").strip())
+
+
+def _is_politics_book(blocks: list[dict], text_fn) -> bool:
+    """政治档触发：max(text_level)≤2 且 lvl2 中 第N课 形态标题 ≥3。
+
+    自动检测、不认书名：数学/物理书的标题层级到 3 以上，或 课 标题不以
+    lvl2 出现，都不触发。
+    """
+    lessons = 0
+    max_level = 0
+    for block in blocks:
+        lvl = block.get("text_level")
+        if isinstance(lvl, int) and lvl > 0:
+            if lvl > max_level:
+                max_level = lvl
+            if lvl == 2 and _POLITICS_LESSON_RE.match(_squash(text_fn(block))):
+                lessons += 1
+    return max_level <= 2 and lessons >= _POLITICS_MIN_LESSONS
+
+
+def _politics_toc_register(blocks: list[dict], text_fn) -> frozenset[str]:
+    """目录页反查登记表：书前部目录行里的目名（去空白）。
+
+    目录是教材权威结构——正文 lvl2 短标题只有在目录中出现（或以目录名去
+    标点前缀开头）才收为 mu，出版页（人民教育出版社）与正文小标题被反查
+    排除。目录块整块须呈"目名+页码"行连续形态（≥3 行），单行噪声（封面
+    年份、出版社地址）不登记；单元/课/综合探究行是结构行，不入目名表。
+    """
+    names: set[str] = set()
+    for block in blocks[:_POLITICS_TOC_WINDOW]:
+        squashed = _squash(text_fn(block))
+        if not _POLITICS_TOC_BLOCK_RE.fullmatch(squashed):
+            continue
+        for name in _POLITICS_TOC_ROW_RE.findall(squashed):
+            if _POLITICS_UNIT_RE.match(name) or _POLITICS_LESSON_RE.match(name):
+                continue
+            if name.startswith("综合探究"):
+                continue
+            if len(name) >= _POLITICS_MU_MIN_LEN:
+                names.add(name)
+            prefix = _POLITICS_NAME_SPLIT_RE.split(name, 1)[0]
+            if len(prefix) >= _POLITICS_MU_MIN_LEN:
+                names.add(prefix)
+    return frozenset(names)
+
+
+def _politics_mu_ok(text: str, register: frozenset[str]) -> bool:
+    """目候选过滤：栏目黑名单 + 目录反查（两道都过才算 mu）。"""
+    clean = _politics_deco(text)
+    if not _has_cjk(clean) or len(clean) > _MU_MAX_LEN:
+        return False
+    if clean in COLUMN_BLACKLIST or clean in POLITICS_COLUMN_BLACKLIST:
+        return False
+    squashed = _squash(clean)
+    if not squashed:
+        return False
+    return any(squashed.startswith(name) or name.startswith(squashed) for name in register)
+
+
+def _politics_level(block: dict, text: str, register: frozenset[str]) -> int | None:
+    """政治档判级：第N单元→2，第N课→3，lvl2 目候选→4，其余 None。
+
+    单元/课按形态判级（不分 MinerU 层级——政治书把它们 lvl1/lvl2 混排）；
+    其余 lvl1（封面书名/出版页）与未分级块忽略；lvl2 短块过两道过滤后为
+    目 (level 4)。
+    """
+    if not text:
+        return None
+    squashed = _squash(text)
+    if _POLITICS_UNIT_RE.match(squashed):
+        return 2
+    if _POLITICS_LESSON_RE.match(squashed):
+        return 3
+    if block.get("text_level") != 2:
+        return None  # 封面/出版页 (lvl1) 与正文块：不开结构
+    if _politics_mu_ok(text, register):
+        return 4
+    return None
 
 
 def _strip_bold(text: str) -> tuple[str, bool]:
@@ -330,6 +449,12 @@ def build_tree(blocks: list[dict], *, text_fn=_block_text_v1, doc_id: str = "") 
             footer_register[_squash(text)] = last_page_number
     footer_register_active = bool(footer_register)
 
+    # 政治档（P5）: 全书标题压平在 text_level 2 的课制书，判级走专用分支。
+    politics = _is_politics_book(blocks, text_fn)
+    politics_register: frozenset[str] = (
+        _politics_toc_register(blocks, text_fn) if politics else frozenset()
+    )
+
     for i, block in enumerate(blocks):
         text = text_fn(block)
         # Running headers / page furniture never open structure (MinerU types
@@ -338,7 +463,13 @@ def build_tree(blocks: list[dict], *, text_fn=_block_text_v1, doc_id: str = "") 
         if block.get("type") in ("header", "footer", "page_number"):
             paths.append("".join(f"/{t}" for _, t in stack))
             continue
-        level = _block_level(block, text) if text else None
+        if politics:
+            level = _politics_level(block, text, politics_register)
+        else:
+            level = _block_level(block, text) if text else None
+        # 政治档封面书名：lvl1 只剩封面/出版页，取书前部最后一个 lvl1 作书名。
+        if politics and i < 10 and block.get("text_level") == 1 and text and _has_cjk(text):
+            doc_title = text
         # Chapter-name repeat with the SAME level and title as the current
         # chapter = running header noise, not a new structural node.
         if level is not None and stack and stack[-1][0] == level and stack[-1][1] == text:
@@ -353,7 +484,13 @@ def build_tree(blocks: list[dict], *, text_fn=_block_text_v1, doc_id: str = "") 
             continue
         if in_toc:
             # Dotted/leader entries ("1.1 集合 …… 5") or bare chapter stubs.
-            if text and (re.search(r"[.．…]{2,}\s*\d+$", text) or re.match(r"^(\d+[.．]\d*\s*\S{0,20}?)\s*…", text)):
+            # 政治档目录行没有引导点，以"目名+页码"收尾（必修3 实锤）——
+            # 不计数则 toc_seen_entries 恒为 0，正文第一章永远出不了目录。
+            if text and (
+                re.search(r"[.．…]{2,}\s*\d+$", text)
+                or re.match(r"^(\d+[.．]\d*\s*\S{0,20}?)\s*…", text)
+                or (politics and re.search(r"[一-鿿]\s*\d+\s*$", text))
+            ):
                 toc_seen_entries += 1
                 paths.append("")
                 continue
@@ -396,8 +533,11 @@ def build_tree(blocks: list[dict], *, text_fn=_block_text_v1, doc_id: str = "") 
                 doc_title = text  # first top heading ~ document title
             if level == 4:
                 # Bold-marked mus carry markdown markers; the tree stores the
-                # clean 目名 so paths/ids are marker-free.
+                # clean 目名 so paths/ids are marker-free. 政治档的目名还带
+                # 首尾装饰符（"| 严格执法 |"），一并剥掉。
                 text, _ = _strip_bold(text)
+                if politics:
+                    text = _politics_deco(text)
             # Pop deeper/equal levels from BOTH stacks in lockstep (the bug
             # before: node_stack only popped when non-empty, desyncing it and
             # re-parenting later chapters under stale nodes).
