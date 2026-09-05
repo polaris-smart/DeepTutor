@@ -1036,9 +1036,24 @@ async def canonicalize_book(req: CanonicalizeRequest) -> dict[str, Any]:
     # prefers over the chapter-level mechanical sketch. Best-effort: no tree, a
     # degraded doc_tree tier, or any storage failure only logs a warning — the
     # canonicalized book itself is unaffected.
-    from deeptutor.book.canonical_tree import cache_canonical_tree_for_book
+    from deeptutor.book.canonical_tree import (
+        cache_canonical_tree_for_book,
+        rebuild_canonical_tree_from_layout,
+    )
 
-    cache_canonical_tree_for_book(book.id, req.knowledge_bases, storage=engine.storage)
+    if not cache_canonical_tree_for_book(book.id, req.knowledge_bases, storage=engine.storage):
+        # P7【1】inline rebuild: the KB docstore had no usable doc_tree (the
+        # 大部头 downgraded-tier case the p1-cache-tree patch used to bridge by
+        # hand). The request itself carries the MinerU layout, so rebuild the
+        # doc_intel tree from its para_blocks right here — no patch script, no
+        # restart. Only reached when the P0 path failed; failures are logged
+        # and swallowed so canonicalization stays unaffected.
+        rebuild_canonical_tree_from_layout(
+            book.id,
+            req.layout or {},
+            filename=title,
+            storage=engine.storage,
+        )
 
     return {
         "book": book.model_dump(mode="json"),
