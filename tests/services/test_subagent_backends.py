@@ -895,6 +895,7 @@ async def test_detect_all_excludes_partner_backend() -> None:
         "hermes",
         "openclaw",
         "deepseek_harness",
+        "hermes_remote",
     }
 
 

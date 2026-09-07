@@ -3,25 +3,11 @@ from types import SimpleNamespace
 import pytest
 
 from deeptutor.api.main import app, health_live, health_ready
-
-
-
-def _flatten_app_routes(routes, prefix=""):
-    """Expand lazy fastapi _IncludedRouter wrappers into concrete routes."""
-    for route in routes:
-        if hasattr(route, "path"):
-            yield prefix + str(route.path), route
-        else:
-            ctx = getattr(route, "include_context", None)
-            nested = getattr(route, "original_router", None)
-            if nested is None:
-                continue
-            nested_prefix = prefix + str(getattr(ctx, "prefix", "") or "")
-            yield from _flatten_app_routes(nested.routes, nested_prefix)
+from tests.api.route_introspection import iter_effective_route_paths
 
 
 def test_only_canonical_transport_and_resource_routes_are_registered() -> None:
-    paths = {path for path, _ in _flatten_app_routes(app.routes)}
+    paths = set(iter_effective_route_paths(app))
 
     required = {
         "/api/books",
@@ -50,9 +36,11 @@ def test_only_canonical_transport_and_resource_routes_are_registered() -> None:
         "/api/notebook",
         "/api/outputs",
     )
-    # 悦学 K12 模块保留自己的命名空间（class-insights / exam-paper 组卷）——
-    # 与上游 canonical 路由并存，不属上游 canonical 化范围。
-    assert required <= paths
+    assert not {
+        path
+        for path in paths
+        if any(path == prefix or path.startswith(prefix + "/") for prefix in retired_prefixes)
+    }
     assert "/api/system/runtime-topology" not in paths
 
 

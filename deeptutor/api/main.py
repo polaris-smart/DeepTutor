@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 import logging
 import sys
 
-from fastapi import Depends, FastAPI, Request, Form
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -479,19 +479,14 @@ except Exception:
 from deeptutor.api.routers import (
     agent_config,
     attachments,
-    assignments,
     auth,
     book,
     capabilities,
     capabilities_settings,
-    class_insights,
     co_writer,
     courses,
-    daily_plan,
     dashboard,
-    exam_paper,
     imports,
-    ingest_pipeline,
     knowledge,
     marginnote4,
     mastery_path,
@@ -518,6 +513,7 @@ from deeptutor.api.routers import (
     video_learning,
     visualizers,
     voice,
+    workspace,
 )
 from deeptutor.api.routers import (
     tools as tools_router,
@@ -526,6 +522,12 @@ from deeptutor.api.routers.multi_user import router as multi_user_router  # noqa
 
 # Auth router is public — login/logout/register/status require no token
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+app.include_router(outputs.router, prefix="/files/outputs", tags=["outputs"])
+app.include_router(
+    workspace.files_router,
+    prefix="/files/workspace-items",
+    tags=["workspace"],
+)
 
 # All other routers require a valid session when AUTH_ENABLED=true.
 # require_auth is a no-op when AUTH_ENABLED=false, so this is safe for local use.
@@ -535,15 +537,6 @@ from deeptutor.api.routers.auth import (  # noqa: E402
 )
 
 _auth = [Depends(require_learning_surface)]
-
-# Generated outputs (assembled papers, exports) sit behind the same session
-# gate as /files/attachments — they are per-user artefacts, not public files.
-app.include_router(
-    outputs.router,
-    prefix="/files/outputs",
-    tags=["outputs"],
-    dependencies=_auth,
-)
 # Partner data is anchored at the admin workspace (data/partners) and shared
 # process-wide, so management is admin-gated in multi-user deployments
 # (single-user local runs are implicitly admin — no behaviour change there).
@@ -560,36 +553,12 @@ app.include_router(question.router, prefix="/api/question", tags=["question"], d
 app.include_router(knowledge.router, prefix="/api", tags=["knowledge-bases"], dependencies=_auth)
 app.include_router(imports.router, prefix="/api/imports", tags=["imports"], dependencies=_auth)
 app.include_router(
-    exam_paper.router, prefix="/api/exam-paper", tags=["exam-paper"], dependencies=_auth
-)
-app.include_router(
     dashboard.router, prefix="/api/dashboard", tags=["dashboard"], dependencies=_auth
 )
 app.include_router(
     mastery_path.router,
     prefix="/api/mastery-paths",
     tags=["mastery-path"],
-    dependencies=_auth,
-)
-app.include_router(
-    daily_plan.router,
-    prefix="/api/daily-plan",
-    tags=["daily-plan"],
-    dependencies=_auth,
-)
-app.include_router(
-    assignments.router,
-    prefix="/api/assignments",
-    tags=["assignments"],
-    dependencies=_auth,
-)
-# Ingest pipeline (素材四段编排器): every route carries its own
-# require_admin_or_teacher gate; router-level _auth keeps the module
-# consistent with every other workspace router.
-app.include_router(
-    ingest_pipeline.router,
-    prefix="/api/ingest-pipeline",
-    tags=["ingest-pipeline"],
     dependencies=_auth,
 )
 # WebSocket handlers authenticate inside the connection before ``accept``.
@@ -644,6 +613,12 @@ app.include_router(
     tags=["settings"],
 )
 app.include_router(settings.router, prefix="/api/settings", tags=["settings"], dependencies=_auth)
+app.include_router(
+    workspace.settings_router,
+    prefix="/api/settings/workspace",
+    tags=["workspace-settings"],
+    dependencies=_auth,
+)
 app.include_router(
     video_learning.settings_router,
     prefix="/api/settings/video-learning",
@@ -709,15 +684,6 @@ app.include_router(
     partner_groups.router,
     prefix="/api/partner-groups",
     tags=["partner-groups"],
-    dependencies=_auth,
-)
-# Class insights: the overview route carries its own admin/teacher gate
-# (require_admin_or_teacher); router-level _auth keeps the module consistent
-# with every other workspace router.
-app.include_router(
-    class_insights.router,
-    prefix="/api/class-insights",
-    tags=["class-insights"],
     dependencies=_auth,
 )
 app.include_router(partners.ws_router, prefix="/ws/partners", tags=["partners"])

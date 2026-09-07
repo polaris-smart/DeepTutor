@@ -177,6 +177,7 @@ async def test_turn_runtime_replays_events_and_materializes_messages(
             "persona": "socratic",
             "memory_references": ["summary"],
             "book_references": [{"book_id": "book-1", "page_ids": ["page-1"]}],
+            "mastery_path_id": "path-1",
             "config": {},
         }
     )
@@ -210,6 +211,7 @@ async def test_turn_runtime_replays_events_and_materializes_messages(
     assert detail["messages"][0]["metadata"]["request_snapshot"]["bookReferences"] == [
         {"book_id": "book-1", "page_ids": ["page-1"]}
     ]
+    assert detail["messages"][0]["metadata"]["request_snapshot"]["masteryPathId"] == "path-1"
     # Chat capability now routes attached sources through the manifest +
     # ``read_source`` tool instead of inlining ``[Book Context]`` into the
     # user message. The raw user message stays raw; the book payload
@@ -227,6 +229,7 @@ async def test_turn_runtime_replays_events_and_materializes_messages(
     assert captured["metadata"] and captured["metadata"]["book_references"] == [
         {"book_id": "book-1", "page_ids": ["page-1"]}
     ]
+    assert captured["metadata"]["mastery_path_id"] == "path-1"
     assert detail["messages"][1]["content"] == "Hello Frank"
     assert detail["preferences"] == {
         "capability": "chat",
@@ -236,11 +239,28 @@ async def test_turn_runtime_replays_events_and_materializes_messages(
         # Explicit persona in the payload is persisted as a session-level
         # preference (survives reloads; later turns fall back to it).
         "persona": "socratic",
+        "mastery_path_id": "path-1",
+        # No mode is persisted here: this turn never recorded one, and an
+        # unrecorded mode has to stay unrecorded — the tools read its absence
+        # as "enforce nothing", which is what keeps every conversation that
+        # predates modes working exactly as it did.
     }
 
     persisted_turn = await store.get_turn(turn["id"])
     assert persisted_turn is not None
     assert persisted_turn["status"] == "completed"
+    persisted_events = await store.get_turn_events(turn["id"])
+    persisted_done = next(event for event in persisted_events if event["type"] == "done")
+    assert persisted_done["seq"] > 0
+    assert persisted_done["metadata"]["assistant_message_id"] == assistant_row["id"]
+
+    # A fresh runtime (the reconnect/restart shape) replays the committed DONE
+    # instead of synthesizing a metadata-poor terminal event.
+    replay_runtime = TurnRuntimeManager(store)
+    replayed = [event async for event in replay_runtime.subscribe_turn(turn["id"])]
+    replayed_done = next(event for event in replayed if event["type"] == "done")
+    assert replayed_done["seq"] == persisted_done["seq"]
+    assert replayed_done["metadata"]["assistant_message_id"] == assistant_row["id"]
 
 
 @pytest.mark.asyncio
@@ -1001,3 +1021,32 @@ async def test_turn_runtime_injects_memory_and_refreshes_after_completion(
     assert captured["memory_context"] == "## Memory\n## Preferences\n- Prefer concise answers."
     assert captured["conversation_history"] == []
     assert captured["conversation_context_text"] == "Recent chat summary"
+
+
+@pytest.mark.asyncio
+async def test_a_null_mode_on_the_wire_keeps_the_conversation_in_the_mode_it_was_in(
+    tmp_path, monkeypatch
+):
+    """The client writes ``mastery_session_mode`` on every turn and leaves it
+    null whenever it does not happen to hold the mode in memory — a reload, or
+    a session loaded from the server before its preference came back.
+
+    Reading that null as "the client said none" threw the mode away, so the
+    tutor was told it was studying while the learner watched the outline mode
+    highlighted above the transcript — and never switched, because it believed
+    it already had.
+    """
+    from deeptutor.capabilities.mastery.mode import enforced_mode
+
+    # The resolution the preparer performs, isolated: payload first, stored
+    # preference when the payload said nothing.
+    def resolve(payload_value, stored):
+        return enforced_mode(payload_value or stored)
+
+    assert resolve("outline", None) == "outline"
+    assert resolve(None, "outline") == "outline"
+    assert resolve("", "outline") == "outline"
+    # An explicit switch still wins over what was stored.
+    assert resolve("review", "outline") == "review"
+    # And a conversation that has never had one stays unrecorded.
+    assert resolve(None, None) is None

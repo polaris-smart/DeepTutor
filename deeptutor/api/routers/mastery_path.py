@@ -6,6 +6,7 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 import html
 import json
+import re
 import time
 import uuid
 from typing import Any
@@ -42,6 +43,12 @@ from deeptutor.utils.json_parser import parse_json_response
 
 router = APIRouter()
 ws_router = APIRouter()
+
+#: Signals that change what a topic screen shows without advancing the path's
+#: revision, so they are forwarded even when the durable event tail is empty.
+#: A conversation joining or leaving the topic changes its session list; a
+#: deleted topic changes everything.
+_SCREEN_ONLY_SIGNALS = frozenset({"session.bound", "session.released", "topic.deleted"})
 
 
 def get_learning_service() -> LearningService:
@@ -222,12 +229,18 @@ class GenerateTopicDraftRequest(BaseModel):
 
 
 class ConfirmTopicRequest(GenerateTopicDraftRequest):
+    # The learner states a goal and picks materials; naming is not one more
+    # box to fill before they can start. An empty name is derived from the
+    # goal below, and stays renameable afterwards.
+    name: str = Field(default="", max_length=120)
     description: str = Field(default="", max_length=500)
     emoji: str = Field(default="🧭", max_length=16)
+    # Optional: a mastery goal is created *before* it has an outline, and the
+    # outline is then designed with the tutor in the goal's first session.
     # The region ceiling is the generator's, not a second opinion: a route
     # over a fourteen-document library legitimately has more than eight, and
     # this used to reject the very draft the server had just produced.
-    modules: list[dict] = Field(..., min_length=1, max_length=MAX_MODULE_LIMIT)
+    modules: list[dict] = Field(default_factory=list, max_length=MAX_MODULE_LIMIT)
 
 
 class EditTopicMapRequest(BaseModel):
@@ -304,6 +317,13 @@ def _topic_payload_from_snapshot(
         "next": _next_step_from_interaction(progress, active_interaction),
         "map": learning_policy.map_summary(progress),
         "reviews": _review_queue(progress),
+        # Who this goal is for. Null until intake has happened, which is also
+        # what the dashboard renders as "not asked yet".
+        "learner_profile": (
+            progress.learner_profile.model_dump(mode="json")
+            if progress.learner_profile is not None and not progress.learner_profile.is_empty()
+            else None
+        ),
         "session_count": session_count,
         "updated_at": progress.updated_at,
     }
@@ -388,6 +408,27 @@ async def generate_topic_route(body: GenerateTopicDraftRequest):
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+#: Longest provisional name derived from a goal. A goal is a paragraph; a name
+#: has to fit on a card.
+_PROVISIONAL_NAME_CHARS = 32
+
+
+def _provisional_name(goal: str) -> str:
+    """A card-sized name for a goal the learner did not name themselves.
+
+    The goal's own opening clause, because that is the sentence they wrote and
+    the one they will recognise in a list. Anything is better than the storage
+    id, which is what an unnamed path displayed before goals could be created
+    without an outline to borrow a module name from.
+    """
+    head = re.split(r"[\n。.!?！？;；]", str(goal or "").strip(), maxsplit=1)[0].strip()
+    if not head:
+        return ""
+    if len(head) <= _PROVISIONAL_NAME_CHARS:
+        return head
+    return head[:_PROVISIONAL_NAME_CHARS].rstrip() + "…"
+
+
 @router.post("/topics")
 async def create_topic(body: ConfirmTopicRequest):
     from deeptutor.learning.topic_generation import (
@@ -396,12 +437,14 @@ async def create_topic(body: ConfirmTopicRequest):
     )
 
     path_id = f"topic_{uuid.uuid4().hex}"
-    try:
-        modules = materialize_modules(
-            path_id, body.modules, strict=True, module_limit=MAX_MODULE_LIMIT
-        )
-    except TopicGenerationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    modules = []
+    if body.modules:
+        try:
+            modules = materialize_modules(
+                path_id, body.modules, strict=True, module_limit=MAX_MODULE_LIMIT
+            )
+        except TopicGenerationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     sources = _topic_sources(body.sources)
     store = LearningStore()
     metadata = TopicMetadata(
@@ -411,10 +454,21 @@ async def create_topic(body: ConfirmTopicRequest):
         emoji=body.emoji.strip() or "🧭",
         map_seed=store._default_map_seed(path_id),
     )
+    # A name is a different object from a goal: the goal is the sentence they
+    # wrote, the name is the label they will recognise in a list months later.
+    # The task model writes it; the truncated goal stands in when it cannot.
+    resolved_name = body.name.strip()
+    if not resolved_name:
+        from deeptutor.learning.topic_naming import suggest_topic_name
+
+        resolved_name = await suggest_topic_name(
+            body.goal,
+            source_labels=[source.label for source in sources],
+        ) or _provisional_name(body.goal)
     progress = await asyncio.to_thread(
         LearningService(store).create_topic,
         path_id,
-        name=body.name,
+        name=resolved_name,
         modules=modules,
         metadata=metadata,
         sources=sources,
@@ -513,6 +567,47 @@ async def list_topic_sessions(path_id: str):
     }
 
 
+class SetSessionModeRequest(BaseModel):
+    mode: str = Field(..., max_length=32)
+
+
+@router.put("/topics/{path_id}/sessions/{session_id}/mode")
+async def set_session_mode(path_id: str, session_id: str, body: SetSessionModeRequest):
+    """Change what a conversation is doing, from the learner's own buttons.
+
+    The same move the tutor makes with ``mastery_mode``, through the same
+    admission rule — so pressing "Study" on a goal with no outline is refused
+    with the sentence the tutor would have said, rather than silently putting
+    the conversation somewhere its tools will then refuse to work.
+    """
+    from deeptutor.capabilities.mastery.mode import MODES, admission_error, normalize_mode
+
+    _validate_book_id(path_id)
+    requested = str(body.mode or "").strip().lower()
+    if requested not in MODES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"mode must be one of: {', '.join(MODES)}",
+        )
+
+    store = LearningStore()
+    progress = await asyncio.to_thread(store.load, path_id)
+    has_outline = progress is not None and any(
+        module.knowledge_points for module in progress.modules
+    )
+    refusal = admission_error(requested, has_outline=has_outline)
+    if refusal:
+        raise HTTPException(status_code=409, detail=refusal)
+
+    from deeptutor.services.session import get_session_store
+
+    session_store = get_session_store()
+    if await session_store.get_session(session_id) is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    await session_store.update_session_preferences(session_id, {"mastery_session_mode": requested})
+    return {"session_id": session_id, "mode": normalize_mode(requested)}
+
+
 @router.get("/topics/{path_id}/ask-hint")
 async def get_topic_ask_hint(path_id: str, session_id: str = ""):
     """One question the learner could ask here, for the composer placeholder.
@@ -570,10 +665,7 @@ async def mastery_topic_websocket(ws: WebSocket) -> None:
             )
             if events:
                 cursor = max(cursor, max(event.revision for event in events))
-            elif signal.revision <= cursor and signal.reason not in {
-                "session.bound",
-                "topic.deleted",
-            }:
+            elif signal.revision <= cursor and signal.reason not in _SCREEN_ONLY_SIGNALS:
                 continue
             cursor = max(cursor, signal.revision)
             await send(
@@ -698,6 +790,116 @@ async def get_six_dimension_snapshot(
     service = get_learning_service()
     progress = service.get_or_create(book_id)
     return compute_six_dimension_snapshot(progress, since=since, until=until)
+
+
+@router.get("/progress/{book_id}/board")
+async def get_progress_board(book_id: str):
+    """The visual learning board: every knowledge point as a card, enriched
+    with its next review time and a deterministic grid position derived from
+    the module order. A read-only projection of the same mastery data the
+    tutor and the map view use."""
+    _validate_book_id(book_id)
+    service = get_learning_service()
+    progress = service.get_or_create(book_id)
+    summary = learning_policy.map_summary(progress)
+
+    due_by_kp = {task.knowledge_point_id: task.due_at for task in progress.review_queue}
+
+    cards: list[dict] = []
+    modules: list[dict] = []
+    for module in summary["modules"]:
+        module_cards: list[dict] = []
+        for index, kp in enumerate(module["knowledge_points"]):
+            card = {
+                "id": kp["id"],
+                "name": kp["name"],
+                "type": kp["type"],
+                "module_id": module["id"],
+                "module_name": module["name"],
+                "status": kp["status"],
+                "mastery_level": kp["mastery"],
+                "next_review_at": due_by_kp.get(kp["id"]),
+                "position": {"column": module["order"], "row": index},
+            }
+            cards.append(card)
+            module_cards.append(card)
+        modules.append(
+            {
+                "id": module["id"],
+                "name": module["name"],
+                "order": module["order"],
+                "mastered": module["mastered"],
+                "total": module["total"],
+                "cards": module_cards,
+            }
+        )
+
+    return {
+        "book_id": book_id,
+        "name": summary["name"],
+        "path_revision": progress.version,
+        "cards": cards,
+        "modules": modules,
+    }
+
+
+@router.get("/progress/{book_id}/objectives/{kp_id}")
+async def get_objective_report(book_id: str, kp_id: str):
+    """The evidence behind one objective: attempts, schedule, errors, prompts.
+
+    ``policy.objective_report`` is pure over the aggregate, so the questions
+    themselves — which live in the durable interaction log, not the aggregate —
+    are joined on here, redacted of their answer keys.
+    """
+    _validate_book_id(book_id)
+    store = LearningStore()
+    progress = await asyncio.to_thread(store.load, book_id)
+    if progress is None:
+        raise HTTPException(status_code=404, detail="Progress not found")
+    report = learning_policy.objective_report(progress, kp_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Objective not found")
+
+    from deeptutor.learning.pending import public_pending_question
+
+    interactions = await asyncio.to_thread(store.list_interactions, book_id)
+    prompts = {
+        interaction.interaction_id: public_pending_question(interaction.question).prompt
+        for interaction in interactions
+    }
+    for attempt in report["attempts"]:
+        attempt["prompt"] = prompts.get(attempt["question_id"], "")
+    return {"book_id": book_id, "path_revision": progress.version, "objective": report}
+
+
+@router.get("/progress/{book_id}/events")
+async def get_progress_events(book_id: str, after_revision: int = 0):
+    """Ordered, redacted domain events for reconnect and incremental UI sync."""
+    _validate_book_id(book_id)
+    store = LearningStore()
+    progress = await asyncio.to_thread(store.load, book_id)
+    if progress is None:
+        raise HTTPException(status_code=404, detail="Progress not found")
+    events = await asyncio.to_thread(
+        store.list_events,
+        book_id,
+        after_revision=max(0, after_revision),
+    )
+    return {
+        "book_id": book_id,
+        "events": [event.model_dump(mode="json") for event in events],
+    }
+
+
+@router.get("/progress/{book_id}/sessions")
+async def get_progress_sessions(book_id: str):
+    """Expose the explicit conversation associations for this path."""
+    _validate_book_id(book_id)
+    store = LearningStore()
+    if not await asyncio.to_thread(store.exists, book_id):
+        raise HTTPException(status_code=404, detail="Progress not found")
+    session_ids = await asyncio.to_thread(store.list_session_ids, book_id)
+    return {"book_id": book_id, "session_ids": session_ids}
 
 
 @router.post("/progress/{book_id}/init-modules")
