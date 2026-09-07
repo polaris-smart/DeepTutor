@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 
 import { apiUrl } from "@/lib/api";
 import {
+  DEFAULT_PLAYBACK_RATE,
   html5PlayerController,
   youtubePlayerController,
   type PlayerController,
@@ -49,12 +50,14 @@ function BilibiliPlayer({
     () => ({
       currentTime: () => timeRef.current,
       duration: () => Number.POSITIVE_INFINITY,
+      playbackRate: () => DEFAULT_PLAYBACK_RATE,
       seek: (seconds: number) => {
         const next = Math.max(0, seconds);
         timeRef.current = next;
         setStart(next);
         onTime(next, Number.POSITIVE_INFINITY);
       },
+      setPlaybackRate: () => undefined,
       play: () => undefined,
       pause: () => undefined,
       destroy: () => undefined,

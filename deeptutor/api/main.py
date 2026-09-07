@@ -478,15 +478,20 @@ except Exception:
 # Some router modules load YAML settings at import time.
 from deeptutor.api.routers import (
     agent_config,
+    assignments,
     attachments,
     auth,
     book,
     capabilities,
     capabilities_settings,
+    class_insights,
     co_writer,
     courses,
+    daily_plan,
     dashboard,
+    exam_paper,
     imports,
+    ingest_pipeline,
     knowledge,
     marginnote4,
     mastery_path,
@@ -554,6 +559,38 @@ app.include_router(knowledge.router, prefix="/api", tags=["knowledge-bases"], de
 app.include_router(imports.router, prefix="/api/imports", tags=["imports"], dependencies=_auth)
 app.include_router(
     dashboard.router, prefix="/api/dashboard", tags=["dashboard"], dependencies=_auth
+)
+# K12 routers restored after the v1.6.5 merge (upstream rewrote the
+# registration block and the three-way merge dropped these forks).
+app.include_router(
+    exam_paper.router, prefix="/api/exam-paper", tags=["exam-paper"], dependencies=_auth
+)
+app.include_router(
+    daily_plan.router,
+    prefix="/api/daily-plan",
+    tags=["daily-plan"],
+    dependencies=_auth,
+)
+app.include_router(
+    assignments.router,
+    prefix="/api/assignments",
+    tags=["assignments"],
+    dependencies=_auth,
+)
+# Ingest pipeline (素材四段编排器): every route carries its own
+# require_admin_or_teacher gate; router-level _auth keeps the module
+# consistent with every other workspace router.
+app.include_router(
+    ingest_pipeline.router,
+    prefix="/api/ingest-pipeline",
+    tags=["ingest-pipeline"],
+    dependencies=_auth,
+)
+app.include_router(
+    class_insights.router,
+    prefix="/api/class-insights",
+    tags=["class-insights"],
+    dependencies=_auth,
 )
 app.include_router(
     mastery_path.router,

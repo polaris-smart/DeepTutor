@@ -156,13 +156,16 @@ def test_question_bank_binds_and_quiz_prefers_bank(
             question="模型拟的题（应被题库原题替换）",
             question_type="choice",
             expected_answer="C",
-            options=["A: 干扰", "B: 干扰", "C: 干扰", "D: 干扰"],
+            options=["A: y=x", "B: y=-x", "C: y=2^x", "D: y=1/x"],
         )
     )
     assert result.success, result.content[:300]
-    payload = json.loads(result.content)
-    assert payload["question"] == "国家智慧教育平台入库原题一：下列哪个是增函数？"
-    # Normalized options render label: body pairs — the bank body must be there.
+    # v1.6.5 contract: the quiz tool returns a tutor-facing notice in content
+    # and the structured payload under metadata["mastery_quiz"], with the
+    # learner-safe question in pending_question.
+    payload = result.metadata["mastery_quiz"]["pending_question"]
+    assert payload["prompt"] == "国家智慧教育平台入库原题一：下列哪个是增函数？"
+    # Normalized options render label/body pairs — the bank body must be there.
     rendered = str(payload["options"])
     assert "y=2^x" in rendered
     assert "模型拟的题" not in rendered

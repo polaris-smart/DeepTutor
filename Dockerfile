@@ -514,6 +514,32 @@ RUN pip install --no-cache-dir \
 # Development overrides only the program definitions (uvicorn --reload and
 # `next dev`); the shared daemon-level /etc/supervisor/supervisord.conf from
 # the production stage is reused as-is.
+RUN cat > /etc/supervisor/conf.d/programs.conf <<'EOF'
+[program:backend]
+command=/bin/bash -c "exec python -m uvicorn deeptutor.api.main:app --host 0.0.0.0 --port ${BACKEND_PORT:-8001} --reload --no-access-log --ws-max-size $(python -c 'from deeptutor.services.config import get_ws_max_size; print(get_ws_max_size())' 2>/dev/null || echo 16777216) --timeout-keep-alive $(python -c 'from deeptutor.services.config import HTTP_KEEP_ALIVE_TIMEOUT; print(HTTP_KEEP_ALIVE_TIMEOUT)' 2>/dev/null || echo 300)"
+directory=/app
+user=deeptutor
+autostart=true
+autorestart=true
+stdout_logfile=/dev/fd/1
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/fd/2
+stderr_logfile_maxbytes=0
+environment=PYTHONPATH="/app",PYTHONUNBUFFERED="1"
+
+[program:frontend]
+command=/bin/bash -c "cd /app/web && node scripts/dev.mjs -H 0.0.0.0 -p ${FRONTEND_PORT:-3782}"
+directory=/app/web
+user=deeptutor
+autostart=true
+autorestart=true
+startsecs=5
+stdout_logfile=/dev/fd/1
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/fd/2
+stderr_logfile_maxbytes=0
+environment=NODE_ENV="development"
+EOF
 
 RUN sed -i 's/\r$//' /etc/supervisor/conf.d/programs.conf
 

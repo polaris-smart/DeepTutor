@@ -838,6 +838,35 @@ class MasteryQuizTool(BaseTool):
                 content=f"Unknown objective {kp_id!r}; call mastery_status for valid ids.",
                 success=False,
             )
+        # 错题闭环题源: a KP-bound question bank always wins over the model's
+        # draft — the agent's call here acts as the trigger, but the question
+        # text, options, answer and explanation come verbatim from the bank
+        # (rotation via meta.bank_cursor). Empty-answer items stay strict:
+        # choice items must carry an answer or they are skipped.
+        bank = (kp.meta or {}).get("question_bank") or []
+        if bank:
+            cursor = int((kp.meta or {}).get("bank_cursor") or 0) % len(bank)
+            item = bank[cursor]
+            bank_question = str(item.get("question") or "").strip()
+            bank_answer = str(item.get("answer") or "").strip()
+            if bank_question and (bank_answer or item.get("question_type") != "choice"):
+                kp.meta["bank_cursor"] = cursor + 1
+                await asyncio.to_thread(service.save, progress)
+                question = bank_question
+                expected = bank_answer
+                q_type = str(item.get("question_type") or "choice")
+                option_map = item.get("options") or {}
+                options = [
+                    {"label": label, "body": str(body)}
+                    for label, body in option_map.items()
+                ]
+                if item.get("explanation"):
+                    kwargs["explanation"] = str(item["explanation"])
+                if item.get("difficulty"):
+                    kwargs["difficulty"] = str(item["difficulty"])
+                kwargs["bank_note"] = f"题源：挂载题库第 {cursor + 1}/{len(bank)} 题。"
+            else:
+                kwargs["bank_note"] = "题源：挂载题库的当前项缺答案，本轮由你出一题。"
         pending = PendingQuestion(
             question_id=uuid.uuid4().hex,
             knowledge_point_id=kp_id,

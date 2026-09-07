@@ -78,7 +78,7 @@ def test_user_with_empty_grant_has_no_access(tmp_path, monkeypatch):
         reset_current_user(token)
 
 
-def test_user_default_matches_first_available_model(tmp_path, monkeypatch):
+def test_user_default_follows_admin_active_model(tmp_path, monkeypatch):
     monkeypatch.setattr(
         model_access,
         "admin_catalog",
@@ -121,12 +121,12 @@ def test_user_default_matches_first_available_model(tmp_path, monkeypatch):
     try:
         allowed = model_access.allowed_llm_options()
         assert allowed["active"] == {
-            "profile_id": "first",
-            "model_id": "first-model",
+            "profile_id": "global",
+            "model_id": "global-model",
         }
         assert [option["is_active_default"] for option in allowed["options"]] == [
-            True,
             False,
+            True,
         ]
     finally:
         reset_current_user(token)
