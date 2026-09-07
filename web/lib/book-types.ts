@@ -45,7 +45,11 @@ export type BlockType =
   | "deep_dive"
   | "section"
   | "reading"
-  | "concept_graph";
+  | "concept_graph"
+  // YuEdu error loop — guided-learning blocks.
+  | "error_diagnosis"
+  | "retrieval_practice"
+  | "module_test";
 
 export type ContentType =
   | "theory"

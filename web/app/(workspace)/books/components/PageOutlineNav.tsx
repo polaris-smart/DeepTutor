@@ -6,6 +6,7 @@ import {
   AlignLeft,
   BookOpen,
   ChevronRight,
+  ClipboardList,
   Code2,
   FileText,
   Film,
@@ -38,6 +39,9 @@ const TYPE_ICON: Record<BlockType, LucideIcon> = {
   deep_dive: MessageCircle,
   concept_graph: Layers,
   reading: BookOpen,
+  error_diagnosis: AlertCircle,
+  retrieval_practice: ListChecks,
+  module_test: ClipboardList,
 };
 
 const TYPE_LABEL_EN: Record<BlockType, string> = {
@@ -55,6 +59,9 @@ const TYPE_LABEL_EN: Record<BlockType, string> = {
   deep_dive: "Deep dive",
   concept_graph: "Concept graph",
   reading: "Reading",
+  error_diagnosis: "Error Diagnosis",
+  retrieval_practice: "Retrieval Practice",
+  module_test: "Module Test",
 };
 
 function shortLabel(block: Block, fallback: string): string {

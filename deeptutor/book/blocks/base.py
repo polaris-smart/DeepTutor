@@ -35,6 +35,18 @@ class GenerationFailure(Exception):
     """Raised by a generator to mark the block as ERROR."""
 
 
+class BlockSkipped(Exception):
+    """Raised by a generator to silently drop the block.
+
+    Unlike :class:`GenerationFailure` (which surfaces a visible ERROR card to
+    the learner), a skipped block never renders: ``generate`` marks it HIDDEN
+    and the compiler prunes it from the page's block list before persisting.
+    Use it when the block has nothing legitimate to show — e.g. error
+    diagnosis with no recorded wrong-answer data — not when generation
+    actually failed.
+    """
+
+
 def _classify_failure(message: str) -> str:
     lower = (message or "").lower()
     if "json" in lower or "object found" in lower or "parse" in lower:
@@ -125,6 +137,17 @@ class BlockGenerator(ABC):
         block.error = ""
         try:
             payload, anchors, metadata = await self._generate(ctx)
+        except BlockSkipped as exc:
+            # Nothing to show — the block must vanish, not render an ERROR card.
+            block.status = BlockStatus.HIDDEN
+            block.error = ""
+            block.metadata = {
+                **block.metadata,
+                "skipped": True,
+                "skip_reason": str(exc),
+            }
+            logger.info(f"Generator {self.__class__.__name__} skipped block {block.id}: {exc}")
+            return block
         except GenerationFailure as exc:
             block.status = BlockStatus.ERROR
             block.error = str(exc)
@@ -195,11 +218,14 @@ def _build_default_registry() -> BlockGeneratorRegistry:
     from .code import CodeGenerator
     from .concept_graph import ConceptGraphGenerator
     from .deep_dive import DeepDiveGenerator
+    from .error_diagnosis import ErrorDiagnosisGenerator
     from .figure import FigureGenerator
     from .flash_cards import FlashCardsGenerator
     from .interactive import InteractiveGenerator
+    from .module_test import ModuleTestGenerator
     from .quiz import QuizGenerator
     from .reading import ReadingGenerator
+    from .retrieval_practice import RetrievalPracticeGenerator
     from .section import SectionGenerator
     from .text import TextGenerator
     from .timeline import TimelineGenerator
@@ -218,6 +244,10 @@ def _build_default_registry() -> BlockGeneratorRegistry:
         FlashCardsGenerator,
         DeepDiveGenerator,
         ConceptGraphGenerator,
+        # YuEdu fork: 错题闭环三件（数据源见 blocks/_learning_data.py）
+        RetrievalPracticeGenerator,
+        ErrorDiagnosisGenerator,
+        ModuleTestGenerator,
         SectionGenerator,
         ReadingGenerator,
     ):
@@ -229,6 +259,7 @@ __all__ = [
     "BlockContext",
     "BlockGenerator",
     "BlockGeneratorRegistry",
+    "BlockSkipped",
     "GenerationFailure",
     "get_block_registry",
 ]

@@ -29,6 +29,9 @@ import TimelineBlock from "./TimelineBlock";
 import FlashCardsBlock from "./FlashCardsBlock";
 import DeepDiveBlock from "./DeepDiveBlock";
 import ConceptGraphBlock from "./ConceptGraphBlock";
+import ErrorDiagnosisBlock from "./ErrorDiagnosisBlock";
+import RetrievalPracticeBlock from "./RetrievalPracticeBlock";
+import ModuleTestBlock from "./ModuleTestBlock";
 import SectionBlock from "./SectionBlock";
 import PlaceholderBlock from "./PlaceholderBlock";
 
@@ -231,6 +234,15 @@ export default function BlockRenderer({
           language={bookLanguage}
         />
       );
+      break;
+    case "error_diagnosis":
+      body = <ErrorDiagnosisBlock block={block} />;
+      break;
+    case "retrieval_practice":
+      body = <RetrievalPracticeBlock block={block} />;
+      break;
+    case "module_test":
+      body = <ModuleTestBlock block={block} />;
       break;
     default:
       body = <PlaceholderBlock block={block} />;

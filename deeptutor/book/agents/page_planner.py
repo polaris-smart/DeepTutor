@@ -172,6 +172,11 @@ _TEMPLATES_V2: dict[ContentType, list[tuple[BlockType, dict[str, Any]]]] = {
         (BlockType.SECTION, {"role": "synthesis", "target_words": 800}),
         (BlockType.QUIZ, {"num_questions": 3, "transition_in": "Check your understanding"}),
         (BlockType.FLASH_CARDS, {"count": 5, "transition_in": "Quick mental hooks"}),
+        # YuEdu fork: 错题闭环——提取练习可落在理论页收尾，趁热回忆。
+        (
+            BlockType.RETRIEVAL_PRACTICE,
+            {"count": 5, "transition_in": "Retrieve what you just read"},
+        ),
     ],
     ContentType.DERIVATION: [
         (BlockType.SECTION, {"role": "setup", "target_words": 1400}),
@@ -238,6 +243,11 @@ _TEMPLATES_V2: dict[ContentType, list[tuple[BlockType, dict[str, Any]]]] = {
             BlockType.CALLOUT,
             {"variant": "common_pitfall", "transition_in": "Watch out for these traps"},
         ),
+        # YuEdu fork: 错题闭环——练习页收尾即模块末测验。
+        (
+            BlockType.MODULE_TEST,
+            {"num_questions": 8, "transition_in": "Module check — pull it all together"},
+        ),
     ],
     ContentType.CONCEPT: [
         (BlockType.SECTION, {"role": "definition", "target_words": 1400}),
@@ -247,6 +257,11 @@ _TEMPLATES_V2: dict[ContentType, list[tuple[BlockType, dict[str, Any]]]] = {
         (BlockType.CALLOUT, {"variant": "common_pitfall", "transition_in": "Watch out for these"}),
         (BlockType.FIGURE, {"variant": "comparison", "transition_in": "Side-by-side comparison"}),
         (BlockType.QUIZ, {"num_questions": 3, "transition_in": "Self-check"}),
+        # YuEdu fork: 错题闭环——概念页同样适合提取练习收尾。
+        (
+            BlockType.RETRIEVAL_PRACTICE,
+            {"count": 5, "transition_in": "Say it back in your own words"},
+        ),
     ],
 }
 
@@ -338,6 +353,14 @@ PLANNABLE_BLOCK_TYPES = frozenset(
         BlockType.ANIMATION,
         BlockType.CODE,
         BlockType.TIMELINE,
+        # YuEdu fork: 错题闭环三件（error_diagnosis / retrieval_practice /
+        # module_test）。模板归属：retrieval_practice 入 THEORY/CONCEPT 页，
+        # module_test 归模块末（PRACTICE 收尾），error_diagnosis 只在复习/
+        # 诊断场景由 LLM 规划选用，不进静态模板——生成器在没有真实错题数据
+        # 时会跳过该块，避免产出空卡。
+        BlockType.RETRIEVAL_PRACTICE,
+        BlockType.ERROR_DIAGNOSIS,
+        BlockType.MODULE_TEST,
     }
 )
 
