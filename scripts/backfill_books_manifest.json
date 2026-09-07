@@ -1,0 +1,71 @@
+{
+  "_comment": "P1-B 灌装补漏清单：待 Book 化的 11 本正本。数学 1 本 + 英语 10 本（~/.Learning/books/ 下实际文件名，含空格为真实字符）。mineru_status=pending 表示等待 MinerU 解析后走 canonicalize 导入。政治版本归一（必修1 双版本择优、必修2 去\"-修复\"后缀）由 ZC 生产侧手工处理，不在本清单。",
+  "books": [
+    {
+      "source_pdf": "数学教材/高中数学人教A版2019-选择性必修第二册.pdf",
+      "subject": "数学",
+      "expected_title": "高中数学人教A版2019-选择性必修第二册",
+      "mineru_status": "pending"
+    },
+    {
+      "source_pdf": "英语/学程一  指导手册.pdf",
+      "subject": "英语",
+      "expected_title": "学程一 指导手册",
+      "mineru_status": "pending"
+    },
+    {
+      "source_pdf": "英语/学程二   指导手册.pdf",
+      "subject": "英语",
+      "expected_title": "学程二 指导手册",
+      "mineru_status": "pending"
+    },
+    {
+      "source_pdf": "英语/学程三  指导手册.pdf",
+      "subject": "英语",
+      "expected_title": "学程三 指导手册",
+      "mineru_status": "pending"
+    },
+    {
+      "source_pdf": "英语/必修一 教师教学用书.pdf",
+      "subject": "英语",
+      "expected_title": "英语必修一 教师教学用书",
+      "mineru_status": "pending"
+    },
+    {
+      "source_pdf": "英语/必修二 教师教学用书.pdf",
+      "subject": "英语",
+      "expected_title": "英语必修二 教师教学用书",
+      "mineru_status": "pending"
+    },
+    {
+      "source_pdf": "英语/必修三 教师教学用书.pdf",
+      "subject": "英语",
+      "expected_title": "英语必修三 教师教学用书",
+      "mineru_status": "pending"
+    },
+    {
+      "source_pdf": "英语/选必一 教师教学用书.pdf",
+      "subject": "英语",
+      "expected_title": "英语选必一 教师教学用书",
+      "mineru_status": "pending"
+    },
+    {
+      "source_pdf": "英语/选必二 教师教学用书.pdf",
+      "subject": "英语",
+      "expected_title": "英语选必二 教师教学用书",
+      "mineru_status": "pending"
+    },
+    {
+      "source_pdf": "英语/选必三 教师教学用书.pdf",
+      "subject": "英语",
+      "expected_title": "英语选必三 教师教学用书",
+      "mineru_status": "pending"
+    },
+    {
+      "source_pdf": "英语/选必四 教师教学用书.pdf",
+      "subject": "英语",
+      "expected_title": "英语选必四 教师教学用书",
+      "mineru_status": "pending"
+    }
+  ]
+}
