@@ -182,6 +182,40 @@ async def _cancel_active_learning_turn(book_id: str) -> None:
         await runtime.cancel_turn(active_turn["id"])
 
 
+@asynccontextmanager
+async def _exclusive_path_mutation(book_id: str):
+    """Cancel the tutor, then exclude a newly racing tutor/API write."""
+    from deeptutor.learning.storage import PathLeaseConflictError
+
+    await _cancel_active_learning_turn(book_id)
+    store = LearningStore()
+    operation_id = f"api-{uuid.uuid4().hex}"
+    try:
+        await asyncio.to_thread(
+            store.acquire_path_lease,
+            book_id,
+            "__path_api__",
+            operation_id,
+            bind_session=False,
+        )
+    except PathLeaseConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Mastery path changed activity while the operation was starting; "
+                f"active session: {exc.lease.session_id}"
+            ),
+        ) from exc
+    try:
+        yield
+    finally:
+        await asyncio.to_thread(
+            store.release_path_lease,
+            book_id,
+            turn_id=operation_id,
+        )
+
+
 # ── Request models ───────────────────────────────────────────────────────────
 
 
@@ -907,14 +941,51 @@ async def init_modules(book_id: str, body: InitModulesRequest):
     _validate_book_id(book_id)
     modules = _parse_modules(body.modules)
     _validate_runnable_modules(modules)
-    await _cancel_active_learning_turn(book_id)
-    service = get_learning_service()
-    progress = service.get_or_create(book_id)
-    service.init_modules(progress, modules)
-    progress.current_module_id = modules[0].id
-    progress.current_kp_index = 0
-    service.save(progress)
-    return {"status": "ok", "module_count": len(modules)}
+    async with _exclusive_path_mutation(book_id):
+        service = get_learning_service()
+        progress = await asyncio.to_thread(service.replace_modules_for_path, book_id, modules)
+    return {
+        "status": "ok",
+        "module_count": len(modules),
+        "path_revision": progress.version,
+    }
+
+
+@router.post("/progress/{book_id}/skip-question")
+async def skip_pending_question(book_id: str):
+    """Drop an outstanding question the learner can no longer answer.
+
+    The narrow escape hatch for a path stalled on ``answer_pending``; unlike
+    ``redo`` it keeps every mastery level and review the learner has earned.
+    """
+    _validate_book_id(book_id)
+    store = LearningStore()
+    if not await asyncio.to_thread(store.exists, book_id):
+        raise HTTPException(status_code=404, detail="Progress not found")
+    async with _exclusive_path_mutation(book_id):
+        progress, skipped = await asyncio.to_thread(
+            LearningService(store).abandon_active_question, book_id
+        )
+    return {"status": "ok", "skipped": skipped, "path_revision": progress.version}
+
+
+@router.get("/progress/{book_id}/events")
+async def get_progress_events(book_id: str, after_revision: int = 0):
+    """Ordered, redacted domain events for reconnect and incremental UI sync."""
+    _validate_book_id(book_id)
+    store = LearningStore()
+    progress = await asyncio.to_thread(store.load, book_id)
+    if progress is None:
+        raise HTTPException(status_code=404, detail="Progress not found")
+    events = await asyncio.to_thread(
+        store.list_events,
+        book_id,
+        after_revision=max(0, after_revision),
+    )
+    return {
+        "book_id": book_id,
+        "events": [event.model_dump(mode="json") for event in events],
+    }
 
 
 class QuestionBankItem(BaseModel):

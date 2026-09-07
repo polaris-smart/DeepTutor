@@ -13,7 +13,7 @@ fail-open/fail-closed 方向不变：采集是旁路，绝不因把握度缺失�
 
 from __future__ import annotations
 
-import json
+
 
 import pytest
 
@@ -144,17 +144,16 @@ class TestGradeAndRecordConfidenceBefore:
 
 async def _register_question(path_id):
     await _build_basic(path_id)
-    return json.loads(
-        (
-            await MasteryQuizTool().execute(
-                _mastery_path_id=path_id,
-                knowledge_point_id=_first_kp_id(path_id),
-                question="2+2?",
-                expected_answer="4",
-                question_type="short",
-            )
-        ).content
-    )
+    # v1.6.5 契约：content 是导师话术文本，结构化 payload 在 metadata。
+    return (
+        await MasteryQuizTool().execute(
+            _mastery_path_id=path_id,
+            knowledge_point_id=_first_kp_id(path_id),
+            question="2+2?",
+            expected_answer="4",
+            question_type="short",
+        )
+    ).metadata["mastery_quiz"]
 
 
 async def _build_basic(path_id):
@@ -227,16 +226,14 @@ class TestGradeToolConfidenceRoundtrip:
         evidence_store = _wire_tool_service(monkeypatch, tmp_path)
         registered = await _register_question(path_id)
 
-        grade = json.loads(
-            (
-                await MasteryGradeTool().execute(
-                    _mastery_path_id=path_id,
-                    question_id=registered["question_id"],
-                    answer="4",
-                    confidence_before=4,
-                )
-            ).content
-        )
+        grade = (
+            await MasteryGradeTool().execute(
+                _mastery_path_id=path_id,
+                question_id=registered["question_id"],
+                answer="4",
+                confidence_before=4,
+            )
+        ).metadata["mastery_grade"]
         assert grade["is_correct"] is True
         ev = evidence_store.query_evidence()[0]
         assert ev.confidence_before == 4
@@ -246,15 +243,13 @@ class TestGradeToolConfidenceRoundtrip:
         evidence_store = _wire_tool_service(monkeypatch, tmp_path)
         registered = await _register_question(path_id)
 
-        grade = json.loads(
-            (
-                await MasteryGradeTool().execute(
-                    _mastery_path_id=path_id,
-                    question_id=registered["question_id"],
-                    answer="4",
-                )
-            ).content
-        )
+        grade = (
+            await MasteryGradeTool().execute(
+                _mastery_path_id=path_id,
+                question_id=registered["question_id"],
+                answer="4",
+            )
+        ).metadata["mastery_grade"]
         assert grade["is_correct"] is True
         ev = evidence_store.query_evidence()[0]
         assert ev.confidence_before is None
@@ -267,16 +262,14 @@ class TestGradeToolConfidenceRoundtrip:
         evidence_store = _wire_tool_service(monkeypatch, tmp_path)
         registered = await _register_question(path_id)
 
-        grade = json.loads(
-            (
-                await MasteryGradeTool().execute(
-                    _mastery_path_id=path_id,
-                    question_id=registered["question_id"],
-                    answer="4",
-                    confidence_before=bad,
-                )
-            ).content
-        )
+        grade = (
+            await MasteryGradeTool().execute(
+                _mastery_path_id=path_id,
+                question_id=registered["question_id"],
+                answer="4",
+                confidence_before=bad,
+            )
+        ).metadata["mastery_grade"]
         assert grade["is_correct"] is True
         ev = evidence_store.query_evidence()[0]
         assert ev.confidence_before is None
