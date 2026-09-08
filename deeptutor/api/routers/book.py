@@ -14,15 +14,26 @@ import asyncio
 import hashlib
 import logging
 import time
+from typing import Any, Literal
 import uuid
-from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, WebSocket, WebSocketDisconnect, Form, File, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from pydantic import BaseModel, Field
 
+from deeptutor.api.routers.auth import require_admin_or_teacher
 from deeptutor.api.utils.http_headers import content_disposition
 from deeptutor.api.utils.task_id_manager import TaskIDManager
-from deeptutor.api.routers.auth import require_admin_or_teacher
 from deeptutor.book import progress as progress_ops
 from deeptutor.book.backfill import (
     BackfillJob,
@@ -53,19 +64,26 @@ from deeptutor.book.recitation import (
     update_recitation_summary,
 )
 from deeptutor.book.storage import get_book_storage
-from deeptutor.services.voice import transcribe_audio
 from deeptutor.book.streaming import SOURCE as BOOK_SOURCE
 from deeptutor.multi_user.audit import log_admin_action, log_usage
-from deeptutor.services.auth import TokenPayload
 from deeptutor.multi_user.book_access import (
     ResolvedBook,
     accessible_books,
+    book_share_grants,
     can_create_book,
     resolve_book,
+    share_candidate_users,
 )
 from deeptutor.multi_user.context import get_current_user
-from deeptutor.multi_user.identity import remove_book_permission_overrides
+from deeptutor.multi_user.identity import (
+    get_user,
+    get_user_by_id,
+    remove_book_permission_overrides,
+    set_book_grant,
+)
 from deeptutor.runtime.stream_bus import StreamBus
+from deeptutor.services.auth import TokenPayload
+from deeptutor.services.voice import transcribe_audio
 
 router = APIRouter()
 ws_router = APIRouter()
@@ -355,6 +373,103 @@ def _book_payload(book: Any, resolved: ResolvedBook) -> dict[str, Any]:
         metadata["page_chat_sessions"] = resolved.learning.load_page_chat_sessions(book.id)
         data["metadata"] = metadata
     return data
+
+
+class ShareBookRequest(BaseModel):
+    user_id: str
+    level: Literal["read", "edit"]
+
+
+def _require_share_owner(book_id: str) -> ResolvedBook:
+    """Only the owner of a personal book may manage who it is shared with.
+
+    Every denial — unknown book, another user's book, auth off — answers with
+    the same 404 an unknown id gets, so the share surface cannot be probed
+    either for a book's existence or for who owns it.
+    """
+
+    if not _auth_enabled():
+        raise HTTPException(status_code=404, detail="Book not found")
+    resolved = _resolve_book_or_404(book_id)
+    if resolved.source != "own":
+        raise HTTPException(status_code=404, detail="Book not found")
+    return resolved
+
+
+def _resolve_share_target(raw_user_id: str) -> tuple[str, dict[str, Any]]:
+    """Resolve the ACL target account, accepting username or account id.
+
+    Returns the users.json key (username) plus its record; raises 404 when no
+    account matches, so a typo'd target never silently no-ops.
+    """
+
+    raw = (raw_user_id or "").strip()
+    record = get_user(raw) if raw else None
+    if record is not None:
+        return raw, record
+    found = get_user_by_id(raw)
+    if found is not None:
+        return found
+    raise HTTPException(status_code=404, detail="User not found")
+
+
+@router.get("/books/{book_id}/share")
+async def list_book_shares(book_id: str) -> dict[str, Any]:
+    _require_share_owner(book_id)
+    return {
+        "book_id": book_id,
+        "shares": book_share_grants(book_id),
+        "candidates": share_candidate_users(),
+    }
+
+
+@router.post("/books/{book_id}/share")
+async def share_book(book_id: str, req: ShareBookRequest) -> dict[str, Any]:
+    _require_share_owner(book_id)
+    username, record = _resolve_share_target(req.user_id)
+    user = get_current_user()
+    if username == user.username:
+        raise HTTPException(status_code=400, detail="Cannot share a book with yourself")
+    if str(record.get("role") or "user") == "admin":
+        raise HTTPException(status_code=400, detail="Admin accounts already access every book")
+    if bool(record.get("disabled", False)):
+        raise HTTPException(status_code=404, detail="User not found")
+    # Explicitly per-user, per-level; there is deliberately no public or
+    # role-wide mode here. The grant lands in the target's existing
+    # book_permission record, so admin-set defaults survive untouched.
+    if not set_book_grant(username, book_id, req.level):
+        raise HTTPException(status_code=404, detail="User not found")
+    log_usage(
+        "book",
+        book_id,
+        "book_share",
+        {"target_user_id": str(record.get("id") or ""), "level": req.level},
+    )
+    return {
+        "book_id": book_id,
+        "user_id": str(record.get("id") or ""),
+        "username": username,
+        "level": req.level,
+    }
+
+
+@router.delete("/books/{book_id}/share/{user_id}")
+async def revoke_book_share(book_id: str, user_id: str) -> dict[str, Any]:
+    _require_share_owner(book_id)
+    username, record = _resolve_share_target(user_id)
+    set_book_grant(username, book_id, "none")
+    log_usage(
+        "book",
+        book_id,
+        "book_share_revoke",
+        {"target_user_id": str(record.get("id") or "")},
+    )
+    return {
+        "book_id": book_id,
+        "user_id": str(record.get("id") or ""),
+        "username": username,
+        "revoked": True,
+    }
 
 
 def _claim_content_mutation(
@@ -863,6 +978,9 @@ async def delete_book(book_id: str) -> dict[str, Any]:
             "book_delete",
             summary={"book_id": book_id, "acl_users_cleaned": len(affected)},
         )
+    elif resolved.source == "own" and _auth_enabled():
+        # An owner-deleted personal book must not leave dangling peer grants.
+        remove_book_permission_overrides(book_id)
     return {"deleted": True, "book_id": book_id}
 
 
@@ -2194,6 +2312,7 @@ async def book_websocket(ws: WebSocket) -> None:
                 reset_current_user(user_token)
             except Exception:
                 logger.debug("Could not reset Book WebSocket user context", exc_info=True)
+
 
 @router.post("/books/recitation")
 async def submit_recitation(
