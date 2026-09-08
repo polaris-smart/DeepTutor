@@ -14,13 +14,22 @@ import asyncio
 import hashlib
 import logging
 import time
+import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Response, WebSocket, WebSocketDisconnect, Form, File, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, WebSocket, WebSocketDisconnect, Form, File, UploadFile
 from pydantic import BaseModel, Field
 
 from deeptutor.api.utils.http_headers import content_disposition
+from deeptutor.api.utils.task_id_manager import TaskIDManager
+from deeptutor.api.routers.auth import require_admin_or_teacher
 from deeptutor.book import progress as progress_ops
+from deeptutor.book.backfill import (
+    BackfillJob,
+    get_backfill_job,
+    plan_backfill,
+    run_backfill,
+)
 from deeptutor.book.errors import BookPausedError
 from deeptutor.book.export import export_filename, render_book_markdown
 from deeptutor.book.importer import TocImportError, layout_to_spine, toc_to_spine
@@ -47,6 +56,7 @@ from deeptutor.book.storage import get_book_storage
 from deeptutor.services.voice import transcribe_audio
 from deeptutor.book.streaming import SOURCE as BOOK_SOURCE
 from deeptutor.multi_user.audit import log_admin_action, log_usage
+from deeptutor.services.auth import TokenPayload
 from deeptutor.multi_user.book_access import (
     ResolvedBook,
     accessible_books,
@@ -1742,6 +1752,97 @@ async def rebuild_book(req: RebuildBookRequest) -> dict[str, Any]:
         logger.error(f"rebuild_book failed: {exc}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
     return {"pages": [p.model_dump(mode="json") for p in pages], "book_revision": revision}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 存量书增量补缺（P1-E D2）：只补缺失块，不做全书 rebuild
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class BackfillBlocksRequest(BaseModel):
+    dry_run: bool = Field(default=False, description="true=只返回补缺计划（零写入）")
+    concurrency: int = Field(default=2, ge=1, le=8, description="LLM 并发上限")
+    limit_page: int | None = Field(default=None, ge=1, description="最多处理前 N 页（试点控量）")
+
+
+#: 持有后台补产任务引用，防止 asyncio.Task 被垃圾回收。
+_backfill_tasks: set[asyncio.Task[None]] = set()
+
+
+async def _backfill_worker(book_id: str, task_id: str, req: BackfillBlocksRequest) -> None:
+    task_manager = TaskIDManager.get_instance()
+    try:
+        job = await asyncio.to_thread(
+            run_backfill,
+            book_id,
+            concurrency=req.concurrency,
+            limit_page=req.limit_page,
+            task_id=task_id,
+        )
+        if job.stage == "error":
+            task_manager.update_task_status(task_id, "error", error=job.error)
+        else:
+            task_manager.update_task_status(task_id, "completed")
+    except Exception as exc:  # noqa: BLE001 — 后台任务异常落在任务状态里
+        logger.error(f"backfill_blocks task {task_id} failed: {exc}", exc_info=True)
+        task_manager.update_task_status(task_id, "error", error=str(exc))
+
+
+@router.post("/books/{book_id}/backfill-blocks")
+async def backfill_book_blocks(
+    book_id: str,
+    req: BackfillBlocksRequest,
+    _current: TokenPayload = Depends(require_admin_or_teacher),
+) -> dict[str, Any]:
+    """存量书增量补缺：对照页型模板检测缺失块，只补缺，不动已有块。
+
+    ``dry_run=true`` 同步返回计划（零写入）；否则后台任务执行补产，
+    返回 ``task_id``，进度见 ``GET /books/{book_id}/backfill-blocks/status``。
+    服务层单一真源：``deeptutor/book/backfill.py``。
+    """
+    _resolve_book_or_404(book_id)
+    if req.dry_run:
+        try:
+            # 服务层用 asyncio.run 驱动引擎协程，须丢到无事件循环的线程里执行。
+            plan = await asyncio.to_thread(plan_backfill, book_id, limit_page=req.limit_page)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Book not found")
+        return {"dry_run": True, "plan": plan}
+
+    existing = get_backfill_job(book_id)
+    if existing is not None and existing.stage == "running":
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "backfill_running", "message": "该书已有补缺任务在运行"},
+        )
+    task_manager = TaskIDManager.get_instance()
+    # task_key 带随机后缀：同一本书的每次补产都是独立任务，不与历史任务撞 id。
+    task_id = task_manager.generate_task_id(
+        "book_backfill", f"book_backfill:{book_id}:{uuid.uuid4().hex[:8]}"
+    )
+    task_manager.update_task_status(task_id, "running")
+    worker = asyncio.create_task(_backfill_worker(book_id, task_id, req))
+    _backfill_tasks.add(worker)
+    worker.add_done_callback(_backfill_tasks.discard)
+    return {
+        "dry_run": False,
+        "task_id": task_id,
+        "book_id": book_id,
+        "status": "started",
+    }
+
+
+@router.get("/books/{book_id}/backfill-blocks/status")
+async def backfill_blocks_status(
+    book_id: str,
+    _current: TokenPayload = Depends(require_admin_or_teacher),
+) -> dict[str, Any]:
+    """查询存量书补缺进度（页/块成败计数、阶段）。"""
+    _resolve_book_or_404(book_id)
+    job: BackfillJob | None = get_backfill_job(book_id)
+    if job is None:
+        return {"book_id": book_id, "stage": "idle"}
+    return job.snapshot()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
