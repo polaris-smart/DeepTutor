@@ -169,8 +169,14 @@ def test_missing_blocks_listed_and_existing_not_duplicated() -> None:
     assert BlockType.SECTION not in planned_types
     assert "quiz: already_present" in plan.notes
     assert "section: prose_backbone" in plan.notes
-    # 未注册生成器的数学交互件绝不进计划（否则留下永远 PENDING 的空壳）。
-    assert all(item.block_type not in module._MATH_BLOCK_TYPES for item in plan.planned)
+    # 数学交互件已注册生成器（P1-C）：数学书计划里应正常可补，不再 no_generator。
+    planned_values = {item.block_type for item in plan.planned}
+    template_math = {
+        bt for bt, _ in module._TEMPLATES_V2[ContentType.THEORY] if bt in module._MATH_BLOCK_TYPES
+    }
+    assert template_math, "THEORY 模板应含数学交互族"
+    assert template_math <= planned_values
+    assert all(f"{t.value}: no_generator" not in plan.notes for t in module._MATH_BLOCK_TYPES)
 
 
 def test_page_with_everything_present_plans_nothing() -> None:
@@ -298,8 +304,9 @@ def test_math_book_passes_gate_and_history_book_is_gated() -> None:
     hist_page = _reading_page(history_book.id, _HISTORY_CHAPTER)
     hist_plan = module.plan_page(hist_page, _HISTORY_CHAPTER, history_book)
 
-    # 数学书：交互族通过门控（之后被 no_generator 拦下，因为仓内未注册生成器）。
+    # 数学书：交互族通过门控（P1-C 后生成器已注册，应正常进计划）。
     assert "desmos: subject_gate" not in math_plan.notes
+    assert any(item.block_type == BlockType.DESMOS for item in math_plan.planned)
     # 历史书：交互族被学科门控整族剔除（THEORY 模板含 desmos/geogebra/formula）。
     template_types = {bt.value for bt, _ in module._TEMPLATES_V2[ContentType.THEORY]}
     for blocked in ("desmos", "geogebra", "formula"):

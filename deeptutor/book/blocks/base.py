@@ -215,12 +215,18 @@ def _build_default_registry() -> BlockGeneratorRegistry:
     # Lazy imports to avoid circular deps
     from .animation import AnimationGenerator
     from .callout import CalloutGenerator
+    from .chart import ChartGenerator
     from .code import CodeGenerator
+    from .complex import ComplexGenerator
     from .concept_graph import ConceptGraphGenerator
     from .deep_dive import DeepDiveGenerator
+    from .desmos import DesmosGenerator
     from .error_diagnosis import ErrorDiagnosisGenerator
     from .figure import FigureGenerator
     from .flash_cards import FlashCardsGenerator
+    from .formula import FormulaGenerator
+    from .geogebra import GeoGebraGenerator
+    from .geometry import GeometryGenerator
     from .interactive import InteractiveGenerator
     from .module_test import ModuleTestGenerator
     from .quiz import QuizGenerator
@@ -228,8 +234,10 @@ def _build_default_registry() -> BlockGeneratorRegistry:
     from .retrieval_practice import RetrievalPracticeGenerator
     from .section import SectionGenerator
     from .text import TextGenerator
+    from .three_scene import ThreeSceneGenerator
     from .timeline import TimelineGenerator
     from .user_note import UserNoteGenerator
+    from .venn import VennGenerator
 
     for cls in (
         TextGenerator,
@@ -250,6 +258,16 @@ def _build_default_registry() -> BlockGeneratorRegistry:
         ModuleTestGenerator,
         SectionGenerator,
         ReadingGenerator,
+        # YuEdu fork: 8 个数学交互生成器（_math_base 骨架族）——类原来从未注册，
+        # 导致存量书补产 dry-run 全部 no_generator 跳过（P1-C）。
+        ChartGenerator,
+        ComplexGenerator,
+        DesmosGenerator,
+        FormulaGenerator,
+        GeoGebraGenerator,
+        GeometryGenerator,
+        ThreeSceneGenerator,
+        VennGenerator,
     ):
         registry.register(cls())
     return registry
