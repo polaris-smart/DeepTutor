@@ -486,7 +486,6 @@ async def require_learning_surface(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
 
-
 def _local_admin_token_payload() -> TokenPayload:
     """Synthetic admin payload used when AUTH_ENABLED=false.
 
@@ -1302,10 +1301,29 @@ async def update_user_role(
     if not updated:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
+    # Role assignment opens the account: seed the role's default grant (LLM +
+    # role KBs) when the account carries no grants yet. Best-effort — a
+    # deployment without a usable active LLM default, or an account that
+    # already has grants, simply applies nothing.
+    template_applied = False
+    try:
+        from deeptutor.multi_user.role_templates import apply_role_template
+
+        info = get_user_info(username)
+        user_id = str(info.get("id") or "") if info else ""
+        template_applied = bool(user_id and apply_role_template(user_id, body.role))
+    except Exception as exc:  # noqa: BLE001 — never block the role change on seeding
+        logger.warning(f"Role grant template skipped for '{username}': {exc}")
+
     logger.info(
         f"Admin '{current.username if current else 'local'}' set '{username}' role to {body.role!r}"
     )
-    return {"ok": True, "username": username, "role": body.role}
+    return {
+        "ok": True,
+        "username": username,
+        "role": body.role,
+        "grant_template_applied": template_applied,
+    }
 
 
 class SetChildrenRequest(BaseModel):

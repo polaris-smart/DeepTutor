@@ -521,9 +521,19 @@ def is_learner_account(role: str | None, preset: str | None) -> bool:
     Organizational roles other than admin may carry the learner preset;
     upstream learner-only surfaces must accept them instead of hard-coding
     ``role == "user"`` (fusion-mapping-163, domain 1).
+
+    The K12 student/parent roles are learners by definition — their entire
+    product surface (Learning Space, daily plan, device leases) is learner
+    territory — so they count regardless of preset. Gating on the preset
+    alone left every role-assigned student/parent 403-ing out of the daily
+    plan ("今日学习暂时无法加载") because role changes never touch the
+    preset.
     """
-    if (role or "user") == "admin":
+    role = role or "user"
+    if role == "admin":
         return False
+    if role in ("student", "parent"):
+        return True
     return (preset or "standard") == "learner"
 
 
