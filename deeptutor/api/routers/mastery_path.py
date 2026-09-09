@@ -8,16 +8,14 @@ import html
 import json
 import re
 import time
-import uuid
 from typing import Any
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
-
-from deeptutor.api.routers.auth import require_auth
-from deeptutor.services.auth import TokenPayload
 from pydantic import ValidationError as PydanticValidationError
 
+from deeptutor.api.routers.auth import require_auth
 from deeptutor.book.storage import get_book_storage
 from deeptutor.learning import policy as learning_policy
 from deeptutor.learning import prompts as learning_prompts
@@ -38,6 +36,9 @@ from deeptutor.learning.service import LearningService
 from deeptutor.learning.six_dimensions import compute_six_dimension_snapshot
 from deeptutor.learning.storage import LearningStore
 from deeptutor.learning.topic_generation import MAX_MODULE_LIMIT
+from deeptutor.multi_user.book_access import resolve_book
+from deeptutor.services.auth import TokenPayload
+from deeptutor.services.mastery import ChapterImport, chapters_from_kp_tree
 from deeptutor.services.settings.interface_settings import get_response_language
 from deeptutor.utils.json_parser import parse_json_response
 
@@ -138,8 +139,11 @@ def _parse_modules(body_modules: list[dict]) -> list[LearningModule]:
         try:
             kps = [
                 KnowledgePoint(
-                    **{**kp, "struct_path": _bridge_str(kp.get("struct_path")),
-                       "textbook_node_id": _bridge_str(kp.get("textbook_node_id"))}
+                    **{
+                        **kp,
+                        "struct_path": _bridge_str(kp.get("struct_path")),
+                        "textbook_node_id": _bridge_str(kp.get("textbook_node_id")),
+                    }
                 )
                 for kp in kps_data
             ]
@@ -229,17 +233,19 @@ class RenamePathRequest(BaseModel):
     name: str = ""
 
 
-class ChapterImport(BaseModel):
-    title: str
-    knowledge_points: list[str] = []
-    # Textbook-tree bridge: the tree node this chapter was derived from.
-    # Optional so pre-bridge callers (name-only imports) keep working.
-    struct_path: str = ""
-    textbook_node_id: str = ""
-
-
 class ImportFromBookRequest(BaseModel):
     chapters: list[ChapterImport]
+
+
+class ImportFromKpTreeRequest(BaseModel):
+    """One-click book-type path from the manifest's canonical KP tree.
+
+    Idempotent by default: a path that already has modules is returned as-is.
+    ``force`` re-derives the outline (learner mastery is then reset, like any
+    re-import).
+    """
+
+    force: bool = False
 
 
 class TopicSourceRequest(BaseModel):
@@ -969,25 +975,6 @@ async def skip_pending_question(book_id: str):
     return {"status": "ok", "skipped": skipped, "path_revision": progress.version}
 
 
-@router.get("/progress/{book_id}/events")
-async def get_progress_events(book_id: str, after_revision: int = 0):
-    """Ordered, redacted domain events for reconnect and incremental UI sync."""
-    _validate_book_id(book_id)
-    store = LearningStore()
-    progress = await asyncio.to_thread(store.load, book_id)
-    if progress is None:
-        raise HTTPException(status_code=404, detail="Progress not found")
-    events = await asyncio.to_thread(
-        store.list_events,
-        book_id,
-        after_revision=max(0, after_revision),
-    )
-    return {
-        "book_id": book_id,
-        "events": [event.model_dump(mode="json") for event in events],
-    }
-
-
 class QuestionBankItem(BaseModel):
     question: str = Field(min_length=5, max_length=2000)
     question_type: str = Field(default="choice", pattern="^(choice|short|open)$")
@@ -1084,14 +1071,21 @@ async def set_kp_visualizers(
     return {"ok": True, "kp_id": body.kp_id, "visualizers": cleaned}
 
 
-@router.post("/progress/{book_id}/import-from-book")
-async def import_from_book(book_id: str, body: ImportFromBookRequest):
-    _validate_book_id(book_id)
-    # Canonical KP tree cached in the book manifest (B2-b) wins: it carries
-    # 目级 KPs with real textbook-tree bridges, where the request chapters are
-    # only a mechanical 课/章-level sketch. Missing/empty cache or a tree that
-    # yields no runnable module falls back to the mechanical path below.
-    tree = get_book_storage().load_canonical_kp_tree(book_id)
+async def _run_book_import(
+    book_id: str, body: ImportFromBookRequest, *, tree: dict[str, Any] | None = None
+) -> dict:
+    """The shared import-from-book pipeline.
+
+    The canonical KP tree cached in the book manifest (B2-b) wins: it carries
+    目级 KPs with real textbook-tree bridges, where the request chapters are
+    only a mechanical 课/章-level sketch. ``tree`` lets a caller that already
+    resolved the book's canonical store (import-from-kp-tree, which must read
+    granted books from their owner's workspace) supply it directly; missing/
+    empty cache or a tree that yields no runnable module falls back to the
+    mechanical chapter path.
+    """
+    if tree is None:
+        tree = get_book_storage().load_canonical_kp_tree(book_id)
     modules = _modules_from_canonical_tree(book_id, tree) if tree else []
     if not modules:
         for i, ch in enumerate(body.chapters):
@@ -1127,6 +1121,45 @@ async def import_from_book(book_id: str, body: ImportFromBookRequest):
     progress.current_kp_index = 0
     service.save(progress)
     return {"status": "ok", "module_count": len(modules)}
+
+
+@router.post("/progress/{book_id}/import-from-book")
+async def import_from_book(book_id: str, body: ImportFromBookRequest):
+    _validate_book_id(book_id)
+    return await _run_book_import(book_id, body)
+
+
+@router.post("/progress/{book_id}/import-from-kp-tree")
+async def import_from_kp_tree(book_id: str, body: ImportFromKpTreeRequest):
+    """Start a mastery path straight from a textbook, in one click.
+
+    P7 productizes the manual canonical_kp_tree→chapters conversion so the
+    student who has a fully parsed book but zero learning goals stops
+    staring at an empty map. Access mirrors the bookshelf: the caller must be
+    able to read the book (``resolve_book``) — an ungranted book id is
+    indistinguishable from a nonexistent one, so both are 404. The tree is
+    read from the book's canonical store, which for a granted book is the
+    owner's workspace, not the reader's.
+    """
+    _validate_book_id(book_id)
+    resolved = resolve_book(book_id)
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="Book not found")
+    store = LearningStore()
+    progress = await asyncio.to_thread(store.load, book_id)
+    if progress is not None and progress.modules and not body.force:
+        # Already initialized: report the status quo instead of rebuilding
+        # (a rebuild would wipe the learner's mastery for nothing).
+        return {
+            "status": "ok",
+            "idempotent": True,
+            "module_count": len(progress.modules),
+            "modules": [module.name for module in progress.modules],
+        }
+    book_storage = resolved.engine.storage
+    chapters = await asyncio.to_thread(chapters_from_kp_tree, book_id, storage=book_storage)
+    tree = await asyncio.to_thread(book_storage.load_canonical_kp_tree, book_id)
+    return await _run_book_import(book_id, ImportFromBookRequest(chapters=chapters), tree=tree)
 
 
 @router.patch("/progress/{book_id}")
