@@ -11,6 +11,7 @@ its starter state.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -24,9 +25,17 @@ from deeptutor.services.auth import AUTH_ENABLED, TokenPayload
 from deeptutor.services.session import get_session_store
 from deeptutor.services.settings.interface_settings import get_response_language
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 _MAX_RECOMMENDATIONS = 3
+
+#: The plan is a pure convenience read — a store that fails to open (fresh
+#: deployment, partial migration, locked sqlite) must degrade to an empty plan
+#: (the card's starter state) instead of a 500 that renders as "今日学习暂时
+#: 无法加载" on every learner's Learning Space.
+_EMPTY_PLAN = {"continue_learning": None, "recommendations": []}
 
 
 async def require_learner(
@@ -168,7 +177,14 @@ async def get_daily_plan(_: TokenPayload | None = Depends(require_learner)) -> d
         recommendations.sort(key=lambda item: item["mastery_level"])
         return recommendations[:_MAX_RECOMMENDATIONS]
 
+    try:
+        continue_learning = await _continue_learning()
+        recommendations = await asyncio.to_thread(collect_recommendations)
+    except Exception:  # noqa: BLE001 — degrade to the empty plan, never a 500
+        logger.warning("daily-plan composition failed; serving an empty plan", exc_info=True)
+        return dict(_EMPTY_PLAN)
+
     return {
-        "continue_learning": await _continue_learning(),
-        "recommendations": await asyncio.to_thread(collect_recommendations),
+        "continue_learning": continue_learning,
+        "recommendations": recommendations,
     }
