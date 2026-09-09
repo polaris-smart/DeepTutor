@@ -103,7 +103,9 @@ def _patch_engine(monkeypatch: pytest.MonkeyPatch, engine: Any) -> None:
     monkeypatch.setattr(engine_module, "get_book_engine", lambda: engine)
 
 
-def _stub_all_generators(monkeypatch: pytest.MonkeyPatch, skip_error_diagnosis: bool = False) -> None:
+def _stub_all_generators(
+    monkeypatch: pytest.MonkeyPatch, skip_error_diagnosis: bool = False
+) -> None:
     registry = get_block_registry()
 
     def make_ready():
@@ -114,7 +116,9 @@ def _stub_all_generators(monkeypatch: pytest.MonkeyPatch, skip_error_diagnosis: 
 
     def make_skip():
         async def _generate(_ctx):
-            raise BlockSkipped("No real error data recorded for this book; skipping error_diagnosis.")
+            raise BlockSkipped(
+                "No real error data recorded for this book; skipping error_diagnosis."
+            )
 
         return _generate
 
@@ -146,9 +150,7 @@ def test_plan_backfill_lists_missing_blocks_and_writes_nothing(
     assert plan["pages"] == 1
     assert plan["blocks_planned"] > 0
     planned_types = {"quiz", "callout", "flash_cards", "retrieval_practice", "deep_dive"}
-    planned_in_plan = {
-        item["block_type"] for pp in plan["page_plans"] for item in pp["planned"]
-    }
+    planned_in_plan = {item["block_type"] for pp in plan["page_plans"] for item in pp["planned"]}
     assert planned_types & planned_in_plan
     # dry-run 零写入：页面无新块、不触 storage 写路径。
     assert storage.save_page_calls == 0
@@ -270,3 +272,88 @@ def test_default_state_dir_is_data_volume_pipeline_state(
 
     assert state_dir == tmp_path / "data" / "pipeline-state"
     assert state_dir.is_absolute()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# P4-B 停摆修复：LLM 挂死 / 全挂场景必须有界收场，禁止 started-但不干活
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _patch_engine_hung_generators(monkeypatch: pytest.MonkeyPatch) -> None:
+    """所有生成器的 LLM 调用永久阻塞（模拟 doubao 过载窗口的挂死连接）。"""
+    registry = get_block_registry()
+
+    async def _hang(_ctx) -> None:
+        await asyncio.Event().wait()  # 永不 set：模拟无响应的 LLM 调用
+
+    for block_type in registry.types():
+        generator = registry.get(block_type)
+        assert generator is not None
+        monkeypatch.setattr(generator, "_generate", _hang)
+
+
+def test_run_backfill_hung_llm_call_terminates_and_leaves_visible_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """复现 P4-B：LLM 调用永久挂死时任务必须以失败收场，状态文件可见，不留空壳。"""
+    _patch_engine_hung_generators(monkeypatch)
+    monkeypatch.setattr(backfill_module, "_JOBS", {})
+    book = _book("bk-svc-hang", "某书")
+    page = _reading_page(book.id, _MATH_CHAPTER)
+    engine, storage = _engine([book], [Spine(book_id=book.id, chapters=[_MATH_CHAPTER])], [page])
+    _patch_engine(monkeypatch, engine)
+
+    job = backfill_module.run_backfill(
+        book.id,
+        state_dir=tmp_path,
+        llm_timeout=0.2,
+        max_consecutive_errors=2,
+    )
+
+    # 有界收场：批次以 failed 收场（熔断），而不是永远 running。
+    assert job.stage == "failed"
+    assert "timeout" in (job.error or "").lower() or "timed out" in (job.error or "").lower()
+    # 状态文件可见：任务级事件落盘（task_failed）。
+    state_text = (tmp_path / f"backfill-{book.id}.jsonl").read_text(encoding="utf-8")
+    assert '"event": "task_failed"' in state_text or '"event":"task_failed"' in state_text
+    # 不留半成品壳：超时清理掉 PENDING/GENERATING 空壳，重跑可幂等补产。
+    stored = storage.pages[page.id]
+    assert not any(
+        block.status in (BlockStatus.PENDING, BlockStatus.GENERATING) for block in stored.blocks
+    )
+
+
+def test_run_backfill_all_provider_errors_fail_batch_via_breaker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """复现 P4-B：provider 持续报错时批次熔断为 failed，任务事件落状态文件。"""
+    registry = get_block_registry()
+
+    def make_fail():
+        async def _fail(_ctx):
+            raise Exception("doubao server overloaded, connection reset by peer")
+
+        return _fail
+
+    for block_type in registry.types():
+        generator = registry.get(block_type)
+        assert generator is not None
+        monkeypatch.setattr(generator, "_generate", make_fail())
+
+    monkeypatch.setattr(backfill_module, "_JOBS", {})
+    book = _book("bk-svc-alldown", "某书")
+    page = _reading_page(book.id, _MATH_CHAPTER)
+    engine, _storage = _engine([book], [Spine(book_id=book.id, chapters=[_MATH_CHAPTER])], [page])
+    _patch_engine(monkeypatch, engine)
+
+    job = backfill_module.run_backfill(
+        book.id,
+        state_dir=tmp_path,
+        max_consecutive_errors=2,
+        backoff_seconds=0.0,
+    )
+
+    assert job.stage == "failed"
+    assert job.error
+    state_text = (tmp_path / f"backfill-{book.id}.jsonl").read_text(encoding="utf-8")
+    assert '"event": "task_failed"' in state_text or '"event":"task_failed"' in state_text
