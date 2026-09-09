@@ -10,6 +10,7 @@ from starlette.testclient import TestClient
 from deeptutor.api.routers import auth as auth_router
 from deeptutor.api.routers import book as book_router
 from deeptutor.book import backfill as backfill_module
+import deeptutor.book.engine as engine_module
 from deeptutor.book.models import (
     Block,
     BlockStatus,
@@ -20,7 +21,6 @@ from deeptutor.book.models import (
     PageStatus,
     Spine,
 )
-import deeptutor.book.engine as engine_module
 import deeptutor.book.storage as storage_module
 from deeptutor.services.path_service import PathService
 
@@ -177,19 +177,84 @@ def test_backfill_rejects_duplicate_running_job(tmp_path, monkeypatch) -> None:
     client, storage = _new_client(tmp_path, monkeypatch)
     book_id = "bk_dup"
     storage.save_book(Book(id=book_id, title="某书"))
+    running_job = backfill_module.BackfillJob(book_id=book_id, stage="running")
+    running_job.task_id = "book_backfill_20260909_010101_abcd1234"
     monkeypatch.setattr(
         backfill_module,
         "_JOBS",
-        {book_id: backfill_module.BackfillJob(book_id=book_id, stage="running")},
+        {book_id: running_job},
     )
 
     response = client.post(f"/api/books/{book_id}/backfill-blocks", json={"dry_run": False})
 
+    # P4-B：互斥语义要明确——冲突响应必须带在跑任务的 task_id 与状态，不误导。
     assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "backfill_running"
+    assert detail["task_id"] == "book_backfill_20260909_010101_abcd1234"
+    assert detail["task_status"] == "running"
+
+
+def test_backfill_worker_crash_marks_job_failed_not_running_forever(tmp_path, monkeypatch) -> None:
+    """P4-B：后台线程崩溃不能让 job 永远停在 running（否则同书被 409 永久锁死）。"""
+    client, storage = _new_client(tmp_path, monkeypatch)
+    book_id = "bk_crash"
+    storage.save_book(Book(id=book_id, title="某书"))
+
+    def exploding_run_backfill(book_id: str, **kwargs):
+        raise RuntimeError("thread pool exploded")
+
+    monkeypatch.setattr(book_router, "run_backfill", exploding_run_backfill)
+
+    response = client.post(f"/api/books/{book_id}/backfill-blocks", json={"dry_run": False})
+    assert response.status_code == 200
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        status = client.get(f"/api/books/{book_id}/backfill-blocks/status").json()
+        if status.get("stage") != "running":
+            break
+        time.sleep(0.05)
+
+    # 异常必须可见：状态端点反映 failed + 最近错误，而不是永远 running。
+    assert status["stage"] == "error"
+    assert "thread pool exploded" in status["error"]
+    assert status["task_status"] == "failed"
+
+
+def test_backfill_status_reports_task_status_and_last_error(tmp_path, monkeypatch) -> None:
+    """P4-B：GET status 补 task 状态（running/failed/done）与最近错误。"""
+    client, storage = _new_client(tmp_path, monkeypatch)
+    book_id = "bk_status"
+    storage.save_book(Book(id=book_id, title="某书"))
+
+    def failing_run_backfill(book_id: str, **kwargs):
+        job = backfill_module.BackfillJob(
+            book_id=book_id, task_id=kwargs.get("task_id", ""), stage="failed"
+        )
+        job.error = "LLM call timed out after 300s"
+        backfill_module._JOBS[book_id] = job
+        return job
+
+    monkeypatch.setattr(book_router, "run_backfill", failing_run_backfill)
+
+    client.post(f"/api/books/{book_id}/backfill-blocks", json={"dry_run": False})
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        status = client.get(f"/api/books/{book_id}/backfill-blocks/status").json()
+        if status.get("task_status") == "failed":
+            break
+        time.sleep(0.05)
+
+    assert status["task_status"] == "failed"
+    assert "timed out" in status["error"]
 
 
 def test_backfill_unknown_book_returns_404(tmp_path, monkeypatch) -> None:
     client, _storage = _new_client(tmp_path, monkeypatch)
 
-    assert client.post("/api/books/bk_ghost/backfill-blocks", json={"dry_run": True}).status_code == 404
+    assert (
+        client.post("/api/books/bk_ghost/backfill-blocks", json={"dry_run": True}).status_code
+        == 404
+    )
     assert client.get("/api/books/bk_ghost/backfill-blocks/status").status_code == 404
