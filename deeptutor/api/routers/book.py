@@ -65,7 +65,7 @@ from deeptutor.book.recitation import (
     stt_failed_attempt,
     update_recitation_summary,
 )
-from deeptutor.book.storage import get_book_storage
+from deeptutor.book.storage import get_book_storage, resolve_book_storage_layer
 from deeptutor.book.streaming import SOURCE as BOOK_SOURCE
 from deeptutor.multi_user.audit import log_admin_action, log_usage
 from deeptutor.multi_user.book_access import (
@@ -957,7 +957,9 @@ async def get_book_asset(book_id: str, asset_path: str) -> FileResponse:
     resolved path must stay inside the book root, and responses are nosniffed.
     """
     try:
-        root = get_book_storage().book_root(book_id) / "assets"
+        # A shared textbook's files live in the admin layer regardless of who
+        # is asking — get_book_storage() would 404 every reader but the owner.
+        root = resolve_book_storage_layer(book_id).book_root(book_id) / "assets"
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     target = (root / asset_path).resolve()

@@ -312,3 +312,32 @@ def test_fix_book_prefers_admin_layer_when_book_exists_in_both(api_env) -> None:
         assert "$\\overrightarrow{OA}$" in admin_after.blocks[0].payload["body"]
         own_after = own_storage.load_page(BOOK_ID, PAGE_ID)
         assert "$\\overrightarrow{OA}$" not in own_after.blocks[0].payload["body"]
+
+
+def test_book_asset_serves_shared_book_from_admin_layer(api_env) -> None:
+    """场景（生产 09-11 实锤）：共享教材的插图 404。
+
+    figure_backfill 把插图写进 admin 层书的 ``assets/``；asset 路由此前用
+    ``get_book_storage()``（跟随当前用户）解析书根——共享书躺在 admin 层，
+    教师视角的每个 ``<img>`` 请求全 404。路由改走
+    ``resolve_book_storage_layer`` 后，同一请求必须 200。
+    """
+    from deeptutor.book.storage import BookStorage
+    from deeptutor.multi_user.paths import get_admin_path_service
+
+    client, _admin_storage = api_env
+
+    figures_dir = (
+        BookStorage(path_service=get_admin_path_service()).book_root(BOOK_ID) / "assets" / "figures"
+    )
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    (figures_dir / "fig_1_1_3.jpg").write_bytes(b"\xff\xd8fake-jpeg")
+
+    served = client.get(f"/api/books/{BOOK_ID}/assets/figures/fig_1_1_3.jpg", headers=_headers())
+    assert served.status_code == 200
+    assert served.content == b"\xff\xd8fake-jpeg"
+
+    # 路径穿越仍被拦（TestClient 会把 ../ 规范化掉 → 404；原生 ../ 到
+    # 达路由时 startswith 防护 → 400。两者都不可达即安全）。
+    traversal = client.get(f"/api/books/{BOOK_ID}/assets/../../secrets.json", headers=_headers())
+    assert traversal.status_code in (400, 404)

@@ -425,4 +425,24 @@ def get_book_storage() -> BookStorage:
     return _storages[key]
 
 
-__all__ = ["BookStorage", "get_book_storage"]
+def resolve_book_storage_layer(book_id: str) -> BookStorage:
+    """Pick the storage layer that actually holds *book_id*.
+
+    ``resolve_book`` (multi_user/book_access) serves shared books from the
+    admin workspace; every reader — owner, shared-in user, and the asset
+    route — must hit that same layer. ``get_book_storage()`` follows the
+    *current user*, so a shared textbook's files are invisible from a
+    student/teacher workspace (the 09-27 double-workspace miss, and the
+    asset 404s that followed it). Probe the admin layer first, then fall
+    back to the current user's own workspace so the familiar not-found
+    error still surfaces for genuinely unknown ids.
+    """
+    from deeptutor.multi_user.paths import get_admin_path_service
+
+    admin = BookStorage(path_service=get_admin_path_service())
+    if admin.load_book(book_id) is not None:
+        return admin
+    return get_book_storage()
+
+
+__all__ = ["BookStorage", "get_book_storage", "resolve_book_storage_layer"]
