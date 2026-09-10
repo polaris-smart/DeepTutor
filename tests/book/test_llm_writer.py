@@ -167,3 +167,30 @@ async def test_llm_text_routes_via_bookgen_profile_pin(
     assert result == "ok"
     assert captured["model"] == expected_model
     assert captured["api_key"] == "sk-test"
+
+
+@pytest.mark.asyncio
+async def test_llm_json_reader_facing_retry_keeps_reasoning_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str | None] = []
+
+    async def fake_llm_text(**kwargs: object) -> str:
+        effort = kwargs.get("reasoning_effort")
+        calls.append(effort if isinstance(effort, str) else None)
+        if len(calls) == 1:
+            return ""
+        return '{"events": [{"date": "2026", "title": "Ready"}]}'
+
+    monkeypatch.setattr(_llm_writer, "llm_text", fake_llm_text)
+
+    data = await _llm_writer.llm_json(
+        user_prompt="timeline",
+        system_prompt="system",
+        expected_key="events",
+        reasoning_effort="none",
+    )
+
+    assert calls == ["none", "none"]
+    assert data["events"][0]["title"] == "Ready"
+    assert data["_metadata"]["reasoning_retry"] == "none"
