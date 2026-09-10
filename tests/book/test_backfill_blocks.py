@@ -6,9 +6,9 @@
 from __future__ import annotations
 
 import asyncio
+from functools import lru_cache
 import importlib.util
 import json
-from functools import lru_cache
 from pathlib import Path
 import sys
 from typing import Any

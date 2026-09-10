@@ -13,9 +13,9 @@ from typing import Any
 from fastapi import FastAPI
 from starlette.testclient import TestClient
 
-import deeptutor.book.canonical_tree as canonical_tree
 from deeptutor.api.routers import book as book_router
-from tests.api.test_book_canonicalize import _TOC, _RecordingEngine, _new_client
+import deeptutor.book.canonical_tree as canonical_tree
+from tests.api.test_book_canonicalize import _TOC, _new_client, _RecordingEngine
 
 #: doc_intel slim-tree shape, exactly what document_loader stores as
 #: ``doc_tree`` metadata in the LlamaIndex docstore.

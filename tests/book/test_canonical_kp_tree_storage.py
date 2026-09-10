@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import deeptutor.book.storage as storage_module
 from deeptutor.book.models import Book
+import deeptutor.book.storage as storage_module
 from deeptutor.services.path_service import PathService
 
 CANONICAL_TREE = {

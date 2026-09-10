@@ -18,17 +18,31 @@ from typing import Any
 
 import pytest
 
+from deeptutor.book.blocks import _math_base
 from deeptutor.book.blocks import (
     chart as chart_mod,
+)
+from deeptutor.book.blocks import (
     complex as complex_mod,
+)
+from deeptutor.book.blocks import (
     desmos as desmos_mod,
+)
+from deeptutor.book.blocks import (
     formula as formula_mod,
+)
+from deeptutor.book.blocks import (
     geogebra as geogebra_mod,
+)
+from deeptutor.book.blocks import (
     geometry as geometry_mod,
+)
+from deeptutor.book.blocks import (
     three_scene as three_scene_mod,
+)
+from deeptutor.book.blocks import (
     venn as venn_mod,
 )
-from deeptutor.book.blocks import _math_base
 from deeptutor.book.blocks._prompts import get_book_prompt, load_book_prompts
 from deeptutor.book.blocks.base import BlockContext, get_block_registry
 from deeptutor.book.models import (

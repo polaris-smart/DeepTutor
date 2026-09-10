@@ -99,8 +99,8 @@ def test_layout_to_spine_rebuilds_from_running_headers() -> None:
 
 
 def test_layout_to_spine_rejects_empty_layout() -> None:
-    from deeptutor.book.importer import layout_to_spine
-
     import pytest
+
+    from deeptutor.book.importer import layout_to_spine
     with pytest.raises(Exception):
         layout_to_spine("bk_layout", {"pdf_info": []})
