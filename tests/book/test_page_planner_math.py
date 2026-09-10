@@ -80,23 +80,21 @@ def test_practice_template_chain_contains_math_blocks() -> None:
 async def test_llm_plan_passes_through_math_blocks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def fake_llm_text(**_: object) -> str:
-        return json.dumps(
-            {
-                "blocks": [
-                    {"type": "section", "focus": "intro", "params": {"role": "intro"}},
-                    {
-                        "type": "desmos",
-                        "focus": "parabola y=x^2",
-                        "transition_in": "Now watch the curve",
-                        "params": {"topic": "parabola"},
-                    },
-                    {"type": "quiz", "params": {"num_questions": 2}},
-                ]
-            }
-        )
+    async def fake_llm_json(**_: object) -> dict:
+        return {
+            "blocks": [
+                {"type": "section", "focus": "intro", "params": {"role": "intro"}},
+                {
+                    "type": "desmos",
+                    "focus": "parabola y=x^2",
+                    "transition_in": "Now watch the curve",
+                    "params": {"topic": "parabola"},
+                },
+                {"type": "quiz", "params": {"num_questions": 2}},
+            ]
+        }
 
-    monkeypatch.setattr(page_planner, "llm_text", fake_llm_text)
+    monkeypatch.setattr(page_planner, "llm_json", fake_llm_json)
 
     blocks = await SectionArchitect().plan_blocks_async(
         _chapter(),
@@ -135,17 +133,15 @@ def test_math_blocks_suppressed_for_non_math_subject() -> None:
 async def test_llm_plan_drops_math_blocks_for_non_math_subject(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def fake_llm_text(**_: object) -> str:
-        return json.dumps(
-            {
-                "blocks": [
-                    {"type": "section", "params": {"role": "intro"}},
-                    {"type": "desmos", "params": {"topic": "parabola"}},
-                ]
-            }
-        )
+    async def fake_llm_json(**_: object) -> dict:
+        return {
+            "blocks": [
+                {"type": "section", "params": {"role": "intro"}},
+                {"type": "desmos", "params": {"topic": "parabola"}},
+            ]
+        }
 
-    monkeypatch.setattr(page_planner, "llm_text", fake_llm_text)
+    monkeypatch.setattr(page_planner, "llm_json", fake_llm_json)
 
     blocks = await SectionArchitect().plan_blocks_async(
         _chapter(subject="English literature"),
