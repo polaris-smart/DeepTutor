@@ -5,9 +5,17 @@
 
     raw（upload 已落 raw/）
       → parsed      ParseService.parse（内容寻址缓存，命中即复用）
-      → canonicalized  /books/canonicalize（页脚法 layout_json 优先，
-                       0 章降级走 enrich 树转 toc —— 附录降级表）
+      → canonicalized  /books/canonicalize（页脚法+页眉法 layout_json 优先；
+                       mode="auto" 时 0 章降级走 enrich 树转 toc，返回标注
+                       mode="legacy_toc"；mode="faithful" 强制保真、0 章
+                       fail-loud —— 附录降级表）
+      → figures     figure_backfill 编程入口（plan + apply，--apply 语义）
+      → latex       latex_delimit.fix_book（裸 LaTeX 补定界）
       → imported    import-from-book（canonical KP 树优先 → 目级模块）
+      → tree        canonical_kp_tree 落书 manifest（确认在保真路径也生效）
+      → share       （可选）授权用户列表 share read；KB grants 经 canonicalize
+                    的 knowledge_bases=[KB] 关联自带
+      → qb          learning/ingest_pipeline.start_pipeline 四段一体（书锚定）
 
 全程无人工接力。每段状态落在 KB manifest（kb_config.json 里该 KB 条目的
 ``metadata`` 字典）的 ``pipeline`` 键下，按文件名各存一份；状态端点
@@ -24,9 +32,9 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import json
 import logging
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -39,8 +47,9 @@ AUTO_PIPELINE_FLAG = "auto_pipeline"
 #: KB manifest.metadata 里挂每文件管线状态的键。
 PIPELINE_KEY = "pipeline"
 
-#: 状态端点按此顺序返回四段；前两段由 upload/parse 写入，后两段由本模块写入。
-STAGE_KEYS = ("raw", "parsed", "canonicalized", "imported")
+#: 状态端点按此顺序返回各段；前两段由 upload/parse 写入，其余由本模块写入。
+#: figures/latex 是增强段（失败记入段内 error 但不拦后续段），qb 是核心段。
+STAGE_KEYS = ("raw", "parsed", "canonicalized", "imported", "figures", "latex", "qb")
 
 LogFn = Callable[..., None]
 
@@ -82,9 +91,30 @@ def auto_pipeline_enabled(kb_name: str, *, base_dir: str | Path | None = None) -
 
     Missing flag, ``false``, or a truthy-looking string like ``"false"`` all
     read as off — the default must stay off so existing KBs keep their exact
-    current upload behaviour.
+    current upload behaviour. A non-empty options dict (per
+    :func:`read_chain_options`) also turns the chain on.
     """
-    return bool(read_kb_metadata(kb_name, base_dir=base_dir).get(AUTO_PIPELINE_FLAG) is True)
+    flag = read_kb_metadata(kb_name, base_dir=base_dir).get(AUTO_PIPELINE_FLAG)
+    return flag is True or (isinstance(flag, dict) and bool(flag))
+
+
+def read_chain_options(kb_name: str, *, base_dir: str | Path | None = None) -> dict[str, Any]:
+    """The chain's tunables, read from the KB manifest's ``auto_pipeline`` flag.
+
+    ``True`` keeps the defaults (mode auto / 题库 on / 不共享)；a dict may carry
+    ``mode``（"auto"|"faithful"）、``enable_qb``、``share_read_users``. Unknown
+    values fall back to the defaults instead of erroring — the manifest is a
+    config surface, not a failure point.
+    """
+    flag = read_kb_metadata(kb_name, base_dir=base_dir).get(AUTO_PIPELINE_FLAG)
+    opts = flag if isinstance(flag, dict) else {}
+    mode = str(opts.get("mode") or "").strip().lower()
+    users = opts.get("share_read_users")
+    return {
+        "mode": mode if mode in ("auto", "faithful") else "auto",
+        "enable_qb": bool(opts.get("enable_qb", True)),
+        "share_read_users": [str(u).strip() for u in users or [] if str(u).strip()],
+    }
 
 
 def read_pipeline_state(
@@ -313,14 +343,26 @@ def _enrich_tree(book_dir: Path, filename: str) -> dict[str, Any] | None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-async def _canonicalize_stage(
-    kb_name: str, path: Path, parsed: Any, *, book_storage: Any, canonicalize: Any
-) -> dict[str, Any]:
-    """canonicalize one parsed textbook: 页脚法优先，0 章降级 enrich 树转 toc.
+FAITHFUL_FAIL_GUIDANCE = (
+    "页眉/页脚法识别 0 章：该 PDF 无法识别章节结构"
+    "（缺『第N章/第N课』式页眉页脚，或非教材版式）。"
+    "faithful 模式拒绝降级为 AI 生成路径；"
+    "请改用 mode='auto' 走 legacy_toc 兜底，或补齐 PDF 页眉页脚后重跑"
+)
 
-    ``canonicalize`` is the ``/books/canonicalize`` endpoint callable (plus its
-    ``CanonicalizeRequest`` model), injected by the adapter that kicks the
-    chain off — domain code here never imports the API layer.
+
+async def _canonicalize_stage(
+    kb_name: str, path: Path, parsed: Any, *, book_storage: Any, canonicalize: Any, mode: str
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """canonicalize one parsed textbook: 保真法优先，0 章按 mode 分流.
+
+    ``mode="faithful"``（教材场景）0 章/0 页直接 fail-loud，绝不静默落 AI
+    生成路径；``mode="auto"``（缺省）降级 enrich 树转 toc 建书并在返回里标注
+    ``mode="legacy_toc"``。``canonicalize`` is the ``/books/canonicalize``
+    endpoint callable (plus its ``CanonicalizeRequest`` model), injected by
+    the adapter that kicks the chain off — domain code here never imports the
+    API layer. Returns ``(summary, layout)``; layout is threaded out so the
+    post-import tree-cache step can inline-rebuild from it.
     """
     from deeptutor.book.canonical_tree import canonical_tree_from_doc_trees
 
@@ -332,7 +374,7 @@ async def _canonicalize_stage(
     specs: list[dict[str, Any]] = []
     toc: list[dict[str, Any]] = []
     if layout is not None:
-        # 页脚法: chapters from the running headers, pages from their ranges.
+        # 页脚法+页眉法: chapters from the running headers, pages from ranges.
         from deeptutor.textbook_struct.page_headers import rebuild_from_headers
 
         chapters = await asyncio.to_thread(rebuild_from_headers, layout)
@@ -349,12 +391,15 @@ async def _canonicalize_stage(
             chapters=specs,
         )
         source = "layout_json"
+        chain_mode = "faithful"
     else:
-        # 降级表: 页脚法 0 章（或无 layout）→ enrich 树转 toc 建书。
+        if mode == "faithful":
+            raise AutoPipelineError(FAITHFUL_FAIL_GUIDANCE)
+        # 降级表: 保真法 0 章（或无 layout）→ enrich 树转 toc 建书。
         tree = await asyncio.to_thread(_enrich_tree, book_dir, path.name)
         toc = _tree_to_toc((tree or {}).get("children"))
         if not toc:
-            raise AutoPipelineError("页脚法 0 章且 enrich 树转 toc 为空")
+            raise AutoPipelineError("页眉/页脚法 0 章且 enrich 树转 toc 为空")
         request = CanonicalizeRequest(
             title=title,
             source="toc_json",
@@ -365,6 +410,7 @@ async def _canonicalize_stage(
             chapters=[],
         )
         source = "toc_json"
+        chain_mode = "legacy_toc"
 
     result = await canonicalize_book(request)
     book = result.get("book") or {}
@@ -384,10 +430,93 @@ async def _canonicalize_stage(
         "book_id": book.get("id"),
         "title": book.get("title"),
         "source": source,
+        "mode": chain_mode,
         "chapters": book.get("chapter_count", 0),
         "pages": book.get("page_count", 0),
         "book_status": str(getattr(book.get("status"), "value", book.get("status") or "")),
-    }
+    }, layout
+
+
+async def _figure_stage(book_id: str, parse_workdir: str | Path, *, book_storage: Any) -> dict[str, Any]:
+    """figure_backfill 的编程入口串联：plan_from_parse_dir + apply_plan（--apply 语义）.
+
+    模块级 CLI 调用不等价编程复刻，这里直接用 :func:`plan_from_parse_dir`
+    （内部走 ``load_content_lists``）拿计划，再 :func:`apply_plan` 落图入块
+    —— 与 figure_backfill 既有测试同一用法。无书页或无插图素材时是合法的
+    零产出，不是失败。
+    """
+    from deeptutor.book.engine import BookEngine
+    from deeptutor.book.figure_backfill import apply_plan, load_content_lists, plan_from_parse_dir
+
+    empty = {"pages": 0, "blocks_inserted": 0, "images_copied": 0}
+    book_dir = _book_dir_of(parse_workdir)
+    engine = BookEngine(storage=book_storage)
+    pages = await asyncio.to_thread(engine.list_pages, book_id)
+    if not pages:
+        return empty
+    items, content_dir = await asyncio.to_thread(load_content_lists, book_dir)
+    if not items:
+        return empty
+    plan = await asyncio.to_thread(plan_from_parse_dir, book_id, pages, book_dir)
+    if not plan.entries:
+        return empty
+    return await apply_plan(engine, book_id, plan, content_dir=content_dir, storage=book_storage)
+
+
+async def _ensure_tree_cached(
+    kb_name: str,
+    book_id: str,
+    layout: dict[str, Any] | None,
+    filename: str,
+    *,
+    book_storage: Any,
+) -> bool:
+    """树落缓：确认书 manifest 里挂上 canonical KP 树（best-effort）.
+
+    canonicalize 的 P0 钩子可能已缓存；未缓存时优先读 KB docstore 的
+    canonical 树（import 之后才有），保真路径再拿 layout 内联重建兜底。
+    """
+    if await asyncio.to_thread(book_storage.load_canonical_kp_tree, book_id):
+        return True
+    from deeptutor.book.canonical_tree import cache_canonical_tree_for_book
+
+    if await asyncio.to_thread(
+        cache_canonical_tree_for_book, book_id, [kb_name], storage=book_storage
+    ):
+        return True
+    if layout is None:
+        return False
+    from deeptutor.book.canonical_tree import rebuild_canonical_tree_from_layout
+
+    return await asyncio.to_thread(
+        rebuild_canonical_tree_from_layout,
+        book_id,
+        layout,
+        filename=filename,
+        storage=book_storage,
+    )
+
+
+def _share_read_grants(book_id: str, usernames: list[str]) -> dict[str, list[str]]:
+    """共享授权：给授权用户列表逐个 share read（缺省不共享）.
+
+    KB grants 不在这里落——canonicalize 已把书关联 ``knowledge_bases=[KB]``，
+    有该 KB 授权的账号经 KB 链接即可见。未知用户名 fail-soft 记
+    ``share_skipped``，绝不因一个手误中止整条链。
+    """
+    granted: list[str] = []
+    skipped: list[str] = []
+    for raw in usernames:
+        username = str(raw or "").strip()
+        if not username:
+            continue
+        from deeptutor.multi_user.identity import set_book_grant
+
+        if set_book_grant(username, book_id, "read"):
+            granted.append(username)
+        else:
+            skipped.append(username)
+    return {"shared_read": granted, "share_skipped": skipped}
 
 
 async def run_auto_pipeline(
@@ -400,17 +529,34 @@ async def run_auto_pipeline(
     canonicalize: Any | None = None,
     import_from_book: Any | None = None,
     import_request_model: Any | None = None,
+    mode: str | None = None,
+    enable_qb: bool | None = None,
+    share_read_users: list[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Run the full chain for each uploaded file, one failure at a time.
 
     Called at the tail of a successful upload task; every stage outcome is
     persisted via :func:`record_stage` before the next file starts, so the
-    status endpoint reflects reality even mid-run or after a crash.
+    status endpoint reflects reality even mid-run or after a crash. Re-running
+    it against an already-ingested KB works the same way（parse 缓存命中、
+    各段状态覆写）；重跑会 canonicalize 出一本新书。
 
     ``canonicalize`` / ``import_from_book`` / ``import_request_model`` are the
     adapter endpoints this chain composes (canonicalize endpoint + request
     model, import-from-book endpoint + request model); they are injected by
     the caller in the API layer so this module stays free of adapter imports.
+
+    New-in-faithful-chain knobs (caller args win; otherwise
+    :func:`read_chain_options` reads them off the KB manifest):
+
+    * ``mode`` — "auto"（缺省，保真 0 章回落 toc 并标注 legacy_toc）或
+      "faithful"（教材场景强制保真，0 章 fail-loud 带指引）。
+    * ``enable_qb`` — 链尾自动触发题库 ingest-pipeline（缺省开）。
+    * ``share_read_users`` — 建书后给这些账号 share read（缺省不共享）。
+
+    Core stages（parsed/canonicalized/imported/qb）失败按既有约定整文件置
+    error 并停链；增强段（figures/latex/树落缓/共享）失败记入各自段位但
+    不拦后续——书已建成，缺插图/补定界不该拖死题库。
     """
     from deeptutor.book.storage import get_book_storage
     from deeptutor.services.parsing.service import ParseService
@@ -428,6 +574,17 @@ async def run_auto_pipeline(
             getattr(logger, "warning" if level == "warning" else "error")(message)
         else:
             logger.info(message)
+
+    options = read_chain_options(kb_name, base_dir=base_dir)
+    chain_mode = str(mode or options["mode"]).strip().lower()
+    if chain_mode not in ("auto", "faithful"):
+        chain_mode = "auto"
+    run_qb = enable_qb if enable_qb is not None else options["enable_qb"]
+    share_users = (
+        [str(u).strip() for u in share_read_users or [] if str(u).strip()]
+        if share_read_users is not None
+        else options["share_read_users"]
+    )
 
     parse_service = ParseService()
     book_storage = get_book_storage()
@@ -455,10 +612,16 @@ async def run_auto_pipeline(
             base_dir=base_dir,
         )
 
-        # ── canonicalized: 页脚法 layout_json → 降级 toc_json ──
+        # ── canonicalized: 保真法 layout_json → 降级 toc_json（按 mode 分流）──
+        layout: dict[str, Any] | None = None
         try:
-            canonicalized = await _canonicalize_stage(
-                kb_name, path, parsed, book_storage=book_storage, canonicalize=canonicalize
+            canonicalized, layout = await _canonicalize_stage(
+                kb_name,
+                path,
+                parsed,
+                book_storage=book_storage,
+                canonicalize=canonicalize,
+                mode=chain_mode,
             )
         except Exception as exc:  # noqa: BLE001
             record_stage(kb_name, name, "canonicalized", error=str(exc), base_dir=base_dir)
@@ -468,12 +631,37 @@ async def run_auto_pipeline(
         record_stage(kb_name, name, "canonicalized", payload=canonicalized, base_dir=base_dir)
         say(
             f"{name}: canonicalized → {canonicalized['book_id']} "
-            f"(source={canonicalized['source']} chapters={canonicalized['chapters']} "
+            f"(mode={canonicalized['mode']} chapters={canonicalized['chapters']} "
             f"pages={canonicalized['pages']})"
         )
 
-        # ── imported: canonical 树优先的 import-from-book ──
         book_id = str(canonicalized.get("book_id") or "")
+
+        # ── figures: figure_backfill plan + apply（增强段，失败不拦后续）──
+        figures: dict[str, Any] = {"pages": 0, "blocks_inserted": 0, "images_copied": 0}
+        try:
+            figures = await _figure_stage(book_id, parsed.workdir, book_storage=book_storage)
+            record_stage(kb_name, name, "figures", payload=figures, base_dir=base_dir)
+            say(f"{name}: figure backfill inserted {figures.get('blocks_inserted', 0)} block(s)")
+        except Exception as exc:  # noqa: BLE001
+            figures = {"error": str(exc)[:500]}
+            record_stage(kb_name, name, "figures", payload=figures, base_dir=base_dir)
+            say(f"{name}: figure backfill failed — {exc}", level="warning")
+
+        # ── latex: latex_delimit.fix_book（增强段，失败不拦后续）──
+        latex_summary: dict[str, Any] = {}
+        try:
+            from deeptutor.book.latex_delimit import fix_book
+
+            latex_summary = await asyncio.to_thread(fix_book, book_id, storage=book_storage)
+            record_stage(kb_name, name, "latex", payload=latex_summary, base_dir=base_dir)
+            say(f"{name}: latex delimit fixed {latex_summary.get('blocks_fixed', 0)} block(s)")
+        except Exception as exc:  # noqa: BLE001
+            latex_summary = {"error": str(exc)[:500]}
+            record_stage(kb_name, name, "latex", payload=latex_summary, base_dir=base_dir)
+            say(f"{name}: latex delimit failed — {exc}", level="warning")
+
+        # ── imported: canonical 树优先的 import-from-book ──
         try:
             imported = await import_from_book(book_id, import_request_model(chapters=[]))
         except Exception as exc:  # noqa: BLE001
@@ -481,13 +669,72 @@ async def run_auto_pipeline(
             results[name] = {"status": "error", "stage": "imported", "error": str(exc)}
             say(f"{name}: import-from-book failed — {exc}", level="error")
             continue
+
+        # ── tree: 树落缓确认（增强段）+ share: 共享授权（增强段）──
+        try:
+            tree_cached = await _ensure_tree_cached(
+                kb_name, book_id, layout, path.name, book_storage=book_storage
+            )
+        except Exception as exc:  # noqa: BLE001
+            tree_cached = False
+            say(f"{name}: tree cache check failed — {exc}", level="warning")
+        try:
+            share_info = _share_read_grants(book_id, share_users)
+            if share_info["share_skipped"]:
+                say(
+                    f"{name}: share read skipped for unknown user(s): "
+                    f"{', '.join(share_info['share_skipped'])}",
+                    level="warning",
+                )
+        except Exception as exc:  # noqa: BLE001
+            share_info = {"shared_read": [], "share_skipped": [], "error": str(exc)[:500]}
+            say(f"{name}: share grants failed — {exc}", level="warning")
+
         record_stage(
             kb_name,
             name,
             "imported",
-            payload={"book_id": book_id, "module_count": imported.get("module_count", 0)},
+            payload={
+                "book_id": book_id,
+                "module_count": imported.get("module_count", 0),
+                "tree_cached": tree_cached,
+                **share_info,
+            },
             base_dir=base_dir,
         )
         say(f"{name}: imported {imported.get('module_count', 0)} module(s) into {book_id}")
+
+        # ── qb: 题库 ingest-pipeline 四段一体（核心段，失败整文件置 error）──
+        qb_run_id = ""
+        if run_qb:
+            try:
+                from deeptutor.learning.ingest_pipeline import start_pipeline
+
+                run = await asyncio.to_thread(start_pipeline, kb_name, book_id)
+                qb_run_id = str(run.get("run_id") or "")
+                record_stage(
+                    kb_name,
+                    name,
+                    "qb",
+                    payload={"run_id": qb_run_id, "status": run.get("status")},
+                    base_dir=base_dir,
+                )
+                say(f"{name}: question-bank pipeline {qb_run_id} ({run.get('status')})")
+            except Exception as exc:  # noqa: BLE001
+                record_stage(kb_name, name, "qb", error=str(exc), base_dir=base_dir)
+                results[name] = {"status": "error", "stage": "qb", "error": str(exc)}
+                say(f"{name}: qb pipeline failed to start — {exc}", level="error")
+                continue
+
+        results[name] = {
+            "status": "ok",
+            "book_id": book_id,
+            "mode": canonicalized.get("mode"),
+            "chapters": canonicalized.get("chapters", 0),
+            "pages": canonicalized.get("pages", 0),
+            "figures": figures,
+            "tree_cached": tree_cached,
+            "qb_pipeline_run_id": qb_run_id,
+        }
 
     return results

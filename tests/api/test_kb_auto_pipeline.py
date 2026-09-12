@@ -10,22 +10,21 @@ existing KB's upload behaviour byte-for-byte identical.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 from types import SimpleNamespace
 from typing import Any
 
-import importlib
-
-import pytest
 from fastapi import FastAPI
+import pytest
 from starlette.testclient import TestClient
 
 import deeptutor.api.routers.knowledge as knowledge_router
 import deeptutor.book.canonical_tree as canonical_tree
 import deeptutor.book.storage as storage_module
 import deeptutor.knowledge.auto_pipeline as auto_pipeline
-import deeptutor.knowledge.doc_intel.enrich as _enrich_pkg
 import deeptutor.knowledge.doc_intel as _doc_intel
+import deeptutor.knowledge.doc_intel.enrich as _enrich_pkg
 
 # The doc_intel package re-exports the ``enrich`` function, shadowing the
 # submodule attribute — resolve the module explicitly for patching.
@@ -114,7 +113,9 @@ def _seed_parse_dir(tmp_path) -> str:
 
 def _patch_chain(monkeypatch, *, books: list[dict[str, Any]] | None = None):
     """Stub parse (class seam) and return the injected canonicalize/import
-    stubs the chain composes, recording every call."""
+    stubs the chain composes, recording every call. The faithful-chain
+    enrichment seams (figures/latex/tree/qb) are stubbed at their source
+    modules so the chain tests stay hermetic."""
     calls: dict[str, list[Any]] = {"canonicalize": [], "import": [], "parse": []}
     holder: dict[str, str] = {"dir": ""}
 
@@ -133,7 +134,38 @@ def _patch_chain(monkeypatch, *, books: list[dict[str, Any]] | None = None):
         calls["import"].append(book_id)
         return {"status": "ok", "module_count": 4}
 
+    class _FakeEngine:
+        def __init__(self, *, storage=None, compiler_options=None):
+            self.storage = storage
+
+        def list_pages(self, book_id):
+            return []
+
+        async def insert_block(self, **kwargs):
+            return object()
+
     monkeypatch.setattr("deeptutor.services.parsing.service.ParseService.parse", fake_parse)
+    # figures stage: no pages → legal zero output, stage runs and is recorded.
+    monkeypatch.setattr("deeptutor.book.engine.BookEngine", _FakeEngine)
+    # latex stage: book-1 is a stub id, fail-soft path keeps the chain alive.
+    def fake_fix_book(book_id, *, dry_run=False, storage=None):
+        calls.setdefault("latex", []).append(book_id)
+        return {"book_id": book_id, "dry_run": dry_run, "blocks_fixed": 0, "pages_touched": 0}
+
+    monkeypatch.setattr("deeptutor.book.latex_delimit.fix_book", fake_fix_book)
+    # tree cache: best-effort, report a miss so no real docstore is touched.
+    monkeypatch.setattr(
+        "deeptutor.book.canonical_tree.cache_canonical_tree_for_book", lambda *a, **k: False
+    )
+    monkeypatch.setattr(
+        "deeptutor.book.canonical_tree.rebuild_canonical_tree_from_layout", lambda *a, **k: False
+    )
+    # qb stage: never let the real ingest pipeline touch the data dirs.
+    def fake_start_pipeline(kb_name, book_id, *, deps=None, background=True):
+        calls.setdefault("qb", []).append((kb_name, book_id))
+        return {"run_id": "run_stub", "status": "queued", "kb_name": kb_name, "book_id": book_id}
+
+    monkeypatch.setattr("deeptutor.learning.ingest_pipeline.start_pipeline", fake_start_pipeline)
     return calls, holder, {
         "canonicalize": (fake_canonicalize, SimpleNamespace),
         "import_from_book": fake_import_from_book,
@@ -205,7 +237,10 @@ def test_chain_runs_all_four_stages(kb_env, tmp_path, monkeypatch) -> None:
         auto_pipeline.run_auto_pipeline(KB, [str(pdf)], base_dir=kb_env, **stubs)
     )
 
-    assert results["书A.pdf"] == {"status": "ok"}
+    assert results["书A.pdf"]["status"] == "ok"
+    assert results["书A.pdf"]["mode"] == "faithful"
+    assert results["书A.pdf"]["book_id"] == "book-1"
+    assert results["书A.pdf"]["qb_pipeline_run_id"] == "run_stub"
     assert calls["parse"] == [str(pdf)]
     assert calls["canonicalize"][0].title == "书A"
     assert calls["canonicalize"][0].knowledge_bases == [KB]
@@ -242,7 +277,7 @@ def test_chain_parse_failure_isolates_other_files(kb_env, tmp_path, monkeypatch)
     # The broken file stops at parse; the other one runs to the end.
     assert results["bad.pdf"]["status"] == "error"
     assert results["bad.pdf"]["stage"] == "parsed"
-    assert results["good.pdf"] == {"status": "ok"}
+    assert results["good.pdf"]["status"] == "ok"
     assert len(calls["canonicalize"]) == 1
 
     state = auto_pipeline.read_pipeline_state(KB, base_dir=kb_env)
