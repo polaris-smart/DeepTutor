@@ -1,11 +1,12 @@
-"""ingest_pipeline 书锚定改造的行为测试（structured / qb_generated 两段）.
+"""ingest_pipeline 书锚定改造的行为测试（structured / qb_generated / qb_mounted）.
 
 覆盖任务书要求的四个点：
 ① 出题章节锚定书本身的 spine 章节链（章数=书章数，不是 KB 叶数）
 ② 出题 prompt 携带该书各章页正文（reading 块原文）
 ③ 书没有 canonical 树时 fail-loud（不静默回退 KB 全树）
 ④ 每章页正文 6000 字符预算截断、按页序保留前面的页
-另覆盖 ``_default_load_book`` 对真实书仓（canonical 树 + spine + reading 页）的读取。
+另覆盖 ``_default_load_book`` 对真实书仓（canonical 树 + spine + reading 页）的读取，
+以及 qb_mounted 的 kp_map 章级 id → path 叶级 KP struct_path 祖先桥接。
 """
 
 from __future__ import annotations
@@ -284,3 +285,188 @@ def test_default_load_book_reads_canonical_tree_spine_and_reading_pages(tmp_path
     assert "非reading块" not in data["pages"]["ch-9"][0]["text"]
 
     assert ip._default_load_book("bk-missing", storage=storage) is None
+
+
+# ---------------------------------------------------------------------------
+# ⑤ qb_mounted：kp_map 章级 id 经 struct_path 路径段前缀桥接到 path 叶级 KP
+# ---------------------------------------------------------------------------
+
+
+def _mount_tree() -> dict[str, Any]:
+    """canonical 树：两个章级节点（struct_path/node_id 桥接齐全），各挂叶。"""
+    return {
+        "title": "普通高中教科书 数学 必修第一册",
+        "children": [
+            {
+                "title": "第一章 集合",
+                "node_id": "tree-ch1",
+                "struct_path": "必修第一册/第一章 集合",
+                "children": [
+                    {
+                        "title": "1.1 集合的概念",
+                        "node_id": "tree-leaf-1",
+                        "struct_path": "必修第一册/第一章 集合/1.1 集合的概念",
+                        "children": [],
+                    },
+                    {
+                        "title": "1.2 集合间的关系",
+                        "node_id": "tree-leaf-2",
+                        "struct_path": "必修第一册/第一章 集合/1.2 集合间的关系",
+                        "children": [],
+                    },
+                ],
+            },
+            {
+                "title": "第二章 一元二次不等式",
+                "node_id": "tree-ch2",
+                "struct_path": "必修第一册/第二章 一元二次不等式",
+                "children": [
+                    {
+                        "title": "2.1 不等式性质",
+                        "node_id": "tree-leaf-3",
+                        "struct_path": "必修第一册/第二章 一元二次不等式/2.1 不等式性质",
+                        "children": [],
+                    }
+                ],
+            },
+        ],
+    }
+
+
+def _mount_book() -> dict[str, Any]:
+    return {
+        "canonical_tree": _mount_tree(),
+        "chapters": [
+            {"id": "ch-1", "title": "第一章 集合"},
+            {"id": "ch-2", "title": "第二章 一元二次不等式"},
+        ],
+        "pages": {},
+    }
+
+
+def _path_kp(kp_id: str, textbook_node_id: str, struct_path: str) -> Any:
+    from deeptutor.learning.models import KnowledgePoint, KnowledgeType
+
+    return KnowledgePoint(
+        id=kp_id,
+        name=struct_path.rsplit("/", 1)[-1] or kp_id,
+        type=KnowledgeType("concept"),
+        module_id="bk-1_ch0",
+        struct_path=struct_path,
+        textbook_node_id=textbook_node_id,
+    )
+
+
+def _save_progress(tmp_path: Path, kps: list[Any]) -> None:
+    from deeptutor.learning.models import LearningModule, LearningProgress
+    from deeptutor.learning.storage import LearningStore
+
+    progress = LearningProgress(
+        book_id="bk-1",
+        modules=[
+            LearningModule(id="bk-1_ch0", name="第一章 集合", order=0, knowledge_points=kps)
+        ],
+    )
+    LearningStore(root=tmp_path / "learning").save(progress)
+
+
+def _mount_fixtures(tmp_path: Path, mapping: dict[str, str]) -> None:
+    qbanks = tmp_path / "qbanks"
+    qbanks.mkdir(parents=True, exist_ok=True)
+    questions = [
+        {
+            "question": f"题目{i}：集合 A 的子集个数是多少",
+            "question_type": "choice",
+            "options": {"A": "甲", "B": "乙", "C": "丙", "D": "丁"},
+            "answer": "A",
+            "explanation": "出处：第1页。解析",
+            "difficulty": "巩固",
+            "chapter_id": "ch-1",
+        }
+        for i in range(3)
+    ]
+    (qbanks / "bk-1.json").write_text(
+        json.dumps({"book_id": "bk-1", "questions": questions}), encoding="utf-8"
+    )
+    (qbanks / "bk-1.kp_map.json").write_text(json.dumps(mapping), encoding="utf-8")
+
+
+def _mount_deps(tmp_path: Path) -> ip.PipelineDeps:
+    return ip.PipelineDeps(
+        load_book=lambda book_id: _mount_book(),
+        qbanks_dir=lambda: tmp_path / "qbanks",
+        learning_root=lambda: tmp_path / "learning",
+    )
+
+
+def _mounted_progress(tmp_path: Path) -> Any:
+    from deeptutor.learning.storage import LearningStore
+
+    return LearningStore(root=tmp_path / "learning").load("bk-1")
+
+
+def test_qb_mounted_bridges_chapter_id_to_descendant_kps(tmp_path: Path) -> None:
+    """章级映射 id 经 struct_path 前缀桥接到叶级 KP：一章两个后代全挂载。"""
+    _save_progress(
+        tmp_path,
+        [
+            _path_kp("bk-1_ch0_kp0", "tree-leaf-1", "必修第一册/第一章 集合/1.1 集合的概念"),
+            _path_kp("bk-1_ch0_kp1", "tree-leaf-2", "必修第一册/第一章 集合/1.2 集合间的关系"),
+        ],
+    )
+    _mount_fixtures(tmp_path, {"ch-1": "tree-ch1"})
+
+    result = ip._stage_qb_mounted(_record(), {}, _mount_deps(tmp_path))
+
+    assert result["mounted"] == 2  # 两个后代 KP 全部挂载（组内题目逐 KP 写）
+    progress = _mounted_progress(tmp_path)
+    for kp in progress.modules[0].knowledge_points:
+        assert len(kp.meta["question_bank"]) == 3
+
+    # 单数 _find_kp 走同一回退；ctx 为空（断点重跑）时由 stage 自行重新锚定取树
+    assert ip._find_kp(progress, "tree-ch1", _mount_tree()).id == "bk-1_ch0_kp0"
+
+
+def test_qb_mounted_no_false_bridge_without_ancestor_relation(tmp_path: Path) -> None:
+    """无祖先关系不误挂：裸 startswith 会误配的「第一章 集合练习」与别章 KP 都不挂。"""
+    _save_progress(
+        tmp_path,
+        [
+            # 章名只差「练习」后缀——路径段比较必须拒绝，裸字符串前缀会误配
+            _path_kp("kp-x", "tree-leaf-x", "必修第一册/第一章 集合练习/1.1 集合的概念"),
+            # 另一章的后代——struct_path 有共同前缀「必修第一册」但不构成祖先
+            _path_kp("kp-y", "tree-leaf-3", "必修第一册/第二章 一元二次不等式/2.1 不等式性质"),
+        ],
+    )
+    _mount_fixtures(tmp_path, {"ch-1": "tree-ch1"})
+
+    with pytest.raises(RuntimeError, match="未能挂载任何 KP"):
+        ip._stage_qb_mounted(_record(), {}, _mount_deps(tmp_path))
+
+    progress = _mounted_progress(tmp_path)
+    for kp in progress.modules[0].knowledge_points:
+        assert not (kp.meta or {}).get("question_bank")
+    assert ip._find_kp(progress, "tree-ch1", _mount_tree()) is None
+
+
+def test_qb_mounted_exact_match_beats_ancestor_fallback(tmp_path: Path) -> None:
+    """精确匹配优先于祖先回退：textbook_node_id 精确命中时只挂那一个，不扩散。"""
+    _save_progress(
+        tmp_path,
+        [
+            # 精确桥接：textbook_node_id == 映射 id（如 import-from-book 共享章锚的 path）
+            _path_kp("kp-exact", "tree-ch1", "必修第一册/第一章 集合"),
+            # 同章后代：祖先回退本可命中，但精确命中后不得再扩散
+            _path_kp("kp-desc", "tree-leaf-1", "必修第一册/第一章 集合/1.1 集合的概念"),
+        ],
+    )
+    _mount_fixtures(tmp_path, {"ch-1": "tree-ch1"})
+
+    result = ip._stage_qb_mounted(_record(), {}, _mount_deps(tmp_path))
+
+    assert result["mounted"] == 1
+    progress = _mounted_progress(tmp_path)
+    kps = {kp.id: kp for kp in progress.modules[0].knowledge_points}
+    assert len(kps["kp-exact"].meta["question_bank"]) == 3
+    assert not (kps["kp-desc"].meta or {}).get("question_bank")
+    assert ip._find_kps(progress, "tree-ch1", _mount_tree()) == [kps["kp-exact"]]

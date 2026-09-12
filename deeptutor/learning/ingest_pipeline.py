@@ -12,7 +12,8 @@
                    答案与解析）提取/编制题目，产 question_banks/<book_id>.json
     kp_mapped      推导 chapter_id -> kp_id 映射（kp_mapper.build_map）
     qb_mounted     按映射逐 KP 写入 KP.meta["question_bank"]（直连 learning
-                   service，不走 HTTP；契约同 mastery_path.set_kp_question_bank）
+                   service，不走 HTTP；契约同 mastery_path.set_kp_question_bank；
+                   映射为章级 id 时经 struct_path 路径段前缀祖先回退桥接到叶级 KP）
 
 状态仓为 JSON 文件仓（仿 :mod:`deeptutor.learning.assignments` 的 fail-open
 读 / 原子写 / 单进程写锁 / 幂等 upsert），落 ``data/system/learning/
@@ -671,13 +672,64 @@ def _group_questions(
     return grouped, skipped_no_mapping, skipped_invalid
 
 
-def _find_kp(progress: Any, kp_id: str) -> Any:
-    """在 mastery path 里定位 KP：优先 kp.id，其次 textbook_node_id 桥接。"""
+def _node_struct_path(tree: Any, node_id: str) -> str:
+    """按 node_id 在 canonical 树里查节点，取其 struct_path（查不到/无值返回 ""）。"""
+    if not isinstance(tree, dict) or not node_id:
+        return ""
+    if str(tree.get("node_id") or "") == node_id:
+        return str(tree.get("struct_path") or "")
+    for child in tree.get("children") or []:
+        if isinstance(child, dict):
+            found = _node_struct_path(child, node_id)
+            if found:
+                return found
+    return ""
+
+
+def _is_path_prefix(ancestor_path: str, descendant_path: str) -> bool:
+    """路径段前缀判断：按 "/" 切段逐段比，不做裸字符串 startswith。
+
+    裸前缀会让「第一章 集合」误配「第一章 集合练习」——切段后两者第二段
+    不同，不会误挂。
+    """
+    ancestor = [seg for seg in ancestor_path.split("/") if seg]
+    if not ancestor:
+        return False
+    descendant = [seg for seg in descendant_path.split("/") if seg]
+    return len(descendant) >= len(ancestor) and descendant[: len(ancestor)] == ancestor
+
+
+def _find_kps(progress: Any, kp_id: str, tree: Any = None) -> list[Any]:
+    """在 mastery path 里定位可挂载 KP 列表。
+
+    精确匹配（kp.id / textbook_node_id）命中即返回单个——优先于祖先回退。
+    未命中时做 struct_path 路径段前缀祖先回退：kp_map 的值是 canonical 树的
+    章级 node_id，而 path KP（import-from-kp-tree 建）桥接的是子叶 node_id，
+    章级 id 精确匹配必落空——用映射树节点的 struct_path 判祖先关系，其全部
+    后代 KP 都是可挂载目标（一章 → 多个目级 KP 时逐 KP 挂）。
+    祖先也匹配不上返回 []（fail-loud 语义由调用方保底报错，不静默成功）。
+    """
     for module in getattr(progress, "modules", []) or []:
         for kp in getattr(module, "knowledge_points", []) or []:
             if getattr(kp, "id", "") == kp_id or getattr(kp, "textbook_node_id", "") == kp_id:
-                return kp
-    return None
+                return [kp]
+    node_path = _node_struct_path(tree, kp_id)
+    if not node_path:
+        return []
+    matched: list[Any] = []
+    for module in getattr(progress, "modules", []) or []:
+        for kp in getattr(module, "knowledge_points", []) or []:
+            if _is_path_prefix(node_path, str(getattr(kp, "struct_path", "") or "")):
+                matched.append(kp)
+    return matched
+
+
+def _find_kp(progress: Any, kp_id: str, tree: Any = None) -> Any:
+    """在 mastery path 里定位 KP：优先 kp.id / textbook_node_id 精确匹配，
+    其次 struct_path 路径段前缀祖先回退（树节点 struct_path 可经 ``tree``
+    按 node_id 查得）。返回第一个命中，找不到返回 None。"""
+    found = _find_kps(progress, kp_id, tree)
+    return found[0] if found else None
 
 
 def _stage_qb_mounted(record: dict[str, Any], ctx: dict[str, Any], deps: PipelineDeps) -> dict[str, Any]:
@@ -687,6 +739,14 @@ def _stage_qb_mounted(record: dict[str, Any], ctx: dict[str, Any], deps: Pipelin
     mapping = _load_json(qbanks_dir / f"{book_id}.kp_map.json")
     if not mapping:
         raise RuntimeError("KP 映射为空：kp_mapped 段未产出可挂载映射")
+
+    tree = ctx.get("tree")
+    if tree is None:
+        # 断点重跑（单段 retry）时 ctx 为空：重新锚定本书加载 canonical 树，
+        # 供 struct_path 祖先回退按 node_id 查章级树节点（kp_map 桥接章级 id，
+        # path KP 桥接子叶 id，必须经树换算）。
+        _load_book_ctx(record, ctx, deps)
+        tree = ctx["tree"]
 
     grouped, skipped_no_map, skipped_invalid = _group_questions(bank, mapping)
 
@@ -704,14 +764,15 @@ def _stage_qb_mounted(record: dict[str, Any], ctx: dict[str, Any], deps: Pipelin
     mounted_questions = 0
     missing: list[str] = []
     for kp_id, items in grouped.items():
-        target = _find_kp(progress, kp_id)
-        if target is None:
+        targets = _find_kps(progress, kp_id, tree)
+        if not targets:
             missing.append(kp_id)
             continue
-        # 合并写：只替换 question_bank，保留 meta 里的 bank_cursor 等其它键。
-        target.meta = {**(target.meta or {}), "question_bank": [dict(q) for q in items]}
-        mounted_kps += 1
-        mounted_questions += len(items)
+        for target in targets:
+            # 合并写：只替换 question_bank，保留 meta 里的 bank_cursor 等其它键。
+            target.meta = {**(target.meta or {}), "question_bank": [dict(q) for q in items]}
+            mounted_kps += 1
+            mounted_questions += len(items)
 
     if mounted_kps == 0:
         raise RuntimeError(
