@@ -6,8 +6,10 @@
 
 四段（吸收 DeepTutor 上游「诚实状态机」设计）::
 
-    structured     检查 KB 结构树就绪（doc_tree 存在且节点数 > 0）
-    qb_generated   调 LLM 按叶子章节出题，产 question_banks/<book_id>.json
+    structured     检查书结构就绪（canonical KP 树 + spine 章节链，锚定
+                   book_id 对应的书，不扫 KB 全树；无 canonical 树 fail-loud）
+    qb_generated   调 LLM 从该书各章页正文（reading 块原文，含例题/习题/
+                   答案与解析）提取/编制题目，产 question_banks/<book_id>.json
     kp_mapped      推导 chapter_id -> kp_id 映射（kp_mapper.build_map）
     qb_mounted     按映射逐 KP 写入 KP.meta["question_bank"]（直连 learning
                    service，不走 HTTP；契约同 mastery_path.set_kp_question_bank）
@@ -21,20 +23,19 @@ provider 机制（``services.llm``），key 从配置读取，绝不 hardcode。
 from __future__ import annotations
 
 import contextvars
-import json
-import logging
-import re
-import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+import json
+import logging
 from pathlib import Path
+import re
+import threading
 from typing import Any, Callable
 from uuid import uuid4
 
 from deeptutor.learning.kp_mapper import (
     DEFAULT_THRESHOLD,
     build_map,
-    extract_leaf_chapters,
     extract_kps,
     unwrap_tree,
 )
@@ -47,6 +48,9 @@ STAGE_ORDER = ["structured", "qb_generated", "kp_mapped", "qb_mounted"]
 
 #: 每章出题数（对齐悦学工作区 scripts/quiz_mass_generate.py 的 n=5；该脚本不在本仓）。
 QUESTIONS_PER_CHAPTER = 5
+
+#: 每章喂进出题 prompt 的页正文总字符预算（超预算按页序截断、保留前面的页）。
+PROMPT_PAGE_BUDGET = 6000
 
 #: 单进程内串行化 run 文档的读改写（与 assignments 仓同约定）。
 #: ⚠️ 部署约束：此锁与 _RUN_SEMAPHORE 均为进程级——本模块只支持单 worker
@@ -229,6 +233,61 @@ def _default_load_tree(kb_name: str) -> Any:
     return roots or None
 
 
+def _default_load_book(book_id: str, *, storage: Any = None) -> dict[str, Any] | None:
+    """读取 book_id 对应书的出题素材（canonical 树 + spine 章节链 + 页正文）。
+
+    出题章节锚定「这本书」本身：章节链取 spine.chapters（章 id 与 pages 的
+    ``chapter_id`` 直接绑定，是唯一可靠的章节-页关联），页正文取各页的
+    reading 块（保真导入每页一个 reading 块的教材原文）。书不存在返回 None，
+    树/章节缺失由调用方 fail-loud——这里不做静默回退。
+    """
+    from deeptutor.book.models import BlockType
+    from deeptutor.book.storage import BookStorage
+
+    store = storage if storage is not None else BookStorage()
+    if not store.book_exists(book_id):
+        return None
+
+    spine = store.load_spine(book_id)
+    chapters = [
+        {"id": chapter.id, "title": chapter.title}
+        for chapter in (spine.chapters if spine else [])
+        if chapter.id and chapter.title
+    ]
+
+    pages: dict[str, list[dict[str, Any]]] = {}
+    for page in store.list_pages(book_id):  # list_pages 已按 (order, created_at) 排序
+        if not page.chapter_id:
+            continue
+        texts: list[str] = []
+        for block in page.blocks:
+            if block.type != BlockType.READING:
+                continue
+            body = ""
+            payload = getattr(block, "payload", None)
+            if isinstance(payload, dict):
+                body = str(payload.get("body") or "")
+            if not body:  # 未 compile 的块正文还在 params 里
+                params = getattr(block, "params", None)
+                if isinstance(params, dict):
+                    body = str(params.get("body") or "")
+            body = body.strip()
+            if body:
+                texts.append(body)
+        pages.setdefault(page.chapter_id, []).append(
+            {
+                "page_id": page.id,
+                "title": page.display_title or page.title,
+                "text": "\n".join(texts),
+            }
+        )
+    return {
+        "canonical_tree": store.load_canonical_kp_tree(book_id),
+        "chapters": chapters,
+        "pages": pages,
+    }
+
+
 def _default_llm_complete(messages: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
     """走现有 provider 机制调 LLM，返回 (content, usage)。key 从配置读取。"""
     import asyncio
@@ -255,9 +314,10 @@ def _default_llm_complete(messages: list[dict[str, Any]]) -> tuple[str, dict[str
 
 @dataclass
 class PipelineDeps:
-    """可注入依赖（测试用 mock 替换 load_tree / llm_complete / 目录）。"""
+    """可注入依赖（测试用 mock 替换 load_book / load_tree / llm_complete / 目录）。"""
 
     load_tree: Callable[[str], Any] = field(default=_default_load_tree)
+    load_book: Callable[[str], dict[str, Any] | None] = field(default=_default_load_book)
     llm_complete: Callable[[list[dict[str, Any]]], tuple[str, dict[str, Any]]] = field(
         default=_default_llm_complete
     )
@@ -269,10 +329,44 @@ class PipelineDeps:
 # 出题 / 解析（移植自悦学工作区 scripts/quiz_mass_generate.py——不在本仓，本文件为仓内事实源；LLM 走 provider）
 # ---------------------------------------------------------------------------
 
-_PROMPT = """你是高中{subject}老师。基于教材章节「{chapter}」（{book_title}），出 {n} 道单项选择题。
-要求：覆盖该章核心考点；题干含具体情境或材料；四个选项有干扰性；答案与解析正确且引用教材概念术语。
+_PROMPT = """你是高中{subject}老师。以下是教材《{book_title}》「{chapter}」章的原文内容（含正文、例题、习题、答案与解析）：
+
+{source_text}
+
+请基于以上教材原文出 {n} 道单项选择题。要求：优先从原文中的例题、习题、答案与解析提取或改编，不要凭空编造原文没有的考点；题干含具体情境或材料；四个选项有干扰性；答案与解析正确且引用教材概念术语；每题解析开头标注出处页，格式如「出处：第3页。…」。
 只输出 JSON 数组：
-[{{"question":"题干","options":{{"A":"…","B":"…","C":"…","D":"…"}},"answer":"A","explanation":"解析（含考点说明）","difficulty":"基础|巩固|提升"}}]"""
+[{{"question":"题干","options":{{"A":"…","B":"…","C":"…","D":"…"}},"answer":"A","explanation":"出处：第N页。解析（含考点说明）","difficulty":"基础|巩固|提升"}}]"""
+
+
+def _chapter_source_text(pages: Any, budget: int = PROMPT_PAGE_BUDGET) -> str:
+    """按页序拼接该章各页 reading 正文，总预算内截断、保留前面的页。
+
+    每页以「【页标签】」开头，供 LLM 在解析里回填出处页；页标签取页标题
+    （如「第3页」），无标题回落到页序号。
+    """
+    parts: list[str] = []
+    used = 0
+    index = 0
+    for page in pages or []:
+        if not isinstance(page, dict):
+            continue
+        text = str(page.get("text") or "").strip()
+        if not text:
+            continue
+        index += 1
+        label = str(page.get("title") or "").strip() or f"第{index}页"
+        block = f"【{label}】\n{text}"
+        projected = used + len(block) + (2 if parts else 0)  # 页间 "\n\n" 也计入预算
+        if projected <= budget:
+            parts.append(block)
+            used = projected
+            continue
+        remaining = budget - used - (2 if parts else 0)
+        if remaining <= 0:
+            break
+        parts.append(block[:remaining])
+        break  # 预算用满，后面的页不再计入
+    return "\n\n".join(parts)
 
 
 def _subject_of(book_title: str) -> str:
@@ -360,23 +454,59 @@ def _load_json(path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _load_book_ctx(record: dict[str, Any], ctx: dict[str, Any], deps: PipelineDeps) -> None:
+    """加载 book_id 对应书的出题素材入 ctx（树 / 章节链 / 每章页正文）。
+
+    出题章节锚定「这本书」：不再扫 KB 全树（合并 KB 下会把其他书的叶子也
+    当成出题章节——单本失控 40h+ 的根因）。书没有 canonical 树或章节链时
+    fail-loud 带清晰指引，绝不静默回退 KB 全树。
+    """
+    book_id = record["book_id"]
+    book = deps.load_book(book_id)
+    if not book:
+        raise RuntimeError(
+            f"书 {book_id} 不存在或未导入（book 仓无 manifest）——请先完成教材导入（canonicalize）再重试"
+        )
+    tree = unwrap_tree(book.get("canonical_tree"))
+    if not isinstance(tree, dict) or not tree:
+        raise RuntimeError(
+            f"书 {book_id} 没有 canonical KP 树（manifest.metadata.canonical_kp_tree 缺失或无效）"
+            "——请先对该教材执行 canonicalize / doc_intel 建树后重试；"
+            "本管线不再回退扫描 KB 全树（合并 KB 下会把其他书的章节也当成出题章节）"
+        )
+    chapters = [
+        {
+            "id": str(chapter["id"]),
+            "title": str(chapter["title"]),
+            "path": str(chapter.get("path") or chapter["title"]),
+        }
+        for chapter in (book.get("chapters") or [])
+        if isinstance(chapter, dict) and chapter.get("id") and chapter.get("title")
+    ]
+    if not chapters:
+        raise RuntimeError(
+            f"书 {book_id} 的 spine 无章节链（spine.json 缺失或 chapters 为空）"
+            "——请先完成教材导入的章节分组后重试"
+        )
+    ctx["tree"] = tree
+    ctx["chapters"] = chapters
+    ctx["pages"] = book.get("pages") or {}
+
+
 # ---------------------------------------------------------------------------
 # 四个 stage 实现
 # ---------------------------------------------------------------------------
 
 def _stage_structured(record: dict[str, Any], ctx: dict[str, Any], deps: PipelineDeps) -> dict[str, Any]:
-    tree = unwrap_tree(deps.load_tree(record["kb_name"]))
-    ctx["tree"] = tree
-    node_count = len(extract_kps(tree))
-    if node_count <= 0:
-        raise RuntimeError("KB 结构树未就绪：doc_tree 缺失或节点数为 0（请先完成教材解析/建结构）")
-    chapters = extract_leaf_chapters(tree)
-    if not chapters:
-        raise RuntimeError("结构树无叶子章节节点（节点需含 node_id + title）")
-    ctx["chapters"] = chapters
+    _load_book_ctx(record, ctx, deps)
+    node_count = len(extract_kps(ctx["tree"]))
+    chapters = ctx["chapters"]
     return {
         "node_count": node_count,
-        "note": f"结构树就绪：{node_count} 个节点 / {len(chapters)} 个出题章节（叶子）",
+        "note": (
+            f"本书结构就绪：canonical 树 {node_count} 个节点 / "
+            f"{len(chapters)} 个出题章节（spine，书锚定）"
+        ),
     }
 
 
@@ -386,10 +516,10 @@ def _stage_qb_generated(record: dict[str, Any], ctx: dict[str, Any], deps: Pipel
     bank_path.parent.mkdir(parents=True, exist_ok=True)
 
     chapters = ctx.get("chapters")
-    if not chapters:
-        tree = ctx.get("tree") or unwrap_tree(deps.load_tree(record["kb_name"]))
-        ctx["tree"] = tree
-        chapters = extract_leaf_chapters(tree)
+    if not chapters or ctx.get("pages") is None:
+        # 断点重跑（单段 retry）时 ctx 为空：重新锚定本书加载素材。
+        _load_book_ctx(record, ctx, deps)
+        chapters = ctx["chapters"]
 
     bank: dict[str, Any] = {}
     if bank_path.exists():
@@ -423,8 +553,15 @@ def _stage_qb_generated(record: dict[str, Any], ctx: dict[str, Any], deps: Pipel
         cid = str(chapter["id"])
         if cid in done_chapters:
             continue
+        source_text = _chapter_source_text(ctx.get("pages", {}).get(cid))
+        if not source_text:
+            source_text = "（该章暂无页正文）"
         prompt = _PROMPT.format(
-            subject=subject, chapter=chapter["title"], book_title=book_title, n=QUESTIONS_PER_CHAPTER
+            subject=subject,
+            chapter=chapter["title"],
+            book_title=book_title,
+            n=QUESTIONS_PER_CHAPTER,
+            source_text=source_text,
         )
         try:
             text, usage = deps.llm_complete([{"role": "user", "content": prompt}])
