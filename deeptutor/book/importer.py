@@ -63,18 +63,19 @@ def toc_to_spine(book_id: str, toc: list[dict[str, Any]]) -> Spine:
     return Spine(book_id=book_id, chapters=chapters)
 
 
-def layout_to_spine(book_id: str, layout: dict) -> Spine:
+def layout_to_spine(book_id: str, layout: dict, *, title: str = "") -> Spine:
     """Rebuild the chapter tree straight from a MinerU ``layout.json``.
 
     Natively DT: the running-header criteria (textbook_struct.page_headers)
     detect chapter starts — including the printed page number — with no
     external tooling and no LLM in the loop.
     """
-    from ..textbook_struct.page_headers import rebuild_from_headers
+    from ..textbook_struct.chapter_rebuild import rebuild_with_fallback
 
     if not isinstance(layout, dict) or not layout.get("pdf_info"):
         raise TocImportError("layout must be a MinerU layout dict with pdf_info")
-    chapters = rebuild_from_headers(layout)
+    # 页脚/页眉法 0 章 → 概述锚定法兜底（仅 en/英语书启用）。
+    chapters = rebuild_with_fallback(layout, title=title)
     if not chapters:
         raise TocImportError("no chapter headers found in layout (running headers empty?)")
     return Spine(

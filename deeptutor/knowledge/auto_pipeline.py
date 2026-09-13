@@ -375,9 +375,12 @@ async def _canonicalize_stage(
     toc: list[dict[str, Any]] = []
     if layout is not None:
         # 页脚法+页眉法: chapters from the running headers, pages from ranges.
-        from deeptutor.textbook_struct.page_headers import rebuild_from_headers
+        # 0 章 → 概述锚定法兜底（仅 en/英语书启用，见 chapter_rebuild.rebuild_with_fallback）。
+        from deeptutor.textbook_struct.chapter_rebuild import rebuild_with_fallback
 
-        chapters = await asyncio.to_thread(rebuild_from_headers, layout)
+        chapters = await asyncio.to_thread(
+            rebuild_with_fallback, layout, title=title
+        )
         specs = await asyncio.to_thread(_page_specs_from_layout, layout, chapters, title)
 
     if specs:
