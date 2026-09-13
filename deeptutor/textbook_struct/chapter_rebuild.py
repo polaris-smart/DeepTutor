@@ -236,3 +236,37 @@ def verify_offset(chapters: list[Chapter]) -> dict:
         "consistent": len(offsets) <= 1,
         "ok": bool(offsets) and len(offsets) == 1,
     }
+
+
+# ── v0.5: 三通道 fallback 链（页脚法 → 页眉法 → 概述锚定法）────────────────
+# 页脚法+页眉法同源 page_facts（footer 原文 + header 嵌章 token），合并为一
+# 通道，0 章时不再各自空转。第三通道概述锚定法只服务英语书（版式语言 en 或
+# 书名含「英语」），中文书 0 章时保持原语义 —— 返回空 list 由调用方走降级表。
+
+_OVERVIEW_GUARD_TITLE_HINT = ("英语", "english")
+
+
+def rebuild_with_fallback(
+    layout: dict,
+    *,
+    language: str = "zh",
+    title: str = "",
+) -> list[Chapter]:
+    """页脚法/页眉法 0 章 → 概述锚定法（仅英语书启用）.
+
+    第三通道 guard：仅当 ``language`` 为 ``en`` 或 ``title`` 含「英语」/
+    ``english`` 时启用，防误伤中文书（中文版式 0 章时返回空 list，语义与
+    旧链一致 —— 由调用方走 enrich 树转 toc 降级表）。
+    """
+    from .overview_anchor import rebuild_from_overview
+    from .page_headers import rebuild_from_headers
+
+    chapters = rebuild_from_headers(layout)
+    if chapters:
+        return chapters
+    lang = (language or "").lower()
+    name = (title or "").lower()
+    is_english = lang == "en" or any(hint in name for hint in _OVERVIEW_GUARD_TITLE_HINT)
+    if not is_english:
+        return []
+    return rebuild_from_overview(layout)
