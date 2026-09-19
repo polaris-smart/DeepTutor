@@ -115,7 +115,7 @@ class VolcPlanSTTAdapter(BaseSTTAdapter):
     SAME Agent Plan key as every other plan channel (``X-Api-Key``).
     """
 
-    _CHUNK = 32000  # bytes per audio frame (~2s of 128kbps audio)
+    _CHUNK = 3200  # bytes per audio frame (~0.5s of 48kbps mp3; server rejects oversized frames silently)
 
     def _endpoint(self, config) -> str:
         if not config.base_url:
@@ -151,8 +151,11 @@ class VolcPlanSTTAdapter(BaseSTTAdapter):
         import asyncio
         import gzip
         import json as _json
+        import os as _os
 
         import websockets
+
+        DEBUG = _os.environ.get("VOLC_STT_DEBUG")
 
         url = self._endpoint(config)
         if not config.api_key:
@@ -189,7 +192,9 @@ class VolcPlanSTTAdapter(BaseSTTAdapter):
                 payload = payload.decode("utf-8", "replace")
             if message_type == server_error:
                 errors.append(payload)
+                if DEBUG: print("[STT][err]", payload[:200], flush=True)
                 return
+            if DEBUG: print("[STT][frame]", message_type, payload[:120], flush=True)
             try:
                 result = (_json.loads(payload) or {}).get("result") or {}
             except Exception:
@@ -249,7 +254,8 @@ class VolcPlanSTTAdapter(BaseSTTAdapter):
             while True:
                 try:
                     raw = await wsc.recv()
-                except Exception:
+                except Exception as exc:
+                    if DEBUG: print("[STT][reader-end]", type(exc).__name__, str(exc)[:80], flush=True)
                     return
                 parse_frame(raw)
                 if errors:
