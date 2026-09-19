@@ -18,6 +18,7 @@ from deeptutor.services.voice.adapters.openai_compat import (
     OpenRouterTTSAdapter,
 )
 from deeptutor.services.voice.adapters.volc_plan import VolcPlanTTSAdapter
+from deeptutor.services.voice.adapters.volc_plan import VolcPlanSTTAdapter
 from deeptutor.services.voice.base import BaseSTTAdapter, BaseTTSAdapter, VoiceProviderError
 
 TTS_ADAPTERS: dict[str, BaseTTSAdapter] = {
@@ -30,6 +31,7 @@ TTS_ADAPTERS: dict[str, BaseTTSAdapter] = {
 STT_ADAPTERS: dict[str, BaseSTTAdapter] = {
     "openai_compat": OpenAICompatSTTAdapter(),
     "dashscope": DashScopeSTTAdapter(),
+    "volc_plan_stt": VolcPlanSTTAdapter(),
 }
 
 

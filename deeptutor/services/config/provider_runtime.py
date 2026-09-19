@@ -388,6 +388,12 @@ TTS_PROVIDERS: dict[str, VoiceProviderSpec] = {
 }
 
 STT_PROVIDERS: dict[str, VoiceProviderSpec] = {
+    "volc_plan_stt": VoiceProviderSpec(
+        label="Volcano Agent Plan (Doubao ASR 2.0)",
+        default_api_base="wss://openspeech.bytedance.com/api/v3/plan/sauc/bigmodel_async",
+        adapter="volc_plan_stt",
+        default_model="volc.seedasr.sauc.duration",
+    ),
     "dashscope": VoiceProviderSpec(
         label="Aliyun DashScope",
         default_api_base="https://dashscope.aliyuncs.com/api/v1",
