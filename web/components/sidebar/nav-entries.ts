@@ -171,6 +171,22 @@ export const PRIMARY_NAV: NavEntry[] = [
     roles: ["teacher"],
   },
   {
+    href: "/courses",
+    label: "Courses",
+    icon: BookOpen,
+    tooltipKey: "Courses tooltip",
+    requires: "llm",
+    roles: ["teacher", "admin"],
+  },
+  {
+    href: "/exam-paper",
+    label: "Exam Paper",
+    icon: FileText,
+    tooltipKey: "Exam Paper tooltip",
+    requires: "llm",
+    roles: ["teacher", "admin"],
+  },
+  {
     // The learner hub: its APIs (daily plan, assignments, courses) are exactly
     // the surfaces a learning policy grants, so it stays visible there.
     href: "/space",
