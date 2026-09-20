@@ -1,5 +1,6 @@
 import {
   BookOpen,
+  FileText,
   BookText,
   Bot,
   Brain,
@@ -179,7 +180,7 @@ export const PRIMARY_NAV: NavEntry[] = [
     roles: ["teacher", "admin"],
   },
   {
-    href: "/exam-paper",
+    href: "/space/questions",
     label: "Exam Paper",
     icon: FileText,
     tooltipKey: "Exam Paper tooltip",
