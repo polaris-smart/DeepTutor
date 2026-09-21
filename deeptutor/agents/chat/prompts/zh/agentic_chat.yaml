@@ -119,7 +119,7 @@ notices:
   loop_budget_exhausted: "探索轮次预算已用尽，将基于已收集的材料作答。"
   loop_settlement: "探索轮次预算已用尽；正在完成必要收尾，然后给出最终回答。"
   output_truncated: "模型输出达到 token 上限，已要求其继续完成回答。"
-  loop_error_finish: "某一步执行失败，将基于已收集的材料作答。"  loop_error_finish: "某一步执行失败（{error}），将基于已收集的材料作答。"
+  loop_error_finish: "某一步执行失败（{error}），将基于已收集的材料作答。"
   provider_retry: "模型服务连接中断，正在重试。"
   provider_unavailable: "无法连接模型服务，请重试。"
   provider_stream_interrupted: "模型服务中断了本次回答，请重试。"
@@ -130,8 +130,7 @@ notices:
   empty_final_response: "未能从模型输出中得到有效回答。请重试或缩小问题范围。"
   reasoning_only_final_response: "模型产生了内部推理，但没有可用回答。请重试或缩小问题范围。"
   empty_finish_nudged: "模型这一轮只有内部推理，已提示其继续执行。"
-  capability_finish_rejected: "模型未完成要求的交互步骤，请重试本轮。"
-  provider_retry: "模型服务连接中断，正在重试。"  reasoning_progress: "模型仍在进行内部推理，尚未生成回答或执行工具。"
+  reasoning_progress: "模型仍在进行内部推理，尚未生成回答或执行工具。"
   reasoning_budget_exhausted: "模型连续两轮将输出预算耗尽在内部推理中，未生成回答或执行工具。请重试、降低推理强度，或将任务拆分成更小的步骤。"
 
 empty:

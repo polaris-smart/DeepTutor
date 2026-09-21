@@ -11,10 +11,10 @@ from deeptutor.learning.mastery import compute_mastery
 from deeptutor.learning.models import (
     ErrorRecord,
     LearningEvidence,
+    TutorEvidence,
     InteractionStatus,
     LearnerMasteryOverride,
     LearnerProfile,
-    LearningEvidence,
     LearningModule,
     LearningProgress,
     LearningStage,
@@ -78,7 +78,7 @@ class LearningService:
         """Expose the persistence boundary for read-only interaction queries."""
         return self._store
 
-    def _record_evidence(self, evidence: LearningEvidence) -> None:
+    def _record_evidence(self, evidence: TutorEvidence) -> None:
         """Persist one evidence row without ever failing the caller.
 
         The evidence layer is a side channel: any failure to construct the
@@ -283,7 +283,7 @@ class LearningService:
         )
         self.save(progress)
         self._record_evidence(
-            LearningEvidence(
+            TutorEvidence(
                 user_id=user_id,
                 book_id=progress.book_id,
                 kp_id=knowledge_point_id,
@@ -769,7 +769,7 @@ class LearningService:
         try:
             is_corr = bool(interaction.result.get("is_correct"))
             self._record_evidence(
-                LearningEvidence(
+                TutorEvidence(
                     user_id="",
                     book_id=book_id,
                     kp_id=interaction.question.knowledge_point_id if interaction.question else "",
@@ -1118,7 +1118,7 @@ class LearningService:
         )
         self.save(progress)
         self._record_evidence(
-            LearningEvidence(
+            TutorEvidence(
                 user_id=user_id,
                 book_id=progress.book_id,
                 kp_id=kp_id,

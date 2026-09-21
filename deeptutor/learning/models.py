@@ -552,8 +552,12 @@ __all__ = [
     "LearningProgress",
 ]
 
-class LearningEvidence(BaseModel):
+class TutorEvidence(BaseModel):
     """One immutable row of learner evidence (collection-side payload).
+
+    Fork note: renamed from ``LearningEvidence`` during the v1.6.9 merge —
+    upstream added its own ``LearningEvidence`` (review-event projection) with
+    the same name, and the later definition silently shadowed the earlier one.
 
     Written by the fail-open hooks in :class:`LearningService` and persisted
     append-only by ``deeptutor.learning.evidence_store.EvidenceStore``. Field

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import io
+import zipfile
 
 from docx import Document as DocxDocument
 from openpyxl import Workbook
@@ -139,6 +140,7 @@ class TestIsDocumentExtension:
         assert is_document_extension("foo.DOCX")
         assert is_document_extension("report.xlsx")
         assert is_document_extension("deck.pptx")
+        assert is_document_extension("book.epub")
 
     def test_text_and_code(self) -> None:
         # Any extension in FileTypeRouter.TEXT_EXTENSIONS should be supported.

@@ -9,7 +9,7 @@ from deeptutor.learning.evidence_store import EvidenceStore
 from deeptutor.learning.models import (
     KnowledgePoint,
     KnowledgeType,
-    LearningEvidence,
+    TutorEvidence,
     LearningModule,
     LearningProgress,
 )
@@ -56,7 +56,7 @@ def _make_progress(book_id: str = "book1") -> LearningProgress:
 
 class TestAppendQuery:
     def test_append_and_query_roundtrip(self, evidence_store):
-        evidence = LearningEvidence(
+        evidence = TutorEvidence(
             user_id="u1",
             book_id="b1",
             kp_id="kp1",
@@ -95,17 +95,17 @@ class TestAppendQuery:
 
     def test_append_is_append_only(self, evidence_store):
         first = evidence_store.append(
-            LearningEvidence(evidence_type="graded_quiz", is_correct=True)
+            TutorEvidence(evidence_type="graded_quiz", is_correct=True)
         )
         second = evidence_store.append(
-            LearningEvidence(evidence_type="qualitative_gate", passed=True)
+            TutorEvidence(evidence_type="qualitative_gate", passed=True)
         )
         rows = evidence_store.query_evidence()
         assert sorted(r.id for r in rows) == [first, second]
 
     def test_rows_queryable_via_raw_sqlite(self, evidence_store, tmp_path):
         evidence_store.append(
-            LearningEvidence(
+            TutorEvidence(
                 user_id="u1",
                 book_id="b1",
                 kp_id="kp1",
@@ -125,10 +125,10 @@ class TestAppendQuery:
 
     def test_query_orders_newest_first(self, evidence_store):
         first = evidence_store.append(
-            LearningEvidence(evidence_type="graded_quiz", is_correct=True, created_at=100.0)
+            TutorEvidence(evidence_type="graded_quiz", is_correct=True, created_at=100.0)
         )
         second = evidence_store.append(
-            LearningEvidence(evidence_type="graded_quiz", is_correct=False, created_at=200.0)
+            TutorEvidence(evidence_type="graded_quiz", is_correct=False, created_at=200.0)
         )
         rows = evidence_store.query_evidence()
         assert [r.id for r in rows] == [second, first]
@@ -136,7 +136,7 @@ class TestAppendQuery:
     def test_query_limit(self, evidence_store):
         for i in range(3):
             evidence_store.append(
-                LearningEvidence(
+                TutorEvidence(
                     evidence_type="graded_quiz", is_correct=True, created_at=float(i)
                 )
             )
@@ -150,10 +150,10 @@ class TestAppendQuery:
 class TestQueryFilters:
     def test_filters_by_kp(self, evidence_store):
         evidence_store.append(
-            LearningEvidence(evidence_type="graded_quiz", is_correct=True, kp_id="kp1")
+            TutorEvidence(evidence_type="graded_quiz", is_correct=True, kp_id="kp1")
         )
         evidence_store.append(
-            LearningEvidence(evidence_type="graded_quiz", is_correct=True, kp_id="kp2")
+            TutorEvidence(evidence_type="graded_quiz", is_correct=True, kp_id="kp2")
         )
         rows = evidence_store.query_evidence(kp_id="kp1")
         assert len(rows) == 1
@@ -161,10 +161,10 @@ class TestQueryFilters:
 
     def test_filters_by_time_window(self, evidence_store):
         evidence_store.append(
-            LearningEvidence(evidence_type="graded_quiz", is_correct=True, created_at=100.0)
+            TutorEvidence(evidence_type="graded_quiz", is_correct=True, created_at=100.0)
         )
         evidence_store.append(
-            LearningEvidence(evidence_type="graded_quiz", is_correct=True, created_at=200.0)
+            TutorEvidence(evidence_type="graded_quiz", is_correct=True, created_at=200.0)
         )
         rows = evidence_store.query_evidence(since=150.0)
         assert len(rows) == 1
@@ -172,17 +172,17 @@ class TestQueryFilters:
 
     def test_filters_by_book_and_user(self, evidence_store):
         evidence_store.append(
-            LearningEvidence(
+            TutorEvidence(
                 evidence_type="graded_quiz", is_correct=True, user_id="u1", book_id="b1"
             )
         )
         evidence_store.append(
-            LearningEvidence(
+            TutorEvidence(
                 evidence_type="graded_quiz", is_correct=True, user_id="u1", book_id="b2"
             )
         )
         evidence_store.append(
-            LearningEvidence(
+            TutorEvidence(
                 evidence_type="graded_quiz", is_correct=True, user_id="u2", book_id="b1"
             )
         )
@@ -197,17 +197,17 @@ class TestCountForKp:
     def test_counts_per_user_and_kp(self, evidence_store):
         for _ in range(3):
             evidence_store.append(
-                LearningEvidence(
+                TutorEvidence(
                     evidence_type="graded_quiz", is_correct=True, user_id="u1", kp_id="kp1"
                 )
             )
         evidence_store.append(
-            LearningEvidence(
+            TutorEvidence(
                 evidence_type="qualitative_gate", passed=True, user_id="u1", kp_id="kp1"
             )
         )
         evidence_store.append(
-            LearningEvidence(
+            TutorEvidence(
                 evidence_type="graded_quiz", is_correct=True, user_id="u2", kp_id="kp1"
             )
         )

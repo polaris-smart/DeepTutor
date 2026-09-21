@@ -21,7 +21,7 @@ import sqlite3
 import threading
 from typing import Any
 
-from deeptutor.learning.models import LearningEvidence
+from deeptutor.learning.models import TutorEvidence
 from deeptutor.services.path_service import get_path_service
 
 _SCHEMA = """
@@ -103,7 +103,7 @@ class EvidenceStore:
         finally:
             conn.close()
 
-    def append(self, evidence: LearningEvidence) -> int:
+    def append(self, evidence: TutorEvidence) -> int:
         """Append one immutable evidence row; returns its row id."""
         with self._lock, self._connect() as conn:
             cur = conn.execute(
@@ -142,7 +142,7 @@ class EvidenceStore:
         book_id: str | None = None,
         since: float | None = None,
         limit: int = 100,
-    ) -> list[LearningEvidence]:
+    ) -> list[TutorEvidence]:
         """Return evidence rows newest-first, filtered by any provided
         criterion (``None`` means "no filter"). ``since`` keeps rows with
         ``created_at >= since``."""
@@ -180,9 +180,9 @@ class EvidenceStore:
             return int(row["n"])
 
     @staticmethod
-    def _row_to_evidence(row: sqlite3.Row) -> LearningEvidence:
+    def _row_to_evidence(row: sqlite3.Row) -> TutorEvidence:
         detail = _json_loads(row["detail_json"], {})
-        return LearningEvidence(
+        return TutorEvidence(
             id=row["id"],
             created_at=row["created_at"],
             user_id=row["user_id"] or "",
