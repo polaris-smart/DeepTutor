@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import hashlib
 import logging
 import mimetypes
+import os
 from pathlib import Path
 import re
 import shutil
@@ -858,12 +859,15 @@ async def _load_bilibili_media(url: str, languages: Sequence[str]) -> BilibiliMe
     headers = {
         "Accept": "application/json",
         "Referer": request.canonical_url,
-        "User-Agent": "Mozilla/5.0 DeepTutor/ImmersiveReading",
+        "User-Agent": "DeepTutor-Reading/1.0",
     }
+    sessdata = os.environ.get("BILIBILI_SESSDATA", "").strip()
+    bilibili_cookies = {"SESSDATA": sessdata} if sessdata else None
     async with httpx.AsyncClient(
         timeout=10,
         follow_redirects=False,
         headers=headers,
+        cookies=bilibili_cookies,
     ) as client:
         view_response = await client.get(
             "https://api.bilibili.com/x/web-interface/view",
