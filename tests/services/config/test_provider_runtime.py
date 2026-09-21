@@ -643,3 +643,78 @@ def test_search_searxng_without_url_fallback() -> None:
     resolved = resolve_search_runtime_config(catalog=catalog)
     assert resolved.provider == "duckduckgo"
     assert resolved.fallback_reason is not None
+
+
+def _search_profile(pid: str, provider: str, **overrides) -> dict:
+    profile = {
+        "id": pid,
+        "name": provider,
+        "provider": provider,
+        "base_url": "",
+        "api_key": "",
+        "proxy": "",
+        "models": [],
+    }
+    profile.update(overrides)
+    return profile
+
+
+def test_search_missing_credential_names_the_field() -> None:
+    assert search_missing_credential("brave", "", "") == "api_key"
+    assert search_missing_credential("searxng", "", "") == "base_url"
+    assert search_missing_credential("searxng", "", "https://searx.example.com") is None
+    assert search_missing_credential("duckduckgo", "", "") is None
+    assert search_missing_credential("exa", "", "") is None
+
+
+def test_search_credentials_come_from_the_matching_profile() -> None:
+    catalog = _build_catalog(
+        search_profile=_search_profile("p-brave", "brave", api_key="brave-key"),
+        search_profiles=[
+            _search_profile("p-brave", "brave", api_key="brave-key"),
+            _search_profile("p-tavily", "tavily", api_key="tavily-key"),
+            _search_profile("p-searx", "searxng", base_url="https://searx.example.com"),
+        ],
+    )
+    assert search_provider_credentials("brave", catalog=catalog) == ("brave-key", "")
+    assert search_provider_credentials("tavily", catalog=catalog) == ("tavily-key", "")
+    assert search_provider_credentials("searxng", catalog=catalog) == (
+        "",
+        "https://searx.example.com",
+    )
+    # A provider with no profile of its own gets nothing rather than borrowing
+    # the active profile's key.
+    assert search_provider_credentials("serper", catalog=catalog) == ("", "")
+
+
+def test_search_fallback_candidates_skip_unconfigured_providers() -> None:
+    catalog = _build_catalog(
+        search_profile=_search_profile("p-brave", "brave", api_key="brave-key"),
+        search_profiles=[
+            _search_profile("p-brave", "brave", api_key="brave-key"),
+            _search_profile("p-tavily", "tavily", api_key="tavily-key"),
+            _search_profile("p-serper", "serper"),  # no key -> never a candidate
+            _search_profile("p-none", "none"),  # explicit off -> never a candidate
+        ],
+    )
+    assert search_fallback_candidates("brave", catalog=catalog) == ["tavily", "duckduckgo"]
+    # The credential-free fallback is not appended when it is the requested
+    # provider itself — the remaining configured providers are the chain.
+    assert search_fallback_candidates("duckduckgo", catalog=catalog) == ["brave", "tavily"]
+
+
+def test_every_search_provider_has_a_registered_implementation() -> None:
+    from deeptutor.services.search.providers import list_providers
+
+    registered = set(list_providers())
+    expected = {name for name in SEARCH_PROVIDERS if name != "none"}
+    assert registered == expected
+
+
+def test_old_adopted_fallback_is_not_a_model_capacity():
+    catalog = _build_catalog()
+    model = catalog["services"]["llm"]["profiles"][0]["models"][0]
+    model.update(model="glm-5.3-flash", context_window=16384, context_window_source="default")
+    assert resolve_llm_runtime_config(catalog=catalog).context_window is None
+    model["context_window_source"] = "manual"
+    assert resolve_llm_runtime_config(catalog=catalog).context_window == 16384

@@ -10,6 +10,24 @@ from __future__ import annotations
 from typing import Any, Protocol, runtime_checkable
 
 
+class ActiveTurnConflict(RuntimeError):
+    """A session already owns a turn that has not reached a terminal state.
+
+    Named rather than a bare ``RuntimeError`` so a caller can tell "this
+    session is busy" from any other runtime failure without matching on the
+    message. Subclasses ``RuntimeError`` because every existing handler
+    catches that, and the message is unchanged for the same reason.
+
+    ``turn_id`` is the row that blocks the session, when the store knows it;
+    the unique-index race reports the session instead, having lost the race
+    to read it.
+    """
+
+    def __init__(self, message: str, *, turn_id: str = "") -> None:
+        super().__init__(message)
+        self.turn_id = turn_id
+
+
 @runtime_checkable
 class SessionRepository(Protocol):
     async def migrate_workspace_preferences(self) -> int: ...
@@ -34,9 +52,25 @@ class SessionRepository(Protocol):
         messages: list[dict[str, Any]],
     ) -> dict[str, Any]: ...
 
-    async def list_sessions(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]: ...
+    async def list_sessions(
+        self, limit: int = 50, offset: int = 0, *, workspace_id: str | None = None
+    ) -> list[dict[str, Any]]: ...
+
+    async def search_sessions(
+        self, query: str, limit: int = 50, offset: int = 0
+    ) -> dict[str, Any]: ...
 
     async def update_session_title(self, session_id: str, title: str) -> bool: ...
+
+    async def soft_delete_session(self, session_id: str) -> bool: ...
+
+    async def restore_session(self, session_id: str) -> bool: ...
+
+    async def hard_delete_session(self, session_id: str) -> bool: ...
+
+    async def list_deleted_sessions(
+        self, limit: int = 50, offset: int = 0
+    ) -> list[dict[str, Any]]: ...
 
     async def delete_session(self, session_id: str) -> bool: ...
 
@@ -86,6 +120,8 @@ class TurnRepository(Protocol):
 
 @runtime_checkable
 class MessageRepository(Protocol):
+    async def usage_records(self, start_at: float, end_at: float) -> list[dict[str, Any]]: ...
+
     async def add_message(
         self,
         session_id: str,
@@ -144,6 +180,16 @@ class SessionStoreProtocol(SessionRepository, TurnRepository, MessageRepository,
 
     async def update_session_title(self, session_id: str, title: str) -> bool: ...
 
+    async def soft_delete_session(self, session_id: str) -> bool: ...
+
+    async def restore_session(self, session_id: str) -> bool: ...
+
+    async def hard_delete_session(self, session_id: str) -> bool: ...
+
+    async def list_deleted_sessions(
+        self, limit: int = 50, offset: int = 0
+    ) -> list[dict[str, Any]]: ...
+
     async def delete_session(self, session_id: str) -> bool: ...
 
     async def add_message(
@@ -174,7 +220,16 @@ class SessionStoreProtocol(SessionRepository, TurnRepository, MessageRepository,
         self,
         limit: int = 50,
         offset: int = 0,
+        *,
+        workspace_id: str | None = None,
     ) -> list[dict[str, Any]]: ...
+
+    async def search_sessions(
+        self,
+        query: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]: ...
 
     async def get_session_summaries(
         self,

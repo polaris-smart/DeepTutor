@@ -5,7 +5,7 @@ import sys
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from deeptutor.logging import configure_logging
 from deeptutor.services.config import (
@@ -366,6 +366,8 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Failed to stop EventBus: {e}")
 
 
+from deeptutor.services.workspace.activity import WorkspaceActivityMiddleware
+
 app = FastAPI(
     title="DeepTutor API",
     version="1.0.0",
@@ -376,6 +378,7 @@ app = FastAPI(
     # See: https://github.com/HKUDS/DeepTutor/issues/112
     redirect_slashes=False,
 )
+app.add_middleware(WorkspaceActivityMiddleware)
 
 
 @app.middleware("http")
@@ -435,6 +438,17 @@ if not any(getattr(h, "_deeptutor_access_handler", False) for h in _access_logge
 @app.middleware("http")
 async def selective_access_log(request, call_next):
     response = await call_next(request)
+    # An expired app login must not strand provider credentials in a callback URL.
+    # Authentication still runs normally; only its failure presentation changes.
+    if (
+        request.url.path == "/api/video-learning/invidious/account/callback"
+        and response.status_code in {401, 403}
+    ):
+        response = RedirectResponse(
+            "/watching?account=authorization_login_required",
+            status_code=303,
+            headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+        )
     if response.status_code != 200:
         _access_logger.info(
             '%s - "%s %s HTTP/%s" %d',
@@ -502,6 +516,7 @@ from deeptutor.api.routers import (
     partner_groups,
     partners,
     personas,
+    practice,
     question,
     question_notebook,
     quiz_judge,
@@ -523,6 +538,7 @@ from deeptutor.api.routers import (
 from deeptutor.api.routers import (
     tools as tools_router,
 )
+from deeptutor.api.routers.file_library import router as file_library_router  # noqa: E402
 from deeptutor.api.routers.multi_user import router as multi_user_router  # noqa: E402
 
 # Auth router is public — login/logout/register/status require no token
@@ -553,7 +569,6 @@ app.include_router(
     tags=["multi-user"],
     dependencies=_auth,
 )
-
 app.include_router(question.router, prefix="/api/question", tags=["question"], dependencies=_auth)
 app.include_router(knowledge.router, prefix="/api", tags=["knowledge-bases"], dependencies=_auth)
 app.include_router(imports.router, prefix="/api/imports", tags=["imports"], dependencies=_auth)
@@ -598,6 +613,12 @@ app.include_router(
     tags=["mastery-path"],
     dependencies=_auth,
 )
+app.include_router(
+    file_library_router,
+    prefix="/files/library",
+    tags=["library"],
+    dependencies=_auth,
+)
 # WebSocket handlers authenticate inside the connection before ``accept``.
 # Keep them off HTTP router dependencies: ``require_learning_surface`` takes a
 # Request, which FastAPI cannot construct for a WebSocket scope.
@@ -638,6 +659,12 @@ app.include_router(
     question_notebook.router,
     prefix="/api/question-notebook",
     tags=["question-notebook"],
+    dependencies=_auth,
+)
+app.include_router(
+    practice.router,
+    prefix="/api/question-notebook/practice",
+    tags=["practice"],
     dependencies=_auth,
 )
 # Public UI-settings read (auth pages bootstrap the interface language

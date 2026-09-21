@@ -89,6 +89,9 @@ def run_capability(
     ),
     message: str = typer.Argument(..., help="Message to send."),
     session: str | None = typer.Option(None, "--session", help="Existing session id."),
+    workspace: str | None = typer.Option(
+        None, "--workspace", help="Registered workspace id; omit for default."
+    ),
     tool: list[str] = typer.Option([], "--tool", "-t", help="Enabled tool(s)."),
     kb: list[str] = typer.Option([], "--kb", help="Knowledge base name."),
     notebook_ref: list[str] = typer.Option([], "--notebook-ref", help="Notebook references."),
@@ -117,7 +120,8 @@ def run_capability(
         notebook_refs=notebook_ref,
         history_refs=history_ref,
     )
-    maybe_run(run_turn_and_render(app=DeepTutorApp(), request=request, fmt=fmt))
+    client = DeepTutorApp(workspace_id=workspace) if workspace is not None else DeepTutorApp()
+    maybe_run(run_turn_and_render(app=client, request=request, fmt=fmt))
 
 
 @app.command()
@@ -207,6 +211,9 @@ def serve(
         reload=reload,
         workers=backend_workers,
         reload_excludes=["web/*", "data/*"] if reload else None,
+        # Keep request.client tied to the actual peer; XFF is client-controlled
+        # unless the deployment explicitly provides a trusted proxy.
+        proxy_headers=False,
         ws_max_size=get_ws_max_size(),
         timeout_keep_alive=HTTP_KEEP_ALIVE_TIMEOUT,
     )

@@ -13,13 +13,15 @@ from deeptutor.agents.loop import agent_loop as agent_loop_mod
 from deeptutor.agents.loop.agent_loop import InlineThinkFilter
 from deeptutor.capabilities.explore_context import explorer as explorer_mod
 from deeptutor.capabilities.mastery import MASTERY_TOOL_NAMES
+from deeptutor.capabilities.mastery.pipeline import MasteryLoopPipeline
 from deeptutor.capabilities.partner_group.tools import InvokeOtherTool
 from deeptutor.core.context import Attachment, TurnRuntimeContext, UnifiedContext
 from deeptutor.core.stream import StreamEvent, StreamEventType
 from deeptutor.core.tool_protocol import ToolResult
 from deeptutor.core.trace import ANSWER_BEARING_CALL_KINDS
 from deeptutor.runtime.stream_bus import StreamBus
-from deeptutor.services.llm import LLMProviderTransportError
+from deeptutor.services.llm import LLMProviderTransportError, LLMReasoningBudgetExhausted
+from deeptutor.services.llm.provider_core.openai_responses import convert_messages
 
 
 async def _collect_bus_events(bus: StreamBus) -> tuple[list[StreamEvent], asyncio.Task[Any]]:
@@ -187,6 +189,159 @@ async def _run(pipeline: AgenticChatPipeline, context: UnifiedContext):
     return events
 
 
+@pytest.mark.asyncio
+async def test_rejected_forced_choice_keeps_schemas_for_all_later_rounds(monkeypatch):
+    client = _ScriptedChatClient(
+        [
+            [
+                _llm_chunk(
+                    tool_calls=[{"id": "a", "name": "web_search", "arguments": '{"query":"test"}'}],
+                    finish_reason="tool_calls",
+                )
+            ],
+            [_llm_chunk(content="Answer", finish_reason="stop")],
+        ]
+    )
+    accepted_create = client.chat.completions.create
+    attempts = []
+
+    async def create(**kwargs):
+        attempts.append(dict(kwargs))
+        if isinstance(kwargs.get("tool_choice"), dict):
+            raise RuntimeError("thinking mode does not support this tool_choice")
+        return await accepted_create(**kwargs)
+
+    client.chat.completions.create = create
+    pipeline = AgenticChatPipeline(language="en", initial_tool_choice="web_search")
+    pipeline.registry = _Registry()
+    monkeypatch.setattr(pipeline, "_compose_enabled_tools", lambda _: ["web_search"])
+    monkeypatch.setattr(pipeline, "_build_openai_client", lambda: client)
+    context = UnifiedContext(session_id="s", user_message="Search")
+    events = await _run(pipeline, context)
+    assert _answer_text(events) == "Answer"
+    assert len(attempts) == 3
+    assert all(call["tools"] == attempts[0]["tools"] for call in attempts)
+    assert attempts[1]["tool_choice"] == "auto"
+    assert context.runtime.model_turn["tools"] == attempts[-1]["tools"]
+
+
+@pytest.mark.asyncio
+async def test_persisted_tool_turn_extends_request_prefix_after_resume(monkeypatch, tmp_path):
+    """A new pipeline/database read must preserve seed, reasoning and tools."""
+    from deeptutor.core.context import WorkspaceRuntimeContext
+    from deeptutor.services.session.context_builder import ContextBuilder
+    from deeptutor.services.session.sqlite_store import SQLiteSessionStore
+
+    client = _ScriptedChatClient(
+        [
+            [
+                _llm_chunk(
+                    content="Checking. ",
+                    reasoning_content="private plan",
+                    tool_calls=[
+                        {"id": "search-1", "name": "web_search", "arguments": '{"query":"cache"}'},
+                    ],
+                    finish_reason="tool_calls",
+                )
+            ],
+            [
+                _llm_chunk(
+                    content="The answer.", reasoning_content="private finish", finish_reason="stop"
+                )
+            ],
+            [_llm_chunk(content="The follow-up.", finish_reason="stop")],
+        ]
+    )
+
+    def pipeline():
+        result = AgenticChatPipeline(language="en")
+        result.registry = _Registry()
+        monkeypatch.setattr(result, "_compose_enabled_tools", lambda _: ["web_search"])
+        monkeypatch.setattr(result, "_build_openai_client", lambda: client)
+        return result
+
+    first = UnifiedContext(
+        session_id="cache-session",
+        user_message="Question",
+        runtime=TurnRuntimeContext(
+            workspace=WorkspaceRuntimeContext(logical_output_dir="outputs/turn-1"),
+        ),
+    )
+    await _run(pipeline(), first)
+    record = first.runtime.model_turn
+    assert record is not None
+    assert [m["role"] for m in record["messages"][-3:]] == [
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert record["messages"][-4] == {"role": "user", "content": "Question"}
+    store = SQLiteSessionStore(db_path=tmp_path / "history.db")
+    session = await store.create_session()
+    sid = session["id"]
+    await store.add_message(sid, "user", "Question")
+    await store.add_message(
+        sid, "assistant", "Display text may be repaired", metadata={"model_turn": record}
+    )
+    # Reopen the store: replay cannot depend on an in-memory loop instance.
+    restored = SQLiteSessionStore(db_path=tmp_path / "history.db")
+    built = await ContextBuilder(restored).build(
+        session_id=sid,
+        llm_config=SimpleNamespace(
+            model="gpt-test",
+            context_window=128000,
+            max_tokens=4096,
+        ),
+    )
+    second = UnifiedContext(
+        session_id="cache-session",
+        user_message="Follow-up",
+        runtime=TurnRuntimeContext(
+            workspace=WorkspaceRuntimeContext(logical_output_dir="outputs/turn-2"),
+            model_history=built.model_history,
+            previous_model_turn=built.previous_model_turn,
+        ),
+    )
+    await _run(pipeline(), second)
+    previous, resumed = client.calls[1], client.calls[2]
+    assert previous["tools"] == resumed["tools"]
+    assert resumed["messages"][: len(previous["messages"])] == previous["messages"]
+    assert "outputs/turn-1" not in resumed["messages"][0]["content"]
+    assert "outputs/turn-2" in resumed["messages"][-2]["content"]
+    assert resumed["messages"][-3]["reasoning_content"] == "private finish"
+    assert all("_context_snapshot" not in m for m in resumed["messages"])
+    updates = [
+        m["_context_snapshot"]
+        for m in second.runtime.model_turn["messages"]
+        if "_context_snapshot" in m
+    ]
+    assert updates == ["workspace"]
+
+
+def test_runtime_sections_are_updated_and_cleared_independently(monkeypatch):
+    pipeline = AgenticChatPipeline(language="en")
+    pipeline.registry = _Registry()
+    monkeypatch.setattr(pipeline, "_build_notebook_manifest", lambda: "")
+    first = UnifiedContext(user_message="Hello", memory_context="The learner prefers diagrams.")
+    messages = pipeline._build_loop_messages(context=first, enabled_tools=[])
+    second = UnifiedContext(
+        user_message="Continue",
+        memory_context="The learner prefers diagrams.",
+        runtime=TurnRuntimeContext(
+            model_history=messages[1:] + [{"role": "assistant", "content": "Hi"}]
+        ),
+    )
+    same = pipeline._build_loop_messages(context=second, enabled_tools=[])
+    assert same[-1] == {"role": "user", "content": "Continue"}
+    assert len(same) == len(messages) + 2
+    second.memory_context = ""
+    cleared = pipeline._build_loop_messages(context=second, enabled_tools=[])
+    assert cleared[0] == same[0]
+    assert cleared[-2]["_context_snapshot"] == "memory"
+    assert "empty" in cleared[-2]["content"]
+    assert cleared[-3]["content"] == "Hi"
+
+
 def _contents(events: list[StreamEvent]) -> list[str]:
     return [e.content for e in events if e.type == StreamEventType.CONTENT]
 
@@ -195,8 +350,9 @@ def _answer_text(events: list[StreamEvent]) -> str:
     """The reply a reader is left with, by the same rule the client applies.
 
     Mirrors ``recomputeAnswerContent`` in ``web/lib/stream.ts``: append the
-    content of answer-bearing rounds, then take back out any round whose
-    completion marker resolved as ``narration``.
+    content of every answer-bearing round, then take back out any round whose
+    completion marker retracted it (``answer_visible: False``). Commentary a
+    round wrote before calling a tool is kept — the reader watched it arrive.
 
     Rounds stream optimistically, so text that a capability's finish guard
     rejects *is* briefly on the wire and then withdrawn. Asserting on this
@@ -204,14 +360,13 @@ def _answer_text(events: list[StreamEvent]) -> str:
     actually matters — what the reader ends up holding — instead of whether a
     rejected round was buffered, which is an implementation choice.
     """
-    narration = {
+    retracted = {
         str(event.metadata.get("call_id"))
         for event in events
         if event.type == StreamEventType.PROGRESS
         and event.metadata.get("trace_kind") == "call_status"
         and event.metadata.get("call_state") == "complete"
-        and event.metadata.get("call_role") == "narration"
-        and event.metadata.get("answer_visible") is not True
+        and event.metadata.get("answer_visible") is False
         and event.metadata.get("call_id")
     }
     parts: list[str] = []
@@ -223,7 +378,7 @@ def _answer_text(events: list[StreamEvent]) -> str:
         if call_id:
             if metadata.get("call_kind") not in ANSWER_BEARING_CALL_KINDS:
                 continue
-            if str(call_id) in narration:
+            if str(call_id) in retracted:
                 continue
         parts.append(event.content)
     return "".join(parts)
@@ -568,6 +723,72 @@ async def test_finish_round_persists_provider_response_state(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("call_count", [8, 15, 16, 18])
+@pytest.mark.parametrize("forced_finish", [False, True])
+@pytest.mark.parametrize("pipeline_type", [AgenticChatPipeline, MasteryLoopPipeline])
+async def test_tool_batch_limit_preserves_all_call_results(
+    monkeypatch: pytest.MonkeyPatch, call_count: int, forced_finish: bool, pipeline_type: type
+) -> None:
+    """Overflow calls must be answered before either continuation or hard finish."""
+    registry = _Registry()
+    calls = [
+        {"id": f"call-{i}", "name": "web_search", "arguments": json.dumps({"query": f"q{i}"})}
+        for i in range(call_count)
+    ]
+    native_items = [
+        {
+            "type": "function_call",
+            "call_id": call["id"],
+            "name": call["name"],
+            "arguments": call["arguments"],
+        }
+        for call in calls
+    ]
+    client = _ScriptedChatClient(
+        [
+            [
+                _llm_chunk(
+                    tool_calls=calls, provider_specific_fields={"native_output_items": native_items}
+                )
+            ],
+            [_llm_chunk(content="Answer after tools.")],
+        ]
+    )
+    pipeline = pipeline_type(language="en")
+    pipeline.registry = registry
+    if forced_finish:
+        pipeline._max_rounds = 1
+        monkeypatch.setattr(agent_loop_mod, "MAX_SETTLEMENT_ROUNDS", 0)
+    monkeypatch.setattr(pipeline, "_compose_enabled_tools", lambda _context: ["web_search"])
+    monkeypatch.setattr(pipeline, "_build_openai_client", lambda: client)
+
+    events = await _run(
+        pipeline,
+        UnifiedContext(session_id="s1", user_message="Research", enabled_tools=["web_search"]),
+    )
+
+    assert client.call_count == 2
+    assert ("tools" not in client.calls[1]) is forced_finish
+    assert [entry["kwargs"]["query"] for entry in registry.executed] == [
+        f"q{i}" for i in range(min(call_count, 15))
+    ]
+    messages = client.calls[1]["messages"]
+    assistant_index = next(i for i, message in enumerate(messages) if message.get("tool_calls"))
+    tool_messages = messages[assistant_index + 1 : assistant_index + 1 + call_count]
+    assert [message.get("role") for message in tool_messages] == ["tool"] * call_count
+    assert [message["tool_call_id"] for message in tool_messages] == [call["id"] for call in calls]
+    for message in tool_messages[15:]:
+        assert "not executed" in message["content"]
+        assert "15" in message["content"]
+    # Responses replay uses the native calls, so it needs the same complete pairing.
+    _instructions, input_items = convert_messages(messages)
+    assert [item["call_id"] for item in input_items if item.get("type") == "function_call"] == [
+        item["call_id"] for item in input_items if item.get("type") == "function_call_output"
+    ]
+    assert _result(events).metadata["response"] == "Answer after tools."
+
+
+@pytest.mark.asyncio
 async def test_tool_round_then_finish(monkeypatch: pytest.MonkeyPatch) -> None:
     """A tool round (narration text + a tool call) is followed by a tool-less
     finish round whose text is the answer — two LLM calls, no respond pass."""
@@ -624,7 +845,11 @@ async def test_tool_round_then_finish(monkeypatch: pytest.MonkeyPatch) -> None:
     result = _result(events)
     assert result.metadata["tool_steps"] == 1
     assert result.metadata["rounds"] == 2
-    # Only the finish round's text is the persisted answer.
+    # The reader keeps BOTH: the commentary that introduced the search and the
+    # closing answer, in the order they were written.
+    assert _answer_text(events) == "Searching.Found what was needed."
+    # RESULT still reports the closing answer alone — it is what an SDK caller
+    # or a title generator asked for, not the running commentary.
     assert result.metadata["response"] == "Found what was needed."
 
 
@@ -1123,6 +1348,204 @@ async def test_truncated_pure_reasoning_round_is_told_to_act_not_continue(
     assert "没有「中断处」可以续" in instruction
     assert "从中断处继续" not in instruction
     assert _answer_text(events) == "答案是 42。"
+
+
+@pytest.mark.asyncio
+async def test_truncated_reasoning_round_replays_state_and_keeps_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The one reasoning-budget recovery keeps provider state and tools."""
+    client = _ScriptedChatClient(
+        [
+            [
+                _llm_chunk(
+                    reasoning_content="I have enough context to act.",
+                    finish_reason="length",
+                )
+            ],
+            [_llm_chunk(content="Implemented the requested change.")],
+        ]
+    )
+    pipeline = AgenticChatPipeline(language="en")
+    pipeline.registry = _Registry()
+    monkeypatch.setattr(pipeline, "_compose_enabled_tools", lambda _context: ["web_search"])
+    monkeypatch.setattr(pipeline, "_build_openai_client", lambda: client)
+
+    events = await _run(
+        pipeline,
+        UnifiedContext(session_id="s1", user_message="Implement it", enabled_tools=["web_search"]),
+    )
+
+    assert client.call_count == 2
+    second_round = client.calls[1]["messages"]
+    assert "tools" in client.calls[1]
+    assert any(
+        message.get("role") == "assistant"
+        and message.get("reasoning_content") == "I have enough context to act."
+        for message in second_round
+    )
+    assert "Act now" in str(second_round[-1]["content"])
+    first_complete = next(
+        event
+        for event in events
+        if event.type == StreamEventType.PROGRESS
+        and event.metadata.get("trace_kind") == "call_status"
+        and event.metadata.get("call_state") == "complete"
+        and event.metadata.get("finish_reason") == "length"
+    )
+    # The budget the round asked for, not a literal: `chat.responding.max_tokens`
+    # is an agents.yaml knob, so pinning the shipped default here made the test
+    # read whatever budget the developer running it happens to have configured.
+    assert first_complete.metadata["requested_max_tokens"] == pipeline.loop_max_tokens
+    assert first_complete.metadata["usage_reported"] is False
+    assert first_complete.metadata["completion_tokens"] == "unavailable"
+    assert first_complete.metadata["reasoning_chars"] > 0
+    assert first_complete.metadata["content_chars"] == 0
+    assert first_complete.metadata["tool_call_count"] == 0
+    assert _answer_text(events) == "Implemented the requested change."
+
+
+@pytest.mark.asyncio
+async def test_repeated_reasoning_budget_exhaustion_is_retryable_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second pure-reasoning truncation stops after the single recovery."""
+    client = _ScriptedChatClient(
+        [
+            [_llm_chunk(reasoning_content="first pass", finish_reason="length")],
+            [_llm_chunk(reasoning_content="second pass", finish_reason="length")],
+        ]
+    )
+    pipeline = AgenticChatPipeline(language="en")
+    pipeline.registry = _Registry()
+    monkeypatch.setattr(pipeline, "_compose_enabled_tools", lambda _context: ["web_search"])
+    monkeypatch.setattr(pipeline, "_build_openai_client", lambda: client)
+
+    with pytest.raises(LLMReasoningBudgetExhausted) as raised:
+        await pipeline.run(
+            UnifiedContext(
+                session_id="s1", user_message="Implement it", enabled_tools=["web_search"]
+            ),
+            StreamBus(),
+        )
+
+    assert client.call_count == 2
+    assert raised.value.error_code == "reasoning_budget_exhausted"
+    assert raised.value.retryable is True
+    assert "useful response" not in str(raised.value).lower()
+
+
+@pytest.mark.asyncio
+async def test_reasoning_progress_is_throttled_and_contains_no_reasoning_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reasoning-only streams emit opaque 15-second progress markers."""
+    clock = iter([0.0, 16.0, 20.0, 31.0, 40.0])
+    monkeypatch.setattr(agent_loop_mod, "monotonic", lambda: next(clock, 40.0))
+    client = _ScriptedChatClient(
+        [
+            [
+                _llm_chunk(reasoning_content="private one"),
+                _llm_chunk(reasoning_content="private two"),
+                _llm_chunk(reasoning_content="private three"),
+            ],
+            [_llm_chunk(content="Now acting.")],
+        ]
+    )
+    pipeline = AgenticChatPipeline(language="en")
+    pipeline.registry = _Registry()
+    monkeypatch.setattr(pipeline, "_compose_enabled_tools", lambda _context: [])
+    monkeypatch.setattr(pipeline, "_build_openai_client", lambda: client)
+
+    events = await _run(pipeline, UnifiedContext(session_id="s1", user_message="Do it"))
+
+    progress = [
+        event
+        for event in events
+        if event.type == StreamEventType.PROGRESS
+        and event.metadata.get("trace_kind") == "reasoning_progress"
+    ]
+    assert len(progress) == 2
+    assert [event.metadata["reasoning_chars"] for event in progress] == [11, 35]
+    assert [event.metadata["elapsed_s"] for event in progress] == [16.0, 31.0]
+    assert all(event.metadata.get("call_id") for event in progress)
+    assert all("private" not in event.content for event in progress)
+    assert _answer_text(events) == "Now acting."
+
+
+@pytest.mark.asyncio
+async def test_reasoning_progress_stops_after_visible_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = iter([0.0, 16.0, 20.0, 31.0])
+    monkeypatch.setattr(agent_loop_mod, "monotonic", lambda: next(clock, 31.0))
+    client = _ScriptedChatClient(
+        [
+            [
+                _llm_chunk(reasoning_content="private"),
+                _llm_chunk(content="Started acting."),
+                _llm_chunk(reasoning_content="late private"),
+            ]
+        ]
+    )
+    pipeline = AgenticChatPipeline(language="en")
+    pipeline.registry = _Registry()
+    monkeypatch.setattr(pipeline, "_compose_enabled_tools", lambda _context: [])
+    monkeypatch.setattr(pipeline, "_build_openai_client", lambda: client)
+
+    events = await _run(pipeline, UnifiedContext(session_id="s1", user_message="Do it"))
+
+    progress = [
+        event
+        for event in events
+        if event.type == StreamEventType.PROGRESS
+        and event.metadata.get("trace_kind") == "reasoning_progress"
+    ]
+    assert len(progress) == 1
+    assert _answer_text(events) == "Started acting."
+
+
+@pytest.mark.asyncio
+async def test_forced_finish_reasoning_budget_exhaustion_is_not_empty_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tool-less hard finish has the same dedicated failure boundary."""
+    registry = _Registry()
+    tool_rounds = [
+        [
+            _llm_chunk(
+                tool_calls=[
+                    {
+                        "id": f"call-{index}",
+                        "name": "web_search",
+                        "arguments": json.dumps({"query": f"step {index}"}),
+                    }
+                ]
+            )
+        ]
+        for index in range(4)
+    ]
+    client = _ScriptedChatClient(
+        [
+            *tool_rounds,
+            [_llm_chunk(reasoning_content="still thinking", finish_reason="length")],
+        ]
+    )
+    pipeline = AgenticChatPipeline(language="en")
+    pipeline.registry = registry
+    pipeline._max_rounds = 1
+    monkeypatch.setattr(pipeline, "_compose_enabled_tools", lambda _context: ["web_search"])
+    monkeypatch.setattr(pipeline, "_build_openai_client", lambda: client)
+
+    with pytest.raises(LLMReasoningBudgetExhausted) as raised:
+        await pipeline.run(
+            UnifiedContext(session_id="s1", user_message="Research", enabled_tools=["web_search"]),
+            StreamBus(),
+        )
+
+    assert client.call_count == 5
+    assert raised.value.error_code == "reasoning_budget_exhausted"
+    assert raised.value.retryable is True
 
 
 @pytest.mark.asyncio
@@ -1667,13 +2090,18 @@ async def test_midstream_transport_failure_is_not_replayed(
 
     bus = StreamBus()
     events, consumer = await _collect_bus_events(bus)
+    context = UnifiedContext(session_id="s1", user_message="Hi")
     with pytest.raises(LLMProviderTransportError) as raised:
-        await pipeline.run(UnifiedContext(session_id="s1", user_message="Hi"), bus)
+        await pipeline.run(context, bus)
     await bus.close()
     await consumer
 
     assert client.call_count == 1
     assert _contents(events) == ["Partial answer."]
+    assert context.runtime.model_turn["messages"][-1] == {
+        "role": "assistant",
+        "content": "Partial answer.",
+    }
     assert raised.value.partial_response is True
     failed_call = next(
         event
@@ -2504,15 +2932,16 @@ async def test_length_finish_reason_continues_within_bounded_settlement(
 
 
 @pytest.mark.asyncio
-async def test_repeated_empty_finish_stops_after_one_nudge(
+async def test_repeated_reasoning_only_finishes_are_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An empty provider response gets one recovery chance, never a loop."""
+    """A second reasoning-only miss gets a stronger directive and a hard finish."""
     registry = _Registry()
     client = _ScriptedChatClient(
         [
             [_llm_chunk(content="<think>first empty</think>")],
             [_llm_chunk(content="<think>still empty</think>")],
+            [_llm_chunk(content="Recovered after the hard finish.")],
         ]
     )
     pipeline = AgenticChatPipeline(language="en")
@@ -2523,10 +2952,42 @@ async def test_repeated_empty_finish_stops_after_one_nudge(
 
     events = await _run(pipeline, UnifiedContext(session_id="s1", user_message="Answer"))
 
-    assert client.call_count == 2
+    assert client.call_count == 3
+    forced_request = client.calls[2]["messages"]
+    forced_instruction = str(forced_request[-1]["content"])
+    assert "Do not reason further" in forced_instruction
+    assert "Stop calling tools" in forced_instruction
+    result = _result(events)
+    assert result.metadata["response"] == "Recovered after the hard finish."
+    assert result.metadata["completed"] is True
+    assert result.metadata["settlement_rounds"] == 1
+
+
+@pytest.mark.asyncio
+async def test_reasoning_only_hard_finish_has_distinct_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reasoning without an answer is not reported as an opaque model failure."""
+    registry = _Registry()
+    client = _ScriptedChatClient(
+        [
+            [_llm_chunk(content="<think>first empty</think>")],
+            [_llm_chunk(content="<think>still empty</think>")],
+            [_llm_chunk(content="<think>reasoned away the hard finish</think>")],
+        ]
+    )
+    pipeline = AgenticChatPipeline(language="en")
+    pipeline.registry = registry
+    pipeline._max_rounds = 1
+    monkeypatch.setattr(pipeline, "_compose_enabled_tools", lambda _context: [])
+    monkeypatch.setattr(pipeline, "_build_openai_client", lambda: client)
+
+    events = await _run(pipeline, UnifiedContext(session_id="s1", user_message="Answer"))
+
+    assert client.call_count == 3
     result = _result(events)
     assert result.metadata["response"] == (
-        "I could not produce a useful response from the model output. "
+        "The model produced internal reasoning but no usable answer. "
         "Please try again or narrow the request."
     )
     assert result.metadata["completed"] is True

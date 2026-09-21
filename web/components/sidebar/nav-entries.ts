@@ -1,22 +1,20 @@
+import { LEARNING_HUB } from '@/lib/learning-routes'
 import {
   BookOpen,
-  FileText,
-  BookText,
   Bot,
-  Brain,
   ClipboardList,
+  FileText,
+  GraduationCap,
   HeartHandshake,
   House,
   LayoutGrid,
-  Library,
   PenLine,
-  Route,
   Settings,
   Users,
   type LucideIcon,
-} from "lucide-react";
+} from 'lucide-react'
 
-import type { Capability } from "@/lib/capability-routes";
+import type { Capability } from '@/lib/capability-routes'
 
 /**
  * Roles the backend issues in AuthStatus (`/api/auth/status`). "user" is the
@@ -30,6 +28,7 @@ export interface NavEntry {
   label: string;
   icon: LucideIcon;
   tooltipKey?: string;
+  defaultCollapsed?: boolean;
   /** Model capability this feature needs; locked when the user lacks it. */
   requires?: Capability;
   /**
@@ -120,6 +119,12 @@ export const PRIMARY_NAV: NavEntry[] = [
     roles: ["teacher", "admin"],
   },
   {
+    href: LEARNING_HUB,
+    label: "Personalized Learning",
+    icon: GraduationCap,
+    tooltipKey: "One tutor, your own way to learn.",
+  },
+  {
     // My Agents is its own top-level feature (pulled out of the Learning
     // Space): connect a live local Claude Code / Codex to consult in chat,
     // and manage imported agent conversations. Ungated — managing connections
@@ -129,6 +134,7 @@ export const PRIMARY_NAV: NavEntry[] = [
     icon: Bot,
     tooltipKey: "Agents tooltip",
     roles: ["teacher", "admin"],
+    defaultCollapsed: true,
   },
   {
     href: "/co-writer",
@@ -137,30 +143,16 @@ export const PRIMARY_NAV: NavEntry[] = [
     tooltipKey: "Co-Writer tooltip",
     requires: "llm",
     roles: ["teacher", "admin"],
+    defaultCollapsed: true,
   },
   {
-    href: "/books",
-    label: "Book",
-    icon: Library,
-    tooltipKey: "Book tooltip",
-    requires: "llm",
-  },
-  // Courses nav entry temporarily hidden pending further product work.
-  // The route and its data are untouched — only this entry point is gone.
-  {
-    href: "/mastery",
-    label: "Mastery Path",
-    icon: Route,
-    tooltipKey: "Learn through a living mastery map",
-    requires: "llm",
-  },
-  {
-    href: "/reading",
-    label: "Immersive Reading",
-    icon: BookText,
-    tooltipKey: "Immersive Reading tooltip",
-    requires: "llm",
-    learningSurface: "reading",
+    // The learner hub: its APIs (daily plan, assignments, courses) are exactly
+    // the surfaces a learning policy grants, so it stays visible there.
+    href: "/space",
+    label: "Learning Space",
+    icon: LayoutGrid,
+    tooltipKey: "Space tooltip",
+    alwaysAvailableToLearningAccounts: true,
   },
   {
     // 教师作业闭环: 布置/统计是教师侧工作台，学生只在 Learning Space 的
@@ -188,15 +180,6 @@ export const PRIMARY_NAV: NavEntry[] = [
     roles: ["teacher", "admin"],
   },
   {
-    // The learner hub: its APIs (daily plan, assignments, courses) are exactly
-    // the surfaces a learning policy grants, so it stays visible there.
-    href: "/space",
-    label: "Learning Space",
-    icon: LayoutGrid,
-    tooltipKey: "Space tooltip",
-    alwaysAvailableToLearningAccounts: true,
-  },
-  {
     // 家长专属：家庭学情视图（我的孩子）。K12 家长是 sidebar 上的 learner
     // 视图，/family 页面此前没有任何入口可达，这里补上唯一的导航挂点。
     href: "/family",
@@ -216,7 +199,7 @@ export const SECONDARY_NAV: NavEntry[] = [
     // workspace. Never gated — memory has no per-user model requirement.
     href: "/memory",
     label: "Memory",
-    icon: Brain,
+    icon: Settings,
     tooltipKey: "Memory tooltip",
     roles: ["teacher", "admin"],
   },
@@ -238,13 +221,17 @@ export const SECONDARY_NAV: NavEntry[] = [
   },
 ];
 
+export const DEFAULT_COLLAPSED_NAV = PRIMARY_NAV.filter(entry => entry.defaultCollapsed).map(
+  entry => entry.href
+)
+
 /** Every primary href in shipped order, unfiltered by role. Rendering goes
  *  through ``primaryNavHrefsFor`` so hidden roles never enter the layout. */
 export const PRIMARY_NAV_HREFS = PRIMARY_NAV.map((entry) => entry.href);
 
 export const NAV_BY_HREF = new Map(
-  [...PRIMARY_NAV, ...SECONDARY_NAV].map((entry) => [entry.href, entry]),
-);
+  [...PRIMARY_NAV, ...SECONDARY_NAV].map(entry => [entry.href, entry])
+)
 
 export function isNavActive(pathname: string, href: string) {
   if (href === "/space") {

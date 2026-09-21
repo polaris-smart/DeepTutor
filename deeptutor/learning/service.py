@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 import uuid
 
 from deeptutor.learning.grading import classify_error, grade_answer
@@ -14,6 +14,7 @@ from deeptutor.learning.models import (
     InteractionStatus,
     LearnerMasteryOverride,
     LearnerProfile,
+    LearningEvidence,
     LearningModule,
     LearningProgress,
     LearningStage,
@@ -135,6 +136,9 @@ class LearningService:
             for attempt in progress.quiz_attempts
             if attempt.knowledge_point_id in new_kp_ids
         ]
+        progress.learning_evidence = [
+            event for event in progress.learning_evidence if event.knowledge_point_id in new_kp_ids
+        ]
         progress.feynman_retries = {
             k: v for k, v in progress.feynman_retries.items() if k in new_kp_ids
         }
@@ -252,6 +256,7 @@ class LearningService:
         scheduler: SpacedRepetitionScheduler | None = None,
         user_id: str = "",
         session_id: str = "",
+        turn_id: str = "",
         hint_level: int | None = None,
         confidence_before: int | None = None,
     ) -> bool:
@@ -273,6 +278,8 @@ class LearningService:
             question_type=question_type,
             self_attribution=self_attribution,
             scheduler=scheduler,
+            session_id=session_id,
+            turn_id=turn_id,
         )
         self.save(progress)
         self._record_evidence(
@@ -304,11 +311,22 @@ class LearningService:
         question_type: str,
         self_attribution: str = "",
         scheduler: SpacedRepetitionScheduler | None = None,
+        session_id: str = "",
+        turn_id: str = "",
     ) -> bool:
         """Mutate one aggregate with a grade without performing I/O."""
         is_correct = bool(expected_answer) and grade_answer(
             user_answer, expected_answer, question_type
         )
+        # Capture the active retry before recording this answer graduates it.
+        # Past retries on this or another question must not weaken later reviews.
+        retrying = any(
+            rec.question_id == question_id
+            and rec.knowledge_point_id == knowledge_point_id
+            and rec.status in ("active", "retrying")
+            for rec in progress.error_records
+        )
+        already_scheduled = knowledge_point_id in progress.repetition_states
         self.record_quiz_attempt(
             progress,
             QuizAttempt(
@@ -321,7 +339,17 @@ class LearningService:
                 error_type=None if is_correct else classify_error(user_answer),
             ),
         )
+        evidence = None
         if knowledge_point_id:
+            evidence = self._record_quiz_evidence(
+                progress,
+                knowledge_point_id,
+                is_correct=is_correct,
+                retrying=retrying,
+                session_id=session_id,
+                turn_id=turn_id,
+                assessment_type="review" if already_scheduled else "quiz",
+            )
             self.update_mastery(
                 progress, knowledge_point_id, self.calculate_mastery(progress, knowledge_point_id)
             )
@@ -331,9 +359,35 @@ class LearningService:
                     knowledge_point_id
                 ) or scheduler.get_initial_state(kp_type)
                 progress.repetition_states[knowledge_point_id] = state
-                scheduler.schedule_next(state, kp_type, is_correct)
+                scheduler.schedule_review(state, kp_type, evidence)
                 progress.review_queue = scheduler.build_review_queue(progress)
         return is_correct
+
+    def _record_quiz_evidence(
+        self,
+        progress: LearningProgress,
+        kp_id: str,
+        *,
+        is_correct: bool,
+        retrying: bool = False,
+        session_id: str = "",
+        turn_id: str = "",
+        assessment_type: Literal["quiz", "qualitative", "review"] = "quiz",
+    ) -> LearningEvidence:
+        attempt_count = sum(
+            1 for attempt in progress.quiz_attempts if attempt.knowledge_point_id == kp_id
+        )
+        evidence = LearningEvidence(
+            knowledge_point_id=kp_id,
+            assessment_type=assessment_type,
+            result="correct" if is_correct else "incorrect",
+            quality=(0.6 if retrying else 1.0) if is_correct else 0.0,
+            attempt_count=max(1, attempt_count),
+            session_id=session_id,
+            turn_id=turn_id,
+        )
+        progress.learning_evidence.append(evidence)
+        return evidence
 
     # ── Loop-driven tutoring helpers ─────────────────────────────────────
 
@@ -661,6 +715,8 @@ class LearningService:
                 expected_answer=authoritative_answer,
                 question_type=pending.question_type,
                 scheduler=scheduler,
+                session_id=session_id,
+                turn_id=turn_id,
             )
             if (
                 tx.progress.pending_question is not None
@@ -686,6 +742,20 @@ class LearningService:
                 session_id=interaction.session_id,
                 turn_id=interaction.turn_id,
             )
+            if tx.progress.learning_evidence:
+                latest = tx.progress.learning_evidence[-1]
+                if latest.knowledge_point_id == pending.knowledge_point_id:
+                    tx.emit(
+                        "evidence.recorded",
+                        {
+                            "knowledge_point_id": latest.knowledge_point_id,
+                            "assessment_type": latest.assessment_type,
+                            "result": latest.result,
+                            "quality": latest.quality,
+                        },
+                        session_id=interaction.session_id,
+                        turn_id=interaction.turn_id,
+                    )
             tx.emit(
                 "interaction.graded",
                 dict(interaction.result),
@@ -965,6 +1035,7 @@ class LearningService:
             progress.qualitative_mastery = {}
             progress.quiz_attempts = []
             progress.error_records = []
+            progress.learning_evidence = []
             progress.repetition_states = {}
             progress.review_queue = []
             progress.learner_mastery_overrides = {}
@@ -1087,6 +1158,8 @@ class LearningService:
                 passed=passed,
                 evidence=evidence,
                 scheduler=scheduler,
+                session_id=session_id,
+                turn_id=turn_id,
             )
             tx.touch()
             tx.emit(
@@ -1098,6 +1171,20 @@ class LearningService:
                 session_id=session_id,
                 turn_id=turn_id,
             )
+            if tx.progress.learning_evidence:
+                latest = tx.progress.learning_evidence[-1]
+                if latest.knowledge_point_id == kp_id:
+                    tx.emit(
+                        "evidence.recorded",
+                        {
+                            "knowledge_point_id": latest.knowledge_point_id,
+                            "assessment_type": latest.assessment_type,
+                            "result": latest.result,
+                            "quality": latest.quality,
+                        },
+                        session_id=session_id,
+                        turn_id=turn_id,
+                    )
 
         progress, _ = self._store.mutate(book_id, record)
         return progress
@@ -1110,17 +1197,29 @@ class LearningService:
         passed: bool,
         evidence: str = "",
         scheduler: SpacedRepetitionScheduler | None = None,
+        session_id: str = "",
+        turn_id: str = "",
     ) -> None:
         progress.qualitative_mastery[kp_id] = bool(passed)
         current = progress.mastery_levels.get(kp_id, 0.0)
         progress.mastery_levels[kp_id] = max(current, 1.0) if passed else min(current, 0.4)
         if evidence:
             progress.feynman_explanations[kp_id] = evidence
+        review_evidence = LearningEvidence(
+            knowledge_point_id=kp_id,
+            assessment_type="qualitative",
+            result="correct" if passed else "partial",
+            quality=(1.0 if evidence else 0.9) if passed else 0.2,
+            attempt_count=1,
+            session_id=session_id,
+            turn_id=turn_id,
+        )
+        progress.learning_evidence.append(review_evidence)
         kp_type = progress.knowledge_types.get(kp_id)
         if kp_type is not None and scheduler is not None:
             state = progress.repetition_states.get(kp_id)
             if state is not None and state.next_review_at <= time.time():
-                scheduler.schedule_next(state, kp_type, passed)
+                scheduler.schedule_review(state, kp_type, review_evidence)
             elif state is None and passed:
                 progress.repetition_states[kp_id] = scheduler.get_initial_state(kp_type)
             progress.review_queue = scheduler.build_review_queue(progress)

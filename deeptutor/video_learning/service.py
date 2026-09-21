@@ -183,7 +183,14 @@ def _is_local_host(host: str) -> bool:
         address = ipaddress.ip_address(host)
     except ValueError:
         return False
-    return address.is_loopback or address.is_private or address.is_link_local
+    # RFC 6598 shared address space is used by private overlays such as Tailscale.
+    # ipaddress intentionally classifies it as neither private nor global.
+    return (
+        address.is_loopback
+        or address.is_private
+        or address.is_link_local
+        or address in ipaddress.ip_network("100.64.0.0/10")
+    )
 
 
 def normalize_video_learning_settings(payload: Any) -> dict[str, Any]:
@@ -817,6 +824,8 @@ def public_material(material: dict[str, Any], *, provider: str) -> dict[str, Any
         formats = material.get("provider_cache", {}).get("invidious_formats") or []
         best = formats[0] if formats else {}
         revision = str(material.get("updated_at") or "")
+        from deeptutor.services.workspace.context import workspace_url
+
         subtitles_url = f"/api/video-learning/materials/{payload['material_id']}/subtitles.vtt"
         if revision:
             subtitles_url = f"{subtitles_url}?{urlencode({'revision': revision})}"
@@ -825,8 +834,10 @@ def public_material(material: dict[str, Any], *, provider: str) -> dict[str, Any
             "kind": "html5",
             "format_id": str(best.get("format_id") or ""),
             "mime_type": str(best.get("mime_type") or "video/mp4"),
-            "stream_url": f"/api/video-learning/materials/{payload['material_id']}/stream/{best.get('format_id', '')}",
-            "subtitles_url": subtitles_url,
+            "stream_url": workspace_url(
+                f"/api/video-learning/materials/{payload['material_id']}/stream/{best.get('format_id', '')}"
+            ),
+            "subtitles_url": workspace_url(subtitles_url),
             "start_seconds": start,
         }
     elif provider == "bilibili":

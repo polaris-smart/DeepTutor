@@ -1,4 +1,4 @@
-export type QuestionsSpaceView = "question_bank" | "paper_reorder" | "exam_assemble";
+export type QuestionsSpaceView = "question_bank" | "practice" | "paper_reorder" | "exam_assemble";
 
 /** One node of the doc_intel textbook tree returned by the textbook-tree API. */
 export interface TextbookTreeNode {

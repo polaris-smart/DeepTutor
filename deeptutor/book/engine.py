@@ -48,6 +48,7 @@ import time
 from typing import Any
 
 from deeptutor.runtime.stream_bus import StreamBus
+from deeptutor.services.workspace.activity import workspace_writer
 
 from . import progress as progress_ops
 from .agents.ideation_agent import IdeationAgent
@@ -194,6 +195,10 @@ def _source_quality_summary(
         "chat": len(inputs.chat_selections or []),
         "questions": len(inputs.question_entries or []) + len(inputs.question_categories or []),
     }
+    for source in inputs.source_refs:
+        kind = source.get("kind", "")
+        if kind not in {"knowledge_base", "file", "goal"}:
+            requested_non_kb[kind] = requested_non_kb.get(kind, 0) + 1
     coverage = dict(exploration.coverage) if exploration else {}
     warnings: list[str] = []
     if error:
@@ -294,6 +299,24 @@ class _BookRuntime:
 # ─────────────────────────────────────────────────────────────────────────────
 # Engine
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def _with_book_sources(function):
+    from functools import wraps
+    from inspect import signature
+
+    @wraps(function)
+    async def guarded(self, *args, **kwargs):
+        from deeptutor.services.workspace.knowledge import learning_source_access
+
+        bound = signature(function).bind(self, *args, **kwargs).arguments
+        book_id = bound.get("book_id")
+        book = self.storage.load_book(book_id) if book_id else None
+        refs = book.knowledge_bases if book else bound.get("knowledge_bases") or []
+        with learning_source_access(refs):
+            return await function(self, *args, **kwargs)
+
+    return guarded
 
 
 class BookEngine:
@@ -444,10 +467,13 @@ class BookEngine:
 
     # ── Stage 1: Ideation ────────────────────────────────────────────────
 
+    @workspace_writer
+    @_with_book_sources
     async def create_book(
         self,
         *,
         user_intent: str,
+        source_refs: list[dict[str, Any]] | None = None,
         chat_session_id: str = "",
         chat_selections: list[dict[str, Any]] | None = None,
         notebook_refs: list[dict[str, Any]] | None = None,
@@ -472,6 +498,7 @@ class BookEngine:
             await bstream.progress("Capturing inputs…", stage=STAGE_IDEATION)
             book_inputs, ideation_ctx = await build_book_inputs(
                 user_intent=user_intent,
+                source_refs=source_refs,
                 chat_session_id=chat_session_id,
                 chat_selections=chat_selections,
                 notebook_refs=notebook_refs,
@@ -533,6 +560,8 @@ class BookEngine:
 
     # ── Stage 2: Spine ───────────────────────────────────────────────────
 
+    @workspace_writer
+    @_with_book_sources
     async def confirm_proposal(
         self,
         *,
@@ -865,6 +894,8 @@ class BookEngine:
 
     # ── Stage 3: confirm spine + create page shells ─────────────────────
 
+    @workspace_writer
+    @_with_book_sources
     async def confirm_spine(
         self,
         *,
@@ -1249,6 +1280,8 @@ class BookEngine:
         if runtime.in_flight.get(page_id) is task:
             runtime.in_flight.pop(page_id, None)
 
+    @workspace_writer
+    @_with_book_sources
     async def _compile_page_now(
         self,
         *,
@@ -1384,9 +1417,23 @@ class BookEngine:
             return
         if runtime.worker is not None and not runtime.worker.done():
             return
-        runtime.worker = asyncio.create_task(self._worker_loop(book_id))
+        from deeptutor.services.workspace.activity import acquire_activity
+
+        activity = acquire_activity()
+        try:
+            runtime.worker = asyncio.create_task(self._worker_loop(book_id))
+        except BaseException:
+            activity.close()
+            raise
+        runtime.worker.add_done_callback(lambda _done: activity.close())
 
     async def _worker_loop(self, book_id: str) -> None:
+        from deeptutor.services.workspace.activity import data_activity
+
+        with data_activity():
+            await self._worker_loop_active(book_id)
+
+    async def _worker_loop_active(self, book_id: str) -> None:
         runtime = self._runtimes.get(book_id)
         if runtime is None:
             return
@@ -1550,6 +1597,7 @@ class BookEngine:
 
     # ── Block-level controls (Phase 1: regenerate single block) ─────────
 
+    @_with_book_sources
     async def regenerate_block(
         self,
         *,
@@ -1753,6 +1801,7 @@ class BookEngine:
 
     # ── Block CRUD operations (Phase 3) ────────────────────────────────
 
+    @_with_book_sources
     async def insert_block(
         self,
         *,

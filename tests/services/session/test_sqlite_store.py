@@ -491,6 +491,34 @@ def test_list_entries_filters_is_correct(store: SQLiteSessionStore) -> None:
     assert wrong["items"][0]["question_id"] == "q1"
 
 
+def test_ungraded_rows_are_not_listed_as_wrong(store: SQLiteSessionStore) -> None:
+    session = asyncio.run(store.create_session())
+    asyncio.run(
+        store.upsert_notebook_entries(
+            session["id"],
+            [
+                {
+                    "question_id": "wrong",
+                    "question": "Wrong?",
+                    "is_correct": False,
+                    "result": "incorrect",
+                },
+                {
+                    "question_id": "pending",
+                    "question": "Pending?",
+                    "is_correct": False,
+                    "result": "ungraded",
+                },
+            ],
+        )
+    )
+    wrong = asyncio.run(store.list_notebook_entries(is_correct=False))
+    assert [item["question_id"] for item in wrong["items"]] == ["wrong"]
+    stats = asyncio.run(store.question_bank_stats())
+    assert stats["wrong"] == 1
+    assert stats["unresolved"] == 1
+
+
 def test_notebook_review_metadata_filters_and_transitions(
     store: SQLiteSessionStore,
 ) -> None:
@@ -666,12 +694,43 @@ def test_delete_notebook_entry(store: SQLiteSessionStore) -> None:
     assert asyncio.run(store.delete_notebook_entry(99999)) is False
 
 
-def test_entries_cascade_on_session_delete(store: SQLiteSessionStore) -> None:
+def test_entries_follow_a_session_into_and_out_of_the_recycle_bin(
+    store: SQLiteSessionStore,
+) -> None:
     session = asyncio.run(store.create_session())
     asyncio.run(store.upsert_notebook_entries(session["id"], _make_items(("q1", "Q?", False))))
     assert asyncio.run(store.list_notebook_entries())["total"] == 1
-    asyncio.run(store.delete_session(session["id"]))
+
+    # A recycled session takes its entries out of view without destroying
+    # them, which is what makes the restore below whole.
+    asyncio.run(store.soft_delete_session(session["id"]))
     assert asyncio.run(store.list_notebook_entries())["total"] == 0
+    assert asyncio.run(store.restore_session(session["id"]))
+    assert asyncio.run(store.list_notebook_entries())["total"] == 1
+
+    asyncio.run(store.soft_delete_session(session["id"]))
+    assert asyncio.run(store.hard_delete_session(session["id"]))
+    assert asyncio.run(store.list_notebook_entries())["total"] == 0
+
+
+def test_entries_cascade_when_a_session_is_deleted_outright(
+    store: SQLiteSessionStore,
+) -> None:
+    """`delete_session` skips the bin, so ON DELETE CASCADE fires at once.
+
+    This is the path the reading cleanups take: a workspace that is gone
+    takes its sessions with it, and those must not surface in the learner's
+    recycle bin to be restored into a workspace that no longer exists.
+    """
+    session = asyncio.run(store.create_session())
+    asyncio.run(store.upsert_notebook_entries(session["id"], _make_items(("q1", "Q?", False))))
+    assert asyncio.run(store.list_notebook_entries())["total"] == 1
+
+    assert asyncio.run(store.delete_session(session["id"]))
+
+    assert asyncio.run(store.list_notebook_entries())["total"] == 0
+    assert asyncio.run(store.list_deleted_sessions()) == []
+    assert asyncio.run(store.restore_session(session["id"])) is False
 
 
 # ── Categories ────────────────────────────────────────────────────

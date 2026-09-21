@@ -1,7 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import QuestionBankSection from "@/components/space/QuestionBankSection";
+import { PracticePage } from "@/components/learning/practice/PracticePage";
+import { LearningSkeleton } from "@/components/learning/LearningShell";
 import { useAuthStatus } from "@/hooks/useAuthStatus";
 import ExamPaperAssembler from "./ExamPaperAssembler";
 import PaperReorderEditor from "./PaperReorderEditor";
@@ -46,6 +48,15 @@ export default function SpaceQuestionsPage() {
         <button
           type="button"
           role="tab"
+          aria-selected={view === "practice"}
+          onClick={() => setView("practice")}
+          className={tabClass(view === "practice")}
+        >
+          练习
+        </button>
+        <button
+          type="button"
+          role="tab"
           aria-selected={view === "paper_reorder"}
           onClick={() => setView("paper_reorder")}
           className={tabClass(view === "paper_reorder")}
@@ -67,6 +78,10 @@ export default function SpaceQuestionsPage() {
 
       {view === "question_bank" ? (
         <QuestionBankSection />
+      ) : view === "practice" ? (
+        <Suspense fallback={<LearningSkeleton />}>
+          <PracticePage mode="library" />
+        </Suspense>
       ) : view === "paper_reorder" ? (
         <PaperReorderEditor />
       ) : canAssemble ? (

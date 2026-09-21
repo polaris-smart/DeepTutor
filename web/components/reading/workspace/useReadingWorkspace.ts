@@ -1,5 +1,7 @@
 "use client";
 
+import { readingCollectionRoute, readingSessionRoute } from "@/lib/learning-routes";
+
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -10,7 +12,6 @@ import { courseSessionConfiguration } from "@/lib/course-session-scope";
 import {
   addBookmark,
   deleteBookmark,
-  getMaterial,
   getReadingTranscript,
   listBookmarks,
   type ReadingBookmark,
@@ -137,21 +138,12 @@ export function useReadingWorkspace(
       closeMaterial();
       return;
     }
-    let cancelled = false;
-    void getMaterial(active.material_id)
-      .then((detail) => {
-        if (!cancelled) return openMaterial(detail);
-      })
-      .catch((caught) => {
-        if (!cancelled)
-          setError(
-            caught instanceof Error ? caught.message : t("Open failed."),
-          );
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [activeTab?.material, closeMaterial, openMaterial, t]);
+    // Let ReadingContext own the request from its first tick. Prefetching the
+    // detail here left `loading` false until that fetch completed, so the
+    // reader briefly rendered its unavailable state between workspace and
+    // material hydration (most visibly in Safari).
+    void openMaterial(active.material_id);
+  }, [activeTab?.material, closeMaterial, openMaterial]);
 
   // Poll while anything is still being processed, backing off as the wait
   // grows. A flat 2.5s forever means a source wedged in "processing" quietly
@@ -425,7 +417,7 @@ export function useReadingWorkspace(
   const newConversation = useCallback(() => {
     if (!workspace) return;
     newSession({ ...sessionConfiguration, capability: null });
-    router.push(`/reading/${workspace.workspace_id}`);
+    router.push(readingCollectionRoute(workspace.workspace_id));
   }, [
     newSession,
     router,
@@ -457,7 +449,7 @@ export function useReadingWorkspace(
     window.history.replaceState(
       null,
       "",
-      `/reading/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(state.sessionId)}`,
+      readingSessionRoute(workspaceId, state.sessionId),
     );
     void listReadingConversations(workspaceId)
       .then(setConversations)
@@ -482,7 +474,7 @@ export function useReadingWorkspace(
       if (sessionId === sessionIdParam) {
         cancelStreamingTurn();
         newSession({ ...sessionConfiguration, capability: null });
-        router.push(`/reading/${workspaceId}`);
+        router.push(readingCollectionRoute(workspaceId));
       }
     },
     [
@@ -497,7 +489,7 @@ export function useReadingWorkspace(
 
   const openConversation = useCallback(
     async (sessionId: string) => {
-      router.push(`/reading/${workspaceId}/sessions/${sessionId}`);
+      router.push(readingSessionRoute(workspaceId, sessionId));
       await loadSession(sessionId);
       configureSession(sessionConfiguration, sessionId);
     },

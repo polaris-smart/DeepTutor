@@ -19,9 +19,11 @@ from deeptutor.services.voice.adapters.openai_compat import (
 )
 from deeptutor.services.voice.adapters.volc_plan import VolcPlanTTSAdapter
 from deeptutor.services.voice.adapters.volc_plan import VolcPlanSTTAdapter
+from deeptutor.services.voice.adapters.volcengine import VolcengineSTTAdapter, VolcengineTTSAdapter
 from deeptutor.services.voice.base import BaseSTTAdapter, BaseTTSAdapter, VoiceProviderError
 
 TTS_ADAPTERS: dict[str, BaseTTSAdapter] = {
+    "volcengine": VolcengineTTSAdapter(),
     "openai_compat": OpenAICompatTTSAdapter(),
     "openrouter_tts": OpenRouterTTSAdapter(),
     "volc_plan_tts": VolcPlanTTSAdapter(),
@@ -29,6 +31,7 @@ TTS_ADAPTERS: dict[str, BaseTTSAdapter] = {
 }
 
 STT_ADAPTERS: dict[str, BaseSTTAdapter] = {
+    "volcengine": VolcengineSTTAdapter(),
     "openai_compat": OpenAICompatSTTAdapter(),
     "dashscope": DashScopeSTTAdapter(),
     "volc_plan_stt": VolcPlanSTTAdapter(),

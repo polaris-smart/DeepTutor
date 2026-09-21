@@ -63,6 +63,7 @@ from deeptutor.learning.policy import (
     QUALITATIVE_TYPES,
     display_mastery,
     find_knowledge_point,
+    gate_kind,
     gate_threshold,
     is_mastered,
     map_summary,
@@ -334,39 +335,104 @@ async def _sync_mastery_attempt_to_question_bank(
     correct_answer: str | None = None,
     material_title: str = "",
     section_title: str = "",
+    attempt_count: int = 1,
+    hints_used: int = 0,
+    confidence: float | None = None,
+    response_time: float | None = None,
+    quality: float | None = None,
 ) -> None:
     if not session_id:
         return
-    item = {
-        "turn_id": turn_id,
-        "question_id": pending.question_id,
-        "question": pending.prompt,
-        "question_type": _question_bank_type(pending.question_type),
-        "options": choice_options or pending.choice_map,
-        "correct_answer": correct_answer or pending.expected_answer,
-        # Carried from mastery_quiz. Without these the bank held a bare
-        # right/wrong for every mastery attempt — reviewable only as a score.
-        "explanation": pending.explanation,
-        "difficulty": pending.difficulty,
-        "user_answer": user_answer,
-        "is_correct": is_correct,
-        "source": "mastery_path",
-        "material_id": path_id,
-        "material_title": material_title,
-        "section_id": pending.knowledge_point_id,
-        "section_title": section_title,
-    }
-    try:
-        from deeptutor.services.session import get_sqlite_session_store
+    from deeptutor.learning.assessment import (
+        AssessmentRecord,
+        RecordAssessmentError,
+        is_correct_to_result,
+        record_assessment,
+    )
 
-        await asyncio.wait_for(
-            get_sqlite_session_store().upsert_notebook_entries(session_id, [item]),
-            timeout=5.0,
-        )
-    except Exception:
+    record = AssessmentRecord(
+        session_id=session_id,
+        turn_id=turn_id,
+        question_id=pending.question_id,
+        question=pending.prompt,
+        question_type=_question_bank_type(pending.question_type),
+        options=choice_options or pending.choice_map,
+        correct_answer=correct_answer or pending.expected_answer,
+        explanation=pending.explanation,
+        difficulty=pending.difficulty,
+        user_answer=user_answer,
+        is_correct=is_correct,
+        result=is_correct_to_result(is_correct),
+        source="mastery_path",
+        assessment_type="quiz",
+        material_id=path_id,
+        material_title=material_title,
+        section_id=pending.knowledge_point_id,
+        section_title=section_title,
+        mastery_path_id=path_id,
+        knowledge_point_id=pending.knowledge_point_id,
+        attempt_count=attempt_count,
+        hints_used=hints_used,
+        confidence=confidence,
+        response_time=response_time,
+        quality=quality,
+    )
+    try:
+        await asyncio.wait_for(record_assessment(record), timeout=5.0)
+    except (RecordAssessmentError, Exception):
         logger.warning(
             "Failed to sync mastery question %s to question bank for session %s",
             pending.question_id,
+            session_id,
+            exc_info=True,
+        )
+
+
+async def _sync_qualitative_to_question_bank(
+    *,
+    path_id: str,
+    session_id: str,
+    turn_id: str,
+    knowledge_point_id: str,
+    knowledge_point_name: str,
+    passed: bool,
+    evidence: str,
+    material_title: str = "",
+    quality: float | None = None,
+) -> None:
+    if not session_id:
+        return
+    from deeptutor.learning.assessment import (
+        AssessmentRecord,
+        RecordAssessmentError,
+        record_assessment,
+    )
+
+    record = AssessmentRecord(
+        session_id=session_id,
+        turn_id=turn_id,
+        question_id=f"qual:{knowledge_point_id}",
+        question=knowledge_point_name,
+        question_type="written",
+        user_answer=evidence,
+        is_correct=passed,
+        result="correct" if passed else "partial",
+        source="mastery_path",
+        assessment_type="qualitative",
+        material_id=path_id,
+        material_title=material_title,
+        section_id=knowledge_point_id,
+        section_title=knowledge_point_name,
+        mastery_path_id=path_id,
+        knowledge_point_id=knowledge_point_id,
+        quality=1.0 if passed else 0.2 if quality is None else quality,
+    )
+    try:
+        await asyncio.wait_for(record_assessment(record), timeout=5.0)
+    except (RecordAssessmentError, Exception):
+        logger.warning(
+            "Failed to sync qualitative assessment %s to question bank for session %s",
+            knowledge_point_id,
             session_id,
             exc_info=True,
         )
@@ -740,6 +806,10 @@ class MasteryQuizTool(BaseTool):
                         "card renders 'options' as its own labelled, clickable "
                         "list, so a stem that repeats them shows every choice "
                         "twice. Naming one option to ask about it is fine."
+                        " Make the stem self-contained for later practice: include "
+                        "all required code, data, scenario details and diagrams "
+                        "(Markdown or Mermaid). Do not refer only to a figure or "
+                        "example in an earlier message."
                     ),
                 ),
                 ToolParameter(
@@ -976,6 +1046,20 @@ class MasteryQuizTool(BaseTool):
                 "button. That list was removed from the stem. Pass the ask in "
                 "'question' and the choices only in 'options'."
             )
+        if kp.type in QUALITATIVE_TYPES:
+            # The mirror of ``record_qualitative_for_path``, which refuses
+            # outright when mastery_assess is aimed at a quantitative
+            # objective. This direction stays allowed — a question is a fair
+            # way to probe a concept before teaching it — but it must not be
+            # silent: the attempt lands in ``mastery_levels``, the qualitative
+            # gate never reads it, and a tutor that assumes otherwise poses
+            # questions forever at an objective they cannot open.
+            notice += (
+                " This objective is gated qualitatively: grading this answer "
+                "will not open it, however right the answer is. Use the "
+                "question to probe, then have the learner explain the idea in "
+                "their own words and record that with mastery_assess."
+            )
 
         return ToolResult(
             content=notice,
@@ -1121,6 +1205,15 @@ class MasteryGradeTool(BaseTool):
         # best-effort sync timed out, a safe retry repairs the auxiliary
         # question bank without duplicating the mastery attempt.
         kp, _, _ = find_knowledge_point(progress, pending.knowledge_point_id)
+        evidence_items = getattr(progress, "learning_evidence", None) or ()
+        evidence = next(
+            (
+                item
+                for item in reversed(evidence_items)
+                if getattr(item, "knowledge_point_id", "") == pending.knowledge_point_id
+            ),
+            None,
+        )
         await _sync_mastery_attempt_to_question_bank(
             path_id=path_id,
             session_id=interaction.session_id or _resolve_session_id(kwargs),
@@ -1134,8 +1227,41 @@ class MasteryGradeTool(BaseTool):
             correct_answer=expected_answer,
             material_title=progress.name,
             section_title=kp.name if kp else "",
+            attempt_count=getattr(evidence, "attempt_count", 1) if evidence is not None else 1,
+            hints_used=getattr(evidence, "hints_used", 0) if evidence is not None else 0,
+            confidence=getattr(evidence, "confidence", None) if evidence is not None else None,
+            response_time=getattr(evidence, "response_time", None)
+            if evidence is not None
+            else None,
+            quality=getattr(evidence, "quality", None) if evidence is not None else None,
         )
         mastered = bool(kp and is_mastered(progress, kp))
+        gate = gate_kind(kp) if kp else ""
+        # What to do after the verdict. A qualitative objective needs its own
+        # branch: quiz accuracy lands in ``mastery_levels`` without moving that
+        # gate — it can even read a full 1.0 against a 1.0 threshold while
+        # ``mastered`` stays false — so telling the model to pose another
+        # question here is telling it to loop forever on an objective no
+        # question can clear. That loop is invisible from the chat, where the
+        # tutor narrates progress it never actually recorded, and visible on
+        # the outline rail, which correctly never moves.
+        if mastered:
+            next_move = "going: this objective is mastered, so continue with mastery_status.next."
+        elif gate == "qualitative":
+            next_move = (
+                "going on the same objective — but this one is gated "
+                "qualitatively, so more questions cannot clear it however many "
+                "the learner gets right. Teach the gap this attempt exposed, "
+                "then ask them to explain the idea in their own words and "
+                "record your judgement with mastery_assess. That call is the "
+                "only thing that opens this gate."
+            )
+        else:
+            next_move = (
+                "going on the same objective — teach the gap this attempt "
+                "exposed, and when you pose the next question with "
+                "mastery_quiz put that call last, since it ends the turn."
+            )
         payload = {
             "is_correct": is_correct,
             "replayed": replayed,
@@ -1144,6 +1270,10 @@ class MasteryGradeTool(BaseTool):
             "question_id": pending.question_id,
             "mastery": round(display_mastery(progress, kp), 3) if kp else 0.0,
             "threshold": round(gate_threshold(kp.type), 3) if kp else 0.0,
+            # Which gate that number is being read against. Without it a
+            # qualitative objective reports mastery 1.0 / threshold 1.0 /
+            # mastered false, which is not a reading anyone can act on.
+            "gate": gate,
             "mastered": mastered,
             "next": next_objective(progress).to_dict(),
             # The answer key, released to the learner's card now that the gate
@@ -1164,13 +1294,7 @@ class MasteryGradeTool(BaseTool):
                 "The card now shows the verdict, the correct option and your "
                 "explanation, so do not restate the answer key. Say what this "
                 "attempt tells you about their grasp of the objective, then keep "
-                + (
-                    "going: this objective is mastered, so continue with mastery_status.next."
-                    if mastered
-                    else "going on the same objective — teach the gap this "
-                    "attempt exposed, and when you pose the next question with "
-                    "mastery_quiz put that call last, since it ends the turn."
-                )
+                + next_move
                 + " Never end the turn without saying anything."
             ),
         }
@@ -1263,6 +1387,16 @@ class MasteryAssessTool(BaseTool):
             return ToolResult(content=str(exc), success=False)
         kp, _, _ = find_knowledge_point(progress, kp_id)
         assert kp is not None
+        await _sync_qualitative_to_question_bank(
+            path_id=path_id,
+            session_id=_resolve_session_id(kwargs),
+            turn_id=_resolve_turn_id(kwargs),
+            knowledge_point_id=kp_id,
+            knowledge_point_name=kp.name,
+            passed=passed,
+            evidence=feedback,
+            material_title=progress.name,
+        )
         payload = {
             "knowledge_point_id": kp_id,
             "path_revision": progress.version,
