@@ -11,6 +11,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 import hashlib
+import json
 import logging
 import mimetypes
 import os
@@ -86,6 +87,9 @@ MAX_TRANSCRIPT_BYTES = 2 * 1024 * 1024
 MIN_SEGMENT_SECONDS = 20
 MAX_SEGMENT_SECONDS = 90
 TRANSCRIPT_UNAVAILABLE_TEXT = "[Transcript unavailable for this video.]"
+# Bound the ASR fallback's download so a pathological stream cannot fill the
+# disk: two hours of top-bandwidth Bilibili audio stays far below this.
+MAX_BILIBILI_AUDIO_BYTES = 600 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -367,15 +371,50 @@ class ReadingIngestionService:
             extractor = "bilibili-chapters-only"
             outline_titles = [row.text for row in chapters]
         else:
-            stored_segments = [
-                TranscriptSegment(
-                    float(request.entry_time_seconds),
-                    float(request.entry_time_seconds),
-                    TRANSCRIPT_UNAVAILABLE_TEXT,
-                )
-            ]
-            extractor = "bilibili-no-subtitles"
-            outline_titles = [_clock(request.entry_time_seconds)]
+            missing = _probe_stt_configuration() if self._probes_stt else ""
+            if missing:
+                stored_segments, extractor, outline_titles = _bilibili_unavailable(request)
+            else:
+                # No subtitle track on Bilibili is common, so the fallback
+                # downloads the audio and transcribes it — mirroring
+                # ``_transcribe_media``. Any failure keeps the sentinel
+                # behaviour: the video still plays, the lack of grounding
+                # stays explicit, and the import does not fail.
+                audio_path: Path | None = None
+                try:
+                    audio_path = await _load_bilibili_audio(request.bvid, media.cid)
+                    chunks = await self._media_chunker(audio_path)
+                    cues: list[TranscriptSegment] = []
+                    for index, (start, end, audio) in enumerate(chunks, start=1):
+                        spoken = await self._transcriber(
+                            audio,
+                            filename=f"bili-{request.bvid}-p{media.page_number}-{index:04d}.mp3",
+                            content_type="audio/mpeg",
+                            language=None,
+                        )
+                        cues.extend(_rebase_cues(spoken, start, end))
+                        self.catalog.update_material_status(
+                            record.material_id,
+                            IngestionStatus.PROCESSING,
+                            progress=15 + round(index / max(1, len(chunks)) * 70),
+                        )
+                    asr_segments = build_transcript_segments(cues)
+                    if asr_segments:
+                        stored_segments = asr_segments
+                        extractor = "bilibili-asr"
+                        outline_titles = [_clock(row.start_seconds) for row in stored_segments]
+                    else:
+                        stored_segments, extractor, outline_titles = _bilibili_unavailable(request)
+                except Exception:
+                    logger.exception(
+                        "Bilibili ASR fallback failed for material %s (%s)",
+                        record.material_id,
+                        request.bvid,
+                    )
+                    stored_segments, extractor, outline_titles = _bilibili_unavailable(request)
+                finally:
+                    if audio_path is not None:
+                        shutil.rmtree(audio_path.parent, ignore_errors=True)
 
         filename = f"bilibili-{request.bvid}-p{media.page_number}.vtt"
         self.reading_store.ingest_units(
@@ -861,7 +900,7 @@ async def _load_bilibili_media(url: str, languages: Sequence[str]) -> BilibiliMe
         "Referer": request.canonical_url,
         "User-Agent": "DeepTutor-Reading/1.0",
     }
-    sessdata = os.environ.get("BILIBILI_SESSDATA", "").strip()
+    sessdata = _bilibili_sessdata()
     bilibili_cookies = {"SESSDATA": sessdata} if sessdata else None
     async with httpx.AsyncClient(
         timeout=10,
@@ -949,6 +988,103 @@ async def _load_bilibili_media(url: str, languages: Sequence[str]) -> BilibiliMe
     )
 
 
+def _bilibili_sessdata() -> str:
+    """SESSDATA for authenticated Bilibili API calls, or "" when absent.
+
+    The environment wins so an explicit export is never silently overridden by
+    a stale cookie file; the JSON export is the fallback for installs that only
+    manage the browser cookie. Any failure to read or parse degrades to "" —
+    the same state as an anonymous caller.
+    """
+    value = os.environ.get("BILIBILI_SESSDATA", "").strip()
+    if value:
+        return value
+    cookie_file = Path(os.environ.get("BILIBILI_COOKIE_FILE") or "/app/data/bilibili-cookie.json")
+    try:
+        payload = json.loads(cookie_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if isinstance(payload, dict):
+        return str(payload.get("SESSDATA") or "").strip()
+    return ""
+
+
+async def _load_bilibili_audio(bvid: str, cid: int) -> Path:
+    """Pull the best Bilibili audio track into a temporary file.
+
+    The playurl API answers with DASH streams whenever one exists, and the
+    highest-bandwidth audio track keeps the transcription input honest; the
+    legacy ``durl`` list is the fallback for videos that never get DASH. The
+    download is capped at ``MAX_BILIBILI_AUDIO_BYTES`` so a pathological
+    stream cannot fill the disk, and the caller owns the returned file's
+    directory (removing it when done).
+    """
+    try:
+        import httpx
+    except ImportError as exc:  # pragma: no cover - server installs include httpx
+        raise ReadingError("Bilibili import requires httpx") from exc
+
+    headers = {
+        "Accept": "application/json",
+        "Referer": f"https://www.bilibili.com/video/{bvid}/",
+        "User-Agent": "DeepTutor-Reading/1.0",
+    }
+    sessdata = _bilibili_sessdata()
+    cookies = {"SESSDATA": sessdata} if sessdata else None
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(120.0, connect=15.0),
+        follow_redirects=True,
+        headers=headers,
+        cookies=cookies,
+    ) as client:
+        playurl_response = await client.get(
+            "https://api.bilibili.com/x/player/playurl",
+            params={"bvid": bvid, "cid": cid, "fnval": 16, "fourk": 1},
+        )
+        data = _bilibili_api_data(playurl_response, "audio stream")
+
+        def bandwidth(row: dict[str, Any]) -> int:
+            try:
+                return int(row.get("bandwidth") or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        dash = data.get("dash") if isinstance(data.get("dash"), dict) else None
+        audio_rows = (
+            dash.get("audio") if dash is not None and isinstance(dash.get("audio"), list) else []
+        )
+        candidates = [row for row in audio_rows if isinstance(row, dict)]
+        stream_url = ""
+        if candidates:
+            loudest = max(candidates, key=bandwidth)
+            stream_url = str(loudest.get("baseUrl") or loudest.get("base_url") or "").strip()
+        if not stream_url:
+            durl_rows = data.get("durl") if isinstance(data.get("durl"), list) else []
+            for row in durl_rows:
+                if isinstance(row, dict) and str(row.get("url") or "").strip():
+                    stream_url = str(row.get("url") or "").strip()
+                    break
+        if not stream_url:
+            raise ReadingError("Bilibili returned no downloadable audio stream")
+
+        tmp_dir = Path(tempfile.mkdtemp(prefix="dt-bili-audio-"))
+        audio_path = tmp_dir / "audio.m4a"
+        try:
+            total = 0
+            with audio_path.open("wb") as sink:
+                async with client.stream("GET", stream_url) as stream:
+                    stream.raise_for_status()
+                    async for block in stream.aiter_bytes(1024 * 1024):
+                        total += len(block)
+                        if total > MAX_BILIBILI_AUDIO_BYTES:
+                            raise ReadingError("Bilibili audio exceeded the download size limit")
+                        sink.write(block)
+        except BaseException:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise
+    return audio_path
+
+
 def _bilibili_api_data(response: Any, label: str) -> dict[str, Any]:
     if len(response.content) > MAX_TRANSCRIPT_BYTES * 2:
         raise ReadingError(f"Bilibili {label} response exceeded the size limit")
@@ -985,6 +1121,20 @@ def _preferred_bilibili_subtitle(
         return (len(preferences), 2)
 
     return min(candidates, key=score)
+
+
+def _bilibili_unavailable(
+    request: BilibiliRequest,
+) -> tuple[list[TranscriptSegment], str, list[str]]:
+    """The no-subtitles sentinel triple: keep the material openable, say why."""
+    stored_segments = [
+        TranscriptSegment(
+            float(request.entry_time_seconds),
+            float(request.entry_time_seconds),
+            TRANSCRIPT_UNAVAILABLE_TEXT,
+        )
+    ]
+    return stored_segments, "bilibili-no-subtitles", [_clock(request.entry_time_seconds)]
 
 
 def _probe_stt_configuration() -> str:

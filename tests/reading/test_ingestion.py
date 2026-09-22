@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import tempfile
 
+import httpx
 import pytest
 
 from deeptutor.reading import ingestion as ingestion_module
@@ -511,3 +513,240 @@ async def test_media_ingestion_failure_is_logged_and_persisted(
     assert failed is not None
     assert failed.status is IngestionStatus.FAILED
     assert "Reading media ingestion failed" in caplog.text
+
+
+def _no_subtitle_bilibili_loader():
+    async def bilibili_loader(_url: str, _languages):
+        return BilibiliMedia(
+            title="Captions withheld",
+            cover_url="",
+            duration_seconds=200.0,
+            page_number=1,
+            cid=999,
+            segments=[],
+            chapters=[],
+        )
+
+    return bilibili_loader
+
+
+@pytest.mark.asyncio
+async def test_bilibili_no_subtitles_falls_back_to_asr(
+    stores, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A video Bilibili gives no caption track for is transcribed from audio."""
+    reading, catalog = stores
+    audio_dir = tmp_path / "bili-audio"
+    audio_dir.mkdir()
+    audio_file = audio_dir / "audio.m4a"
+    audio_file.write_bytes(b"fake audio bytes")
+    calls: list[tuple[str, int]] = []
+
+    async def audio_loader(bvid: str, cid: int) -> Path:
+        calls.append((bvid, cid))
+        return audio_file
+
+    async def chunker(_path: Path):
+        return [(0.0, 100.0, b"audio-one"), (100.0, 200.0, b"audio-two")]
+
+    async def transcriber(_audio: bytes, **_kwargs):
+        return "first half of the talk" if _audio == b"audio-one" else "second half"
+
+    monkeypatch.setattr(ingestion_module, "_load_bilibili_audio", audio_loader)
+    service = ReadingIngestionService(
+        reading,
+        catalog,
+        bilibili_loader=_no_subtitle_bilibili_loader(),
+        media_chunker=chunker,
+        transcriber=transcriber,
+    )
+    queued = service.queue_url("https://www.bilibili.com/video/BV1E7wtzaEdq")
+    ready = await service.process_url(queued.material_id)
+
+    assert calls == [("BV1E7wtzaEdq", 999)]
+    assert ready.status is IngestionStatus.READY
+    manifest = reading.manifest(ready.material_id)
+    assert manifest.extractor == "bilibili-asr"
+    assert reading.unit_text(ready.material_id, 1) == "first half of the talk"
+    assert reading.unit_text(ready.material_id, 2) == "second half"
+    # Each chunk's transcript lands on its own slice of the real timeline.
+    refs = reading.unit_references(ready.material_id)
+    assert refs[0].source_href == "#t=0"
+    assert refs[1].source_href == "#t=100"
+
+
+@pytest.mark.asyncio
+async def test_bilibili_asr_without_a_stt_provider_keeps_the_sentinel(
+    stores, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reading, catalog = stores
+
+    async def audio_loader(_bvid: str, _cid: int) -> Path:
+        raise AssertionError("audio must not be downloaded without a provider")
+
+    monkeypatch.setattr(
+        ingestion_module,
+        "_probe_stt_configuration",
+        lambda: "No active STT model is configured. Set it in Settings > Voice.",
+    )
+    monkeypatch.setattr(ingestion_module, "_load_bilibili_audio", audio_loader)
+    service = ReadingIngestionService(
+        reading, catalog, bilibili_loader=_no_subtitle_bilibili_loader()
+    )
+    queued = service.queue_url("https://www.bilibili.com/video/BV1E7wtzaEdq")
+    ready = await service.process_url(queued.material_id)
+
+    manifest = reading.manifest(ready.material_id)
+    assert ready.status is IngestionStatus.READY
+    assert manifest.extractor == "bilibili-no-subtitles"
+    assert reading.unit_text(ready.material_id, 1) == TRANSCRIPT_UNAVAILABLE_TEXT
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_stage", ["playurl", "transcribe"])
+async def test_bilibili_asr_failure_keeps_sentinel_playback(
+    stores,
+    tmp_path: Path,
+    fail_stage: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fallback is fail-soft: a broken download or STT still yields a
+    playable material, never a failed import."""
+    reading, catalog = stores
+    audio_dir = tmp_path / "bili-audio"
+    audio_dir.mkdir()
+    audio_file = audio_dir / "audio.m4a"
+    audio_file.write_bytes(b"fake audio bytes")
+
+    async def audio_loader(_bvid: str, _cid: int) -> Path:
+        if fail_stage == "playurl":
+            raise RuntimeError("playurl rejected the request")
+        return audio_file
+
+    async def chunker(_path: Path):
+        return [(0.0, 200.0, b"audio-one")]
+
+    async def failing_transcriber(_audio: bytes, **_kwargs):
+        raise RuntimeError("stt endpoint exploded")
+
+    async def working_transcriber(_audio: bytes, **_kwargs):
+        return "speech"
+
+    service = ReadingIngestionService(
+        reading,
+        catalog,
+        bilibili_loader=_no_subtitle_bilibili_loader(),
+        media_chunker=chunker,
+        transcriber=(failing_transcriber if fail_stage == "transcribe" else working_transcriber),
+    )
+    queued = service.queue_url("https://www.bilibili.com/video/BV1E7wtzaEdq")
+    ready = await service.process_url(queued.material_id)
+
+    manifest = reading.manifest(ready.material_id)
+    assert ready.status is IngestionStatus.READY
+    assert manifest.extractor == "bilibili-no-subtitles"
+    assert reading.unit_text(ready.material_id, 1) == TRANSCRIPT_UNAVAILABLE_TEXT
+
+
+class _FakePlayurlResponse:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+        self.content = b"{}"
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class _FakeStreamContext:
+    def __init__(self, blocks: list[bytes]) -> None:
+        self._blocks = blocks
+
+    async def __aenter__(self) -> _FakeStreamContext:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> bool:
+        return False
+
+    def raise_for_status(self) -> None:
+        return None
+
+    async def aiter_bytes(self, _chunk_size: int):
+        for block in self._blocks:
+            yield block
+
+
+class _FakeBilibiliClient:
+    def __init__(self, playurl: dict, blocks: list[bytes], **_kwargs: object) -> None:
+        self._playurl = playurl
+        self._blocks = blocks
+
+    async def __aenter__(self) -> _FakeBilibiliClient:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> bool:
+        return False
+
+    async def get(self, _url: str, params: dict | None = None) -> _FakePlayurlResponse:
+        return _FakePlayurlResponse(self._playurl)
+
+    def stream(self, _method: str, _url: str) -> _FakeStreamContext:
+        return _FakeStreamContext(self._blocks)
+
+
+@pytest.mark.asyncio
+async def test_bilibili_audio_over_the_size_limit_falls_back_to_sentinel(
+    stores, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reading, catalog = stores
+    playurl_payload = {
+        "code": 0,
+        "data": {
+            "dash": {
+                "audio": [{"bandwidth": 320_000, "baseUrl": "https://cdn.example.com/audio.m4s"}]
+            }
+        },
+    }
+    created: list[Path] = []
+    real_mktemp = tempfile.mkdtemp
+
+    def tracked_mktemp(*args: object, **kwargs: object) -> str:
+        directory = real_mktemp(*args, **kwargs)  # type: ignore[arg-type]
+        created.append(Path(directory))
+        return directory
+
+    monkeypatch.setattr(tempfile, "mkdtemp", tracked_mktemp)
+    monkeypatch.setattr(ingestion_module, "MAX_BILIBILI_AUDIO_BYTES", 8)
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: _FakeBilibiliClient(
+            playurl_payload, [b"abcd", b"efgh", b"ijkl"], **kwargs
+        ),
+    )
+    service = ReadingIngestionService(
+        reading,
+        catalog,
+        bilibili_loader=_no_subtitle_bilibili_loader(),
+        media_chunker=_unused_chunker,
+        transcriber=_ok_transcriber,
+    )
+    queued = service.queue_url("https://www.bilibili.com/video/BV1E7wtzaEdq")
+    ready = await service.process_url(queued.material_id)
+
+    manifest = reading.manifest(ready.material_id)
+    assert ready.status is IngestionStatus.READY
+    assert manifest.extractor == "bilibili-no-subtitles"
+    # The aborted download never left its temporary directory behind.
+    assert created
+    assert all(not directory.exists() for directory in created)
+
+
+async def _unused_chunker(_path: Path):
+    raise AssertionError("the chunker must not run when the download aborts")
+
+
+async def _ok_transcriber(_audio: bytes, **_kwargs):
+    return "speech"
