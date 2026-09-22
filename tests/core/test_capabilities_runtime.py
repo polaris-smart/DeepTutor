@@ -415,6 +415,13 @@ async def test_deep_research_capability_delegates_to_pipeline(
 async def test_visualize_capability_reuses_chat_loop_and_preserves_attachments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The fallback defaults (the values this call used to hardcode) are the
+    # contract under test; an ambient data/user/settings/agents.yaml with a
+    # ``visualize`` section would otherwise legitimately override them.
+    monkeypatch.setattr(
+        "deeptutor.agents.visualize.capability.get_visualize_params",
+        lambda: {},
+    )
     captured: dict[str, Any] = {}
 
     class FakeAgenticChatPipeline:

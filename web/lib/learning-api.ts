@@ -71,6 +71,7 @@ export interface MapKnowledgePoint {
   override_note: string;
   /** M4 学件挂载: bound YuEdu visualizer ids (may be absent on old data). */
   visualizers?: string[];
+  deferred?: boolean;
 }
 
 export interface MapModule {

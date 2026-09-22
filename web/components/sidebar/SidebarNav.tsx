@@ -47,7 +47,7 @@ import {
   primaryNavHrefsFor,
 } from "@/components/sidebar/nav-entries";
 import { useAuthStatus } from "@/hooks/useAuthStatus";
-import { Tooltip } from "@/components/ui/Tooltip";
+import { Tooltip } from "@/shared/ui/Tooltip";
 import { useDragSort, type DragSort } from "@/hooks/useDragSort";
 import { placeMenu, type FloatingMenuPosition } from "@/lib/floating-menu";
 import {

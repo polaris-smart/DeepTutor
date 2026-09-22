@@ -10,9 +10,8 @@
 </p>
 
 <p align="center">
-  <a href="https://trendshift.io/repositories/17099?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-17099" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/17099" alt="HKUDS%2FDeepTutor | Trendshift" width="250" height="55"/></a>&nbsp;
-  <a href="https://trendshift.io/repositories/17099?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-17099" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/17099/daily" alt="HKUDS%2FDeepTutor | Trendshift" width="250" height="55"/></a>&nbsp;
-  <a href="https://trendshift.io/repositories/17099?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-17099" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/17099/weekly?language=Python" alt="HKUDS%2FDeepTutor | Trendshift" width="250" height="55"/></a>
+  <a href="https://www.star-history.com/hkuds/deeptutor"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=HKUDS/DeepTutor&amp;type=trending&amp;theme=dark" /><source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/badge?repo=HKUDS/DeepTutor&amp;type=trending" /><img alt="GitHub Trending Repository of the Day" src="https://api.star-history.com/badge?repo=HKUDS/DeepTutor&amp;type=trending" height="55" /></picture></a>&nbsp;
+  <a href="https://trendshift.io/repositories/17099?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-17099" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/17099/daily" alt="HKUDS/DeepTutor | Trendshift" width="250" height="55"/></a>
 </p>
 
 <p align="center">
@@ -50,6 +49,7 @@
 
 ### 📰 Новости
 
+- **2026-09-20** 🎉 40 тысяч звёзд за 9 месяцев! Мы продолжим расширять учебную экосистему DeepTutor.
 - **2026-05-22** 🌐 Официальный сайт документации запущен на [**deeptutor.info**](https://deeptutor.info/) — руководства, справочники и туры по возможностям в одном месте.
 - **2026-04-19** 🎉 20 тысяч звёзд за 111 дней! Благодарим за поддержку на пути к по-настоящему персонализированному интеллектуальному обучению.
 - **2026-04-10** 📄 Наша статья опубликована на arXiv — прочитайте [препринт](https://arxiv.org/abs/2604.26962) о дизайне и идеях, лежащих в основе DeepTutor.
@@ -65,7 +65,7 @@ DeepTutor — это агентная учебная рабочая среда, 
 - **Связанный контекст обучения** — базы знаний, книги, черновики Co-Writer, блокноты, банки вопросов, персоны и Memory можно повторно использовать в поддерживающих их рабочих процессах с учётом грантов учётной записи и политик обучения.
 - **Иммерсивное обучение по видео** — вставьте ссылку YouTube для нативного воспроизведения с повышенной конфиденциальностью, синхронизированными субтитрами, репетиторством с привязкой ко временным меткам и возобновляемым прогрессом; администраторы могут переключить воспроизведение на самостоятельно размещённый экземпляр Invidious без пересборки материалов.
 - **Субагенты и Partners** — из Chat обращайтесь к живой агентной среде (Claude Code, Codex, Antigravity, Kimi, opencode, MiMo, Hermes, OpenClaw или DeepSeek) или к Partner, импортируйте прошлые разговоры и запускайте постоянных IM-компаньонов на том же мозге.
-- **Многодвигательные знания** — версионированные RAG-библиотеки на основе LlamaIndex, PageIndex, GraphRAG, LightRAG, удалённого LightRAG Server, самостоятельно размещённого WeKnora, библиотеки Tencent IMA или MarginNote 4, либо связанного хранилища Obsidian, с подключаемым разбором документов.
+- **Многодвигательные знания** — версионированные RAG-библиотеки на основе LlamaIndex, PageIndex, GraphRAG, LightRAG, удалённого LightRAG Server, самостоятельно размещённого WeKnora, библиотеки Tencent IMA или MarginNote 4, либо связанного хранилища Obsidian, с подключаемым разбором документов. См. [нативные ролевые модели LightRAG](../../deeptutor/services/rag/pipelines/lightrag/README.md) для независимых настроек извлечения, запросов и обработки изображений, создания только со значениями по умолчанию и подтверждённых пересборок.
 - **Расширяемые инструменты и навыки** — встроенные инструменты, MCP-серверы, CLI-приложения, модели генерации изображений / видео / голоса и устанавливаемые навыки сообщества из EduHub.
 - **Проверяемая память** — трассировки L1, сводки поверхностей L2 и синтез L3 делают персонализацию видимой и редактируемой; Memory Graph связывает факты L2 с доказательствами L1, а синтез L3 — с участвующими поверхностями.
 
@@ -524,6 +524,8 @@ Co-Writer — это разделённое рабочее пространст�
 При создании KB вы либо **создаёте новую** (загружаете документы и строите свежий индекс), либо **связываете существующую** (повторно используете индекс, построенный в другом месте, читаете на месте без переиндексирования). База знаний также может отслеживать **репозитории GitHub** (репозиторий, ветка и glob-шаблон) или **URL сайтов документации** (с ограничениями глубины обхода и числа страниц); синхронизация по запросу сравнивает хеши содержимого, чтобы выявить добавленные, изменённые и удалённые материалы, поэтому документация, за которой вы следите, остаётся актуальной без повторной загрузки. Переиндексирование записывает новую плоскую директорию `version-N` и сохраняет предыдущие, поэтому рабочий индекс никогда не уничтожается в процессе перестройки. Отдельный документ можно удалить даже из базы в состоянии **error** — убрав файл, который не удалось разобрать, без полного удаления и пересборки. Разбор документов — только текст, MinerU, Docling, Tika, markitdown, PyMuPDF4LLM или LiteParse — выбирается в **Настройки → Знания и документы**, с отключёнными по умолчанию загрузками локальных моделей. Docling может также работать в **удалённом режиме**, обращаясь к серверу Docling Serve (без локальной установки и моделей), который настраивается на той же странице (`mode=remote`, базовый URL сервера и необязательный API-ключ) или через переменные окружения `DOCLING_MODE` / `DOCLING_API_BASE_URL` / `DOCLING_API_TOKEN`. Tika работает только в удалённом режиме и указывает на сервер Apache Tika, настроенный на этой странице. CLI отражает жизненный цикл через `list/info/create/add/search/set-default/delete`, команды добавления/удаления источников, `list-sources` и `sync`.
 
 Встроенный движок LightRAG устанавливается командой `pip install 'deeptutor[rag-lightrag]'`. Это дополнение содержит поддерживаемый SDK LightRAG, но не устанавливает MinerU. Выбирайте MinerU отдельно в разделе Разбор документов и либо настройте его облачный режим, либо установите актуальный локальный CLI, если нужен структурированный разбор. MinerU принимает PDF, распространённые растровые изображения, DOCX, PPTX и XLSX; устаревшая команда `magic-pdf` по-прежнему работает только с PDF. Текстовый и другие движки разбора не требуют MinerU.
+
+Нативные запросы LightRAG и инкрементальное индексирование требуют конфигурации встраивания, зафиксированной опубликованным индексом, включая модель, размерность и идентичность конечной точки. Если она меняется, восстановите исходную конфигурацию или пересоберите индекс с текущим встраиванием; индексы без зафиксированной идентичности встраивания требуют пересборки. Раздел сведений о базе знаний и представления версий индекса показывают рекомендации по восстановлению, а файлы остаются доступными для просмотра и скачивания.
 
 </details>
 

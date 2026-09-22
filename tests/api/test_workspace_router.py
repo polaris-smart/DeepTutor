@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import importlib
 from pathlib import Path
 
@@ -156,6 +157,12 @@ def test_workspace_migration_api_blocks_active_turns_and_keeps_bindings(
     from unittest.mock import AsyncMock
 
     import deeptutor.services.session as sessions
+
+    # A request task frozen by a torn-down test portal never runs its
+    # ``data_activity`` finally, so its sqlite lease lingers until GC. Collect
+    # now so this exclusive migration starts from a deterministically quiet
+    # workspace-activity store instead of a scheduling race.
+    gc.collect()
 
     client, service = workspace_api
     store = AsyncMock()

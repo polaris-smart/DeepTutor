@@ -10,9 +10,8 @@
 </p>
 
 <p align="center">
-  <a href="https://trendshift.io/repositories/17099?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-17099" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/17099" alt="HKUDS%2FDeepTutor | Trendshift" width="250" height="55"/></a>&nbsp;
-  <a href="https://trendshift.io/repositories/17099?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-17099" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/17099/daily" alt="HKUDS%2FDeepTutor | Trendshift" width="250" height="55"/></a>&nbsp;
-  <a href="https://trendshift.io/repositories/17099?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-17099" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/17099/weekly?language=Python" alt="HKUDS%2FDeepTutor | Trendshift" width="250" height="55"/></a>
+  <a href="https://www.star-history.com/hkuds/deeptutor"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=HKUDS/DeepTutor&amp;type=trending&amp;theme=dark" /><source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/badge?repo=HKUDS/DeepTutor&amp;type=trending" /><img alt="GitHub Trending Repository of the Day" src="https://api.star-history.com/badge?repo=HKUDS/DeepTutor&amp;type=trending" height="55" /></picture></a>&nbsp;
+  <a href="https://trendshift.io/repositories/17099?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-17099" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/17099/daily" alt="HKUDS/DeepTutor | Trendshift" width="250" height="55"/></a>
 </p>
 
 <p align="center">
@@ -50,6 +49,7 @@
 
 ### 📰 ข่าวสาร
 
+- **2026-09-20** 🎉 ถึง 40k stars ใน 9 เดือน! เราจะขยายระบบนิเวศการเรียนรู้ของ DeepTutor ต่อไป
 - **2026-05-22** 🌐 เว็บไซต์เอกสารอย่างเป็นทางการเปิดตัวแล้วที่ [**deeptutor.info**](https://deeptutor.info/) — คู่มือ การอ้างอิง และ capability tours ทั้งหมดในที่เดียว
 - **2026-04-19** 🎉 ถึง 20k stars ใน 111 วัน! ขอบคุณสำหรับการสนับสนุนที่มุ่งสู่การสอนพิเศษที่เป็นส่วนตัวและชาญฉลาดอย่างแท้จริง
 - **2026-04-10** 📄 บทความของเราตอนนี้มีบน arXiv แล้ว! อ่าน [preprint](https://arxiv.org/abs/2604.26962) เพื่อเรียนรู้เกี่ยวกับการออกแบบและแนวคิดที่อยู่เบื้องหลัง DeepTutor
@@ -65,7 +65,7 @@ DeepTutor คือ workspace การเรียนรู้แบบ agent-n
 - **บริบทการเรียนรู้ที่เชื่อมต่อกัน** — ฐานความรู้, หนังสือ, ร่าง Co-Writer, สมุดบันทึก, คลังคำถาม, บุคลิกภาพ และ Memory สามารถนำมาใช้ซ้ำในเวิร์กโฟลว์ที่รองรับ โดยอยู่ภายใต้สิทธิ์ของบัญชีและนโยบายการเรียนรู้
 - **การเรียนรู้ผ่านวิดีโออย่างดื่มด่ำ** — วางลิงก์ YouTube เพื่อเล่นวิดีโอแบบ native ที่เพิ่มความเป็นส่วนตัว พร้อมคำบรรยายที่ซิงค์กัน, การสอนพิเศษที่อ้างอิง timestamp และความคืบหน้าที่กลับมาเรียนต่อได้; ผู้ดูแลระบบสามารถเปลี่ยนการเล่นเป็น Invidious instance ที่ self-hosted ได้โดยไม่ต้องสร้างสื่อขึ้นใหม่
 - **ซับเอเจนต์และ Partners** — จาก Chat คุณสามารถปรึกษา agent harness แบบสด (Claude Code, Codex, Antigravity, Kimi, opencode, MiMo, Hermes, OpenClaw หรือ DeepSeek) หรือ Partner, นำเข้าบทสนทนาในอดีต และรันเพื่อนถาวรบน IM ด้วยสมองเดียวกัน
-- **ความรู้หลายเอ็นจิน** — ไลบรารี RAG แบบเวอร์ชันผ่าน LlamaIndex, PageIndex, GraphRAG, LightRAG, LightRAG Server ระยะไกล, WeKnora deployment แบบ self-hosted, ไลบรารี Tencent IMA หรือ MarginNote 4 หรือ Obsidian vault ที่เชื่อมโยง พร้อมการแยกวิเคราะห์เอกสารแบบ pluggable
+- **ความรู้หลายเอ็นจิน** — ไลบรารี RAG แบบเวอร์ชันผ่าน LlamaIndex, PageIndex, GraphRAG, LightRAG, LightRAG Server ระยะไกล, WeKnora deployment แบบ self-hosted, ไลบรารี Tencent IMA หรือ MarginNote 4 หรือ Obsidian vault ที่เชื่อมโยง พร้อมการแยกวิเคราะห์เอกสารแบบ pluggable ดู [native LightRAG role models](../../deeptutor/services/rag/pipelines/lightrag/README.md) สำหรับการตั้งค่า extraction, query และ vision ที่เป็นอิสระจากกัน, การสร้างแบบใช้ค่าเริ่มต้นเท่านั้น และการสร้างใหม่ที่ต้องมีการยืนยัน
 - **เครื่องมือและทักษะที่ขยายได้** — เครื่องมือในตัว, เซิร์ฟเวอร์ MCP, แอป CLI, โมเดลสร้างรูปภาพ/วิดีโอ/เสียง และทักษะชุมชนที่ติดตั้งได้จาก EduHub
 - **หน่วยความจำที่ตรวจสอบได้** — การติดตาม L1, สรุปพื้นผิว L2 และการสังเคราะห์ L3 ทำให้การปรับแต่งส่วนบุคคลมองเห็นได้และแก้ไขได้; Memory Graph เชื่อมข้อเท็จจริง L2 กับหลักฐาน L1 และการสังเคราะห์ L3 กับพื้นผิวที่มีส่วนร่วม
 
@@ -532,6 +532,8 @@ Knowledge bases คือคอลเลกชันเอกสารที่�
 เมื่อสร้าง KB คุณ **สร้างใหม่** (อัพโหลดเอกสารและสร้าง index ใหม่) หรือ **เชื่อมโยงที่มีอยู่** (นำ index ที่สร้างไว้มาใช้ซ้ำ อ่านในที่โดยไม่ต้อง re-index) KB ยังสามารถติดตาม **GitHub repositories** (repo, branch, glob) หรือ **URL ของเว็บไซต์เอกสาร** (จำกัดความลึกในการ crawl และจำนวนหน้า) ได้; การ sync ตามต้องการจะเปรียบเทียบ hash ของเนื้อหาที่เพิ่ม เปลี่ยนแปลง และลบ เพื่อให้เอกสารที่ติดตามทันสมัยอยู่เสมอโดยไม่ต้องอัพโหลดใหม่ การ re-indexing จะเขียน directory `version-N` ใหม่และเก็บอันก่อนหน้าไว้ ดังนั้น index ที่ทำงานอยู่จะไม่ถูกทำลายระหว่างการสร้างใหม่ สามารถลบเอกสารหนึ่งรายการได้แม้ KB จะอยู่ในสถานะ **error** — ตัดไฟล์ที่แยกวิเคราะห์ไม่สำเร็จออกโดยไม่ต้องลบและสร้างใหม่ทั้งหมด การแยกวิเคราะห์เอกสาร — Text-only, MinerU, Docling, Tika, markitdown, PyMuPDF4LLM หรือ LiteParse — ถูกเลือกใน **Settings → Knowledge & documents** โดยการดาวน์โหลด local model ปิดโดยค่าเริ่มต้น Docling ยังสามารถรันในโหมด **remote** กับเซิร์ฟเวอร์ Docling Serve ได้ (ไม่ต้องติดตั้ง local หรือใช้ model ใด ๆ) โดยกำหนดค่าในหน้านั้น (`mode=remote`, server base URL และ API key ที่เป็นทางเลือก) หรือผ่าน environment variables `DOCLING_MODE` / `DOCLING_API_BASE_URL` / `DOCLING_API_TOKEN` Tika ทำงานในโหมด remote เท่านั้นและชี้ไปยังเซิร์ฟเวอร์ Apache Tika ที่กำหนดค่าไว้ในหน้านั้น CLI ครอบคลุม lifecycle ด้วย `list/info/create/add/search/set-default/delete`, คำสั่งเพิ่ม/ลบ source, `list-sources` และ `sync`
 
 เอ็นจิน LightRAG ในตัวติดตั้งด้วย `pip install 'deeptutor[rag-lightrag]'` ส่วนเสริมนั้นมี SDK LightRAG ที่รองรับอยู่ แต่ไม่ได้ติดตั้ง MinerU เลือก MinerU แยกต่างหากใน Document Parsing แล้วกำหนดค่าโหมด cloud ของมันหรือติดตั้ง local CLI เวอร์ชันปัจจุบันเมื่อต้องการการแยกวิเคราะห์แบบมีโครงสร้าง MinerU รองรับ PDF, รูปภาพ raster ทั่วไป, DOCX, PPTX และ XLSX; คำสั่ง `magic-pdf` แบบ legacy ยังคงรองรับเฉพาะ PDF เท่านั้น Text-only และเอ็นจินแยกวิเคราะห์อื่น ๆ ไม่จำเป็นต้องใช้ MinerU
+
+การ query และการทำ indexing แบบ incremental ของ LightRAG แบบ native ต้องใช้การตั้งค่า embedding ที่บันทึกไว้โดย index ที่เผยแพร่แล้ว ซึ่งรวมถึง model, dimension และ endpoint identity หากมีการเปลี่ยนแปลง ให้คืนค่าการตั้งค่าเดิมหรือสร้างใหม่ด้วย embedding ปัจจุบัน; index ที่ไม่มีการบันทึก embedding identity ไว้จำเป็นต้องสร้างใหม่ หน้ารายละเอียด knowledge base และหน้า index version จะแสดงคำแนะนำในการกู้คืน ในขณะที่ไฟล์ยังคงเปิดดูและดาวน์โหลดได้อยู่
 
 </details>
 
