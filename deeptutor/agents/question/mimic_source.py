@@ -22,6 +22,8 @@ import json
 import logging
 from pathlib import Path
 
+# fork-specific, candidate for upstream PR: stable artifact identity +
+# conservation guard rely on these two fork modules (see mapping loop below).
 from deeptutor.agents.question.artifact_guard import validate_conservation
 from deeptutor.agents.question.parsed_question import ParsedQuestion
 from deeptutor.agents.question.pipeline import (
@@ -132,6 +134,11 @@ def _parse_sync(
     if max_questions > 0:
         questions = questions[:max_questions]
 
+    # fork-specific, candidate for upstream PR: derive question_id from the
+    # content-hash ``stable_id`` (invariant under paper reordering) instead of
+    # the positional ``q_{idx}``, and guard that derived templates never
+    # multiply or invent source questions. Used by tests/agents/question/
+    # test_parsed_question_artifact.py and the paper_reorder stable-id chain.
     parsed_questions: list[ParsedQuestion] = []
     templates: list[QuizTemplate] = []
     for idx, item in enumerate(questions, 1):
