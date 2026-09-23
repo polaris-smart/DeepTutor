@@ -23,6 +23,7 @@ from deeptutor.learning.assessment import (
     to_notebook_item,
 )
 from deeptutor.learning.models import (
+    DeferredObjective,
     KnowledgePoint,
     KnowledgeType,
     LearningModule,
@@ -58,6 +59,21 @@ def _mastery_record(**overrides) -> AssessmentRecord:
     }
     values.update(overrides)
     return AssessmentRecord(**values)
+
+
+
+@pytest.fixture
+def evidence_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Temp-backed TutorEvidence side channel for linked-retention tests."""
+    from deeptutor.learning.evidence_store import EvidenceStore
+
+    instance = EvidenceStore(db_path=tmp_path / "tutor_evidence.db")
+    monkeypatch.setattr(
+        "deeptutor.learning.assessment._get_evidence_store",
+        lambda: instance,
+    )
+    return instance
+
 
 
 def test_assessment_id_is_derived_identity() -> None:
@@ -319,6 +335,7 @@ def test_linked_book_assessment_updates_mastery_retention_once(
     store: SQLiteSessionStore,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    evidence_store,
 ) -> None:
     asyncio.run(store.create_session(title="S", session_id="session-1"))
     learning_store = LearningStore(root=tmp_path / "learning")
@@ -461,6 +478,151 @@ def test_linked_evidence_retries_after_restart_in_event_order(
     assert next(e for e in linked.learning_evidence if e.evidence_id == "book-old").timestamp == (
         old.created_at
     )
+
+
+def _linked_progress(path_id: str, kp_id: str, kp_type: KnowledgeType) -> LearningProgress:
+    return LearningProgress(
+        book_id=path_id,
+        modules=[
+            LearningModule(
+                id="module-1",
+                name="Module",
+                order=0,
+                knowledge_points=[
+                    KnowledgePoint(
+                        id=kp_id,
+                        name="Objective",
+                        type=kp_type,
+                        module_id="module-1",
+                    )
+                ],
+            )
+        ],
+        knowledge_types={kp_id: kp_type},
+    )
+
+
+def test_linked_focus_check_moves_mastery_gate(
+    store: SQLiteSessionStore,
+    evidence_store,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """触发即判读: a linked, graded focus-check folds into the mastery gate."""
+    asyncio.run(store.create_session(title="S", session_id="session-1"))
+    learning_store = LearningStore(root=tmp_path / "learning")
+    progress = _linked_progress("path-1", "kp-1", KnowledgeType.MEMORY)
+    progress.deferred_objectives["kp-1"] = DeferredObjective(knowledge_point_id="kp-1")
+    learning_store.save(progress)
+    monkeypatch.setattr("deeptutor.learning.assessment._get_learning_store", lambda: learning_store)
+    record = AssessmentRecord(
+        session_id="session-1",
+        turn_id="book-turn",
+        question_id="book-q",
+        question="Pick the answer",
+        user_answer="B",
+        result="correct",
+        is_correct=True,
+        source="book",
+        assessment_type="focus_check",
+        mastery_path_id="path-1",
+        knowledge_point_id="kp-1",
+        attempt_id="book-attempt-1",
+    )
+
+    outcome = asyncio.run(record_assessment(record))
+
+    assert "linked_retention_updated" in outcome.diagnostics
+    linked = learning_store.load("path-1")
+    # Attempt half of the dual write feeds the gate.
+    assert len(linked.quiz_attempts) == 1
+    attempt = linked.quiz_attempts[0]
+    assert attempt.is_correct is True
+    assert attempt.module_id == "module-1"
+    # Recency-weighted accuracy with the one-attempt confidence cap (0.5):
+    # a single lucky answer cannot declare the objective mastered.
+    assert linked.mastery_levels["kp-1"] == pytest.approx(0.5)
+    # A correct answer releases a deferred objective, like the tutor loop does.
+    assert "kp-1" not in linked.deferred_objectives
+
+
+def test_immersive_reading_focus_check_feeds_gate_over_attempts(
+    store: SQLiteSessionStore,
+    evidence_store,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each linked reading check is one gate event; recency weights apply."""
+    asyncio.run(store.create_session(title="S", session_id="session-1"))
+    learning_store = LearningStore(root=tmp_path / "learning")
+    learning_store.save(_linked_progress("path-1", "kp-1", KnowledgeType.PROCEDURE))
+    monkeypatch.setattr("deeptutor.learning.assessment._get_learning_store", lambda: learning_store)
+
+    def _reading_record(attempt_id: str, result: str) -> AssessmentRecord:
+        return AssessmentRecord(
+            session_id="session-1",
+            turn_id="reading-turn",
+            question_id="reading-q",
+            question="Reading check",
+            user_answer="C",
+            result=result,
+            is_correct=result == "correct",
+            source="immersive_reading",
+            assessment_type="focus_check",
+            mastery_path_id="path-1",
+            knowledge_point_id="kp-1",
+            attempt_id=attempt_id,
+        )
+
+    asyncio.run(record_assessment(_reading_record("attempt-1", "incorrect")))
+    asyncio.run(record_assessment(_reading_record("attempt-2", "correct")))
+
+    linked = learning_store.load("path-1")
+    assert [attempt.is_correct for attempt in linked.quiz_attempts] == [False, True]
+    # Weights (0.95, 1.0) over (incorrect, correct) → 1.0/1.95 ≈ 0.513.
+    assert linked.mastery_levels["kp-1"] == pytest.approx(1.0 / 1.95)
+    assert len(linked.learning_evidence) == 2
+
+
+def test_linked_focus_check_writes_tutor_evidence_once(
+    store: SQLiteSessionStore,
+    evidence_store,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The TutorEvidence side channel records exactly one row per applied attempt."""
+    asyncio.run(store.create_session(title="S", session_id="session-1"))
+    learning_store = LearningStore(root=tmp_path / "learning")
+    learning_store.save(_linked_progress("path-1", "kp-1", KnowledgeType.MEMORY))
+    monkeypatch.setattr("deeptutor.learning.assessment._get_learning_store", lambda: learning_store)
+    record = AssessmentRecord(
+        session_id="session-1",
+        turn_id="book-turn",
+        question_id="book-q",
+        question="Pick the answer",
+        user_answer="B",
+        result="correct",
+        is_correct=True,
+        source="book",
+        assessment_type="focus_check",
+        mastery_path_id="path-1",
+        knowledge_point_id="kp-1",
+        attempt_id="book-attempt-1",
+    )
+
+    asyncio.run(record_assessment(record))
+    asyncio.run(record_assessment(record))  # transport retry → deduped
+
+    rows = evidence_store.query_evidence(kp_id="kp-1")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.evidence_type == "graded_quiz"
+    assert row.is_correct is True
+    assert row.cognitive_gate == "retrieval"
+    assert row.book_id == "path-1"
+    assert row.detail_json["source"] == "book"
+    assert row.detail_json["assessment_type"] == "focus_check"
+
 
 
 def test_missing_session_raises_record_error() -> None:

@@ -297,13 +297,34 @@ def _get_learning_store():
     return LearningStore()
 
 
+def _get_evidence_store():
+    """Fail-open side-channel store, mirroring :func:`_get_learning_store`.
+
+    Module-level indirection so tests can inject a temp-backed store the same
+    way they inject the learning store.
+    """
+    from deeptutor.learning.evidence_store import EvidenceStore
+
+    return EvidenceStore()
+
+
 def _apply_linked_retention(
     record: AssessmentRecord,
     *,
     result: AssessmentResult,
     attempt_id: str,
 ) -> bool:
-    """Apply explicitly linked non-Mastery evidence to its objective once."""
+    """Apply explicitly linked non-Mastery evidence to its objective once.
+
+    One graded focus-check (book / immersive reading, linked to an objective)
+    completes the same dual write ``LearningService._apply_grade`` performs
+    for tutor-loop answers: the ``QuizAttempt`` feeds
+    ``compute_mastery`` (so the policy gate adjudicates on the trigger —
+    "触发即判读") while the ``LearningEvidence`` event feeds retention replay.
+    Each list has its own consumer, so the single event is never double
+    counted. Runs inside one ``LearningStore`` transaction; the TutorEvidence
+    side-channel row is written by the caller only after the commit.
+    """
     if (
         record.source == "mastery_path"
         or result in {"ungraded", "voided"}
@@ -312,12 +333,14 @@ def _apply_linked_retention(
     ):
         return False
 
-    from deeptutor.learning.models import LearningEvidence
+    from deeptutor.learning.mastery import compute_mastery
+    from deeptutor.learning.models import LearningEvidence, QuizAttempt
     from deeptutor.learning.policy import find_knowledge_point
     from deeptutor.learning.scheduler import SpacedRepetitionScheduler
 
     scheduler = SpacedRepetitionScheduler()
     event_result = result if result in {"correct", "incorrect", "partial"} else "incorrect"
+    is_correct = result == "correct"
     evidence = LearningEvidence(
         evidence_id=attempt_id,
         question_id=record.question_id,
@@ -339,20 +362,44 @@ def _apply_linked_retention(
         progress = tx.progress
         if any(item.evidence_id == attempt_id for item in progress.learning_evidence):
             return False
-        kp, _, _ = find_knowledge_point(progress, record.knowledge_point_id)
+        kp, module_id, _ = find_knowledge_point(progress, record.knowledge_point_id)
         if kp is None:
             raise ValueError(
                 f"Unknown linked objective {record.knowledge_point_id!r} "
                 f"on path {record.mastery_path_id!r}"
             )
+        # Attempt half of the dual write: feeds calculate_mastery so the
+        # mastery gate moves on the trigger (Z-03 触发即判读). Error-book
+        # bookkeeping stays with the tutor loop — focus-check answers are
+        # choice-graded, so no ErrorRecord is classified here.
+        progress.quiz_attempts.append(
+            QuizAttempt(
+                question_id=record.question_id,
+                knowledge_point_id=record.knowledge_point_id,
+                module_id=module_id,
+                is_correct=is_correct,
+                user_answer=record.user_answer,
+                timestamp=record.created_at,
+            )
+        )
+        progress.deferred_objectives.pop(record.knowledge_point_id, None)
+        # Mastery half: mirrors LearningService.calculate_mastery (the
+        # recency-weighted policy in mastery.py) over the refreshed attempts.
+        progress.mastery_levels[record.knowledge_point_id] = compute_mastery(
+            [
+                attempt.is_correct
+                for attempt in progress.quiz_attempts
+                if attempt.knowledge_point_id == record.knowledge_point_id and not attempt.voided
+            ]
+        )
+        # Retention half. Upstream #1541: a saved event may be retried after
+        # a newer assessment — rebuild this objective in evidence order
+        # instead of scheduling the old event as if it had just happened.
         prior_evidence = [
             item for item in progress.learning_evidence if item.knowledge_point_id == kp.id
         ]
         progress.learning_evidence.append(evidence)
         if any(item.timestamp > evidence.timestamp for item in prior_evidence):
-            # A saved event may be retried after a newer assessment. Rebuild
-            # this objective in evidence order instead of scheduling the old
-            # event as if it had just happened.
             ordered = sorted(
                 [*prior_evidence, evidence],
                 key=lambda item: (item.timestamp, item.evidence_id),
@@ -369,6 +416,7 @@ def _apply_linked_retention(
             progress.repetition_states[kp.id] = state
             scheduler.schedule_review(state, kp.type, evidence, now=evidence.timestamp)
         progress.review_queue = scheduler.build_review_queue(progress)
+        progress.updated_at = record.created_at
         tx.emit(
             "evidence.recorded",
             {
@@ -383,7 +431,48 @@ def _apply_linked_retention(
         return True
 
     _, applied = _get_learning_store().mutate(record.mastery_path_id, apply)
+    if applied:
+        _record_tutor_evidence(record, result=result, is_correct=is_correct)
     return applied
+
+
+def _record_tutor_evidence(
+    record: AssessmentRecord,
+    *,
+    result: AssessmentResult,
+    is_correct: bool,
+) -> None:
+    """Persist one TutorEvidence row after the durable commit; never raises.
+
+    The evidence layer is a side channel (see ``LearningService._record_evidence``):
+    any failure must not interrupt the caller, so the whole path is guarded
+    and only logged.
+    """
+    try:
+        from deeptutor.learning.models import TutorEvidence
+
+        _get_evidence_store().append(
+            TutorEvidence(
+                book_id=record.mastery_path_id,
+                kp_id=record.knowledge_point_id,
+                question_id=record.question_id,
+                session_id=record.session_id,
+                evidence_type="graded_quiz",
+                is_correct=is_correct,
+                cognitive_gate="retrieval",
+                detail_json={
+                    "source": record.source,
+                    "assessment_type": record.assessment_type,
+                    "result": result,
+                },
+            )
+        )
+    except Exception:
+        logger.warning(
+            "Failed to persist tutor evidence for linked focus-check %s",
+            record.question_id,
+            exc_info=True,
+        )
 
 
 def to_notebook_item(record: AssessmentRecord, diagnostics: list[str]) -> dict[str, Any]:
