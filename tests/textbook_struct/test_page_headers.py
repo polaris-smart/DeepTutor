@@ -1,14 +1,17 @@
-"""Running-header chapter rebuild: footer (人教版) + header (苏教版) both.
+"""Running-header chapter rebuild: footer + header channels both.
 
-09-11 生产实锤：苏教版教材章名印在**页眉**（“集合第1章”/“空间向量与立体
-几何 第6章”），页脚只有出版社名——纯 footer 页脚法 0 章命中。扩展后
-header 中嵌章 token 的形态被抽取并规整为“第N章 章名”，与 footer 路径
-共用 level 过滤与 seen 去重。
+Some textbooks print the chapter name embedded mid-text in the running
+*header* (e.g. “集合第1章” / “空间向量与立体几何 第6章”) while the footer
+only carries the publisher name — a footer-only pass then finds 0 chapters.
+Header-embedded chapter tokens are extracted and normalized to the
+“第N章 章名” shape, sharing the level filter and seen-dedupe with the
+footer path.
 """
 
 from __future__ import annotations
 
-from deeptutor.textbook_struct.chapter_rebuild import rebuild_from_headers_level
+from deeptutor.textbook_struct import Chapter, rebuild_from_headers_level, verify_offset
+from deeptutor.textbook_struct.chapter_rebuild import assign_page_ranges
 from deeptutor.textbook_struct.page_headers import (
     normalize_header_chapter,
     page_facts,
@@ -31,7 +34,7 @@ def _page_number(n: str) -> dict:
     return {"type": "page_number", "lines": [{"spans": [{"content": n}]}]}
 
 
-# ── normalize：苏教页眉三形态 + 防误切 ───────────────────────────────────
+# ── normalize: three header forms + mismatch guards ──────────────────────
 
 
 def test_normalize_embedded_chapter_name_before_token() -> None:
@@ -51,13 +54,14 @@ def test_normalize_leading_token_keeps_footer_shape() -> None:
 
 
 def test_normalize_rejects_book_title_and_prose() -> None:
-    # 书名年份、无章 token 的普通页眉、长正文都不是章界。
+    # Book-title-with-year, a plain header without a chapter token, and long
+    # prose are not chapter boundaries.
     assert normalize_header_chapter("高中数学人教A版2019") is None
     assert normalize_header_chapter("数学·必修第一册") is None
     assert normalize_header_chapter("a" * 60) is None
 
 
-# ── page_facts：双通道采集 ────────────────────────────────────────────────
+# ── page_facts: dual-channel collection ──────────────────────────────────
 
 
 def test_page_facts_reads_footer_verbatim() -> None:
@@ -74,17 +78,19 @@ def test_page_facts_reads_header_normalized() -> None:
     assert printed == "13"
 
 
-# ── rebuild_from_headers_level：页眉驱动建章端到端 ─────────────────────────
+# ── rebuild_from_headers_level: header-driven chapter build, end to end ───
 
 
-def _sujiao_layout() -> dict:
-    """苏教形态：章名在页眉，两章各自页起（printed 页码供偏移校验）。
+def _header_layout() -> dict:
+    """Header layout: chapter name in the running header, each chapter
+    starting on its own page (printed numbers enable offset checking).
 
-    物理页(1-based) − 印刷页码 恒为 1（封面不印页码，正文从印刷 2 起）。
+    physical (1-based) − printed page number stays constant at 1 across the
+    book (the cover prints no page number; the body starts at printed 2).
     """
     return {
         "pdf_info": [
-            _page(0, [_header("高中数学·必修第一册"), _page_number("1")]),  # 封面
+            _page(0, [_header("高中数学·必修第一册"), _page_number("1")]),  # cover
             _page(1, [_header("集合与常用逻辑用语 第1章"), _page_number("2")]),
             _page(2, [_header("集合与常用逻辑用语 第1章"), _page_number("3")]),
             _page(19, [_header("一元二次函数、方程和不等式 第2章"), _page_number("20")]),
@@ -93,26 +99,27 @@ def _sujiao_layout() -> dict:
 
 
 def test_rebuild_level_builds_chapters_from_headers() -> None:
-    chapters = rebuild_from_headers_level(_sujiao_layout(), unit="章")
+    chapters = rebuild_from_headers_level(_header_layout(), unit="章")
     assert [c.title for c in chapters] == [
         "第1章 集合与常用逻辑用语",
         "第2章 一元二次函数、方程和不等式",
     ]
     assert [c.page_idx for c in chapters] == [1, 19]
+    # Ranges are half-open, even when layout pages have sparse indices.
+    assert [c.end_page_idx for c in chapters] == [19, 20]
     assert chapters[0].meta["printed_page"] == 2
     assert chapters[1].meta["printed_page"] == 20
-    # 偏移恒定：物理页 − 印刷页 = 1，全书一致。
+    # Constant offset: physical page − printed page = 1 across the whole book.
     assert verify_offsets_ok(chapters)
 
 
 def verify_offsets_ok(chapters) -> bool:
-    from deeptutor.textbook_struct.chapter_rebuild import verify_offset
-
     return verify_offset(chapters)["ok"]
 
 
 def test_rebuild_level_unit_filter_drops_other_levels() -> None:
-    # 双级页眉（“第X章/第Y节”轮换）时，unit=节 只认节级变化。
+    # With two-level running headers (rotating “第X章/第Y节” pairs),
+    # unit="节" only follows section-level changes.
     layout = {
         "pdf_info": [
             _page(0, [_header("函数 第2章"), _header("函数的概念 第1节"), _page_number("5")]),
@@ -121,3 +128,25 @@ def test_rebuild_level_unit_filter_drops_other_levels() -> None:
     }
     chapters = rebuild_from_headers_level(layout, unit="节")
     assert [c.title for c in chapters] == ["第1节 函数的概念", "第2节 函数的表示法"]
+
+
+def test_section_numbering_can_restart_in_a_new_chapter() -> None:
+    layout = {
+        "pdf_info": [
+            _page(0, [_footer("第一章 A"), _footer("第一节 概述")]),
+            _page(1, [_footer("第二章 B"), _footer("第一节 概述")]),
+        ]
+    }
+    chapters = rebuild_from_headers_level(layout, unit="节")
+    assert [(chapter.title, chapter.page_idx, chapter.end_page_idx) for chapter in chapters] == [
+        ("第一节 概述", 0, 1),
+        ("第一节 概述", 1, 2),
+    ]
+
+
+def test_chapters_starting_on_one_page_both_include_that_page() -> None:
+    chapters = [Chapter("A", 2, []), Chapter("B", 2, [])]
+    assert [chapter.end_page_idx for chapter in assign_page_ranges(chapters, page_count=3)] == [
+        3,
+        3,
+    ]

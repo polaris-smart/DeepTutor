@@ -382,6 +382,7 @@ export const bookApi = {
     user_answer?: string;
     /** Omit for a written answer the reader revealed but didn't self-grade. */
     is_correct?: boolean;
+    submission_id?: string;
   }) =>
     request<{ progress: Progress }>("/books/quiz-attempt", {
       method: "POST",

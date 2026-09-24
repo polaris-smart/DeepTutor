@@ -1,13 +1,14 @@
-"""封闭栏目名黑名单（判据第 0 层）。
+"""Closed vocabulary of textbook feature-column names (layer 0).
 
-这些是教材栏目/活动名——MinerU 常把它们识别为 title 块，但它们永远不是章节。
-人教版高中教材全学科通用；新教材出现新栏目名时在此追加（封闭词表，不做模糊匹配，
-避免误杀真标题）。
+These are recurring textbook activity/column names — MinerU often classifies
+them as ``title`` blocks, but they are never chapter headings. The list is
+closed on purpose: no fuzzy matching, to avoid swallowing real titles.
+Append new names as new textbook editions introduce new column types.
 """
 
 COLUMN_BLACKLIST: frozenset[str] = frozenset(
     {
-        # 政治
+        # civics / politics
         "探究与分享",
         "相关链接",
         "专家点评",
@@ -15,11 +16,11 @@ COLUMN_BLACKLIST: frozenset[str] = frozenset(
         "观点一",
         "观点二",
         "观点三",
-        # 语文 / 英语
+        # Chinese / English
         "学习提示",
         "单元导语",
         "思考与探究",
-        # 数学 / 物理 / 化学 / 生物
+        # math / physics / chemistry / biology
         "思考",
         "探究",
         "实验",
@@ -30,7 +31,7 @@ COLUMN_BLACKLIST: frozenset[str] = frozenset(
         "信息技术应用",
         "阅读与思考",
         "观察与思考",
-        # 地理 / 历史
+        # geography / history
         "问题研究",
         "自学窗",
         "活动",

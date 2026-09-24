@@ -191,4 +191,15 @@ def rebuild_from_overview(
     chapters.extend(unit_chapters)
     if last_unit_page + 1 < page_count:
         chapters.append(Chapter(title=appendix_title, page_idx=last_unit_page + 1, bbox=[]))
-    return assign_page_ranges(chapters, page_count=page_count)
+    ranged = assign_page_ranges(chapters, page_count=page_count)
+
+    # 上游 v1.6.11 的 assign_page_ranges 会按 page_idx 重排 —— 但概述锚定法的
+    # 书目语义是 unit_no 序（扫描序 ≠ 书序，扫描页 Unit 3 可排在 Unit 1 前）。
+    # 这里恢复：导览 → Unit 按号 → 附录。
+    def _book_order(chapter: Chapter) -> tuple[int, int]:
+        no = chapter.meta.get("unit_no")
+        if no is not None:
+            return (1, no)
+        return (0, chapter.page_idx) if chapter.page_idx < first_unit_page else (2, chapter.page_idx)
+
+    return sorted(ranged, key=_book_order)

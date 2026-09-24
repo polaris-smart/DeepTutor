@@ -23,6 +23,7 @@ from typing import Any, Callable, Iterable
 from llama_index.core import Document
 from llama_index.core.schema import ImageNode
 
+from deeptutor.services.config.runtime_settings import DOCUMENT_PARSING_ENGINE_LITEPARSE
 from deeptutor.services.embedding import get_embedding_client
 from deeptutor.services.llm.client import get_llm_client
 from deeptutor.services.rag.file_routing import FileTypeRouter
@@ -176,6 +177,9 @@ _MD_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 # Volcano Ark embedding `input` strings cap at 100000 bytes; keep the base64
 # image data comfortably below that (headroom for the data-URI prefix).
 _MAX_IMAGE_DATA_URI_BYTES = 90_000
+# LiteParse is the only automatic fallback candidate: it performs local OCR,
+# has no model download, and can run without changing the user's global parser.
+_PDF_OCR_FALLBACK_ENGINE = DOCUMENT_PARSING_ENGINE_LITEPARSE
 
 
 @dataclass(frozen=True)
@@ -222,14 +226,36 @@ class LlamaIndexDocumentLoader:
             text, extracted_images, parse_engine = await asyncio.to_thread(
                 self._parse_document, file_path
             )
-            self._append_if_nonempty(
-                documents,
-                file_path,
-                text,
-                parse_engine=parse_engine,
-                extracted_image_count=len(extracted_images),
+            scanned_pdf_needs_ocr = (
+                file_path.suffix.lower() == ".pdf"
+                and not text.strip()
+                and parse_engine != _PDF_OCR_FALLBACK_ENGINE
             )
-            image_sources.extend(extracted_images)
+            if scanned_pdf_needs_ocr:
+                fallback = await asyncio.to_thread(
+                    self._parse_document,
+                    file_path,
+                    None,
+                    _PDF_OCR_FALLBACK_ENGINE,
+                )
+                if fallback[0].strip() or fallback[1]:
+                    text, extracted_images, parse_engine = fallback
+                    scanned_pdf_needs_ocr = False
+                else:
+                    self._log_scanned_pdf_without_ocr(
+                        file_path,
+                        parse_engine,
+                        len(extracted_images),
+                    )
+            if not scanned_pdf_needs_ocr:
+                self._append_if_nonempty(
+                    documents,
+                    file_path,
+                    text,
+                    parse_engine=parse_engine,
+                    extracted_image_count=len(extracted_images),
+                )
+                image_sources.extend(extracted_images)
 
         for file_path_str in classification.text_files:
             file_path = Path(file_path_str)
@@ -287,6 +313,7 @@ class LlamaIndexDocumentLoader:
         self,
         file_path: Path,
         parse_service=None,  # noqa: ANN001
+        engine: str | None = None,
     ) -> tuple[str, list[_ImageSource], str]:
         """Parse a document through the shared, engine-pluggable parse layer.
 
@@ -298,12 +325,20 @@ class LlamaIndexDocumentLoader:
         from deeptutor.services.parsing import ParserError, get_parse_service
 
         try:
-            parsed = (parse_service or get_parse_service()).parse(file_path)
+            parsed = (parse_service or get_parse_service()).parse(file_path, engine=engine)
         except ParserError as exc:
-            self.logger.warning(
-                f"Skipped {file_path.name}: the active document-parsing engine could "
-                f"not handle it ({exc}). Change the engine in Settings → Document Parsing."
-            )
+            if engine:
+                self.logger.warning(
+                    "Automatic OCR fallback failed for %s with the %s engine: %s",
+                    file_path.name,
+                    engine,
+                    exc,
+                )
+            else:
+                self.logger.warning(
+                    f"Skipped {file_path.name}: the active document-parsing engine could "
+                    f"not handle it ({exc}). Change the engine in Settings → Document Parsing."
+                )
             return "", [], ""
 
         text = parsed.markdown.strip() or self._text_from_blocks(parsed.blocks)
@@ -400,6 +435,21 @@ class LlamaIndexDocumentLoader:
         except Exception:
             return None
         return None
+    def _log_scanned_pdf_without_ocr(
+        self,
+        file_path: Path,
+        parse_engine: str,
+        extracted_image_count: int,
+    ) -> None:
+        engine_label = parse_engine or "the active parser"
+        self.logger.warning(
+            "Skipped scanned PDF: %s. The %s engine extracted %d image(s) but no text, "
+            "and no usable local OCR fallback was available. Install LiteParse under "
+            "Settings, Document Parsing, or switch to an OCR-capable engine with OCR enabled.",
+            file_path.name,
+            engine_label,
+            extracted_image_count,
+        )
 
     @staticmethod
     def _text_from_blocks(blocks: list[dict] | None) -> str:

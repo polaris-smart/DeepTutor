@@ -1,21 +1,21 @@
-"""Four-layer chapter rebuild from MinerU ``layout.json``.
+"""Layered chapter rebuild from MinerU ``layout.json``.
 
 Layers (all deterministic, no LLM):
-  0. column blacklist   — 栏目名 never chapters (closed vocabulary)
+  0. column blacklist   — feature-column names are never chapters (closed vocabulary)
   1. regex              — ``第X课/章/节/单元`` headings (works regardless of height)
   2. position filter    — heading must sit in the page-top band (y0 < top)
   3. adjacent merge     — same-page title blocks split by line-wrap rejoin
-  4. TOC cross-check    — printed TOC page entries validate hit rate
 
 Input is the MinerU layout dict (``layout["pdf_info"]``), one page object per
 page with ``page_idx`` / ``para_blocks``; blocks carry ``type`` / ``bbox`` /
-``lines[].spans[].content``. Spec: P0-章节重建引擎实施方案 §4.
+``lines[].spans[].content``.
 """
 
 from __future__ import annotations
 
-import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+import re
 
 from .column_blacklist import COLUMN_BLACKLIST
 
@@ -34,20 +34,18 @@ class Chapter:
     page_idx: int
     bbox: list[float]
     end_page_idx: int | None = None  # filled by assign_page_ranges
-    level: int = 1  # reserved: 1=课/章, 2=框/节 (from TOC cross-check)
+    level: int = 1  # reserved: 1=lesson/chapter (课/章), 2=section (框/节)
     meta: dict = field(default_factory=dict)
 
 
 def block_text(block: dict) -> str:
     return "".join(
-        span.get("content", "")
-        for line in block.get("lines", [])
-        for span in line.get("spans", [])
+        span.get("content", "") for line in block.get("lines", []) for span in line.get("spans", [])
     ).strip()
 
 
 def merge_adjacent(blocks: list[dict], gap: float = 40.0) -> list[dict]:
-    """Rejoin same-page title blocks split by line-wrap (counterexample #1).
+    """Rejoin same-page title blocks split by line-wrap.
 
     Sort by y0; vertical gap < ``gap`` with x-overlap merges into the first
     block (bbox union, text concat). Mutates nothing — returns new dicts.
@@ -75,13 +73,19 @@ def merge_adjacent(blocks: list[dict], gap: float = 40.0) -> list[dict]:
     return merged
 
 
+def layout_page_count(layout: dict) -> int:
+    """Exclusive upper page bound, including sparse physical page indices."""
+    pages = layout.get("pdf_info", [])
+    return max([len(pages), *(page["page_idx"] + 1 for page in pages)])
+
+
 def rebuild(
     layout: dict,
     *,
     top_band: float = 120.0,
     merge_gap: float = 40.0,
 ) -> list[Chapter]:
-    """Run the four-layer pipeline over ``layout`` and return chapter starts."""
+    """Run the layered pipeline over ``layout`` and return chapter starts."""
     chapters: list[Chapter] = []
     for page in layout.get("pdf_info", []):
         title_blocks = [b for b in page.get("para_blocks", []) if b.get("type") == "title"]
@@ -102,8 +106,8 @@ def rebuild(
                     bbox=list(block["bbox"]),
                 )
             )
-    chapters = _dedupe_keep_last(chapters)  # counterexample #4: TOC page duplicates body
-    return assign_page_ranges(chapters, page_count=len(layout.get("pdf_info", [])))
+    chapters = _dedupe_keep_last(chapters)  # TOC page duplicates body hits — keep body
+    return assign_page_ranges(chapters, page_count=layout_page_count(layout))
 
 
 def _dedupe_keep_last(chapters: list[Chapter]) -> list[Chapter]:
@@ -120,17 +124,21 @@ def _dedupe_keep_last(chapters: list[Chapter]) -> list[Chapter]:
 
 
 def assign_page_ranges(chapters: list[Chapter], *, page_count: int) -> list[Chapter]:
-    """Chapter i spans [start_i, start_{i+1}); the last runs to the last page."""
+    """Return half-open page ranges, including the final physical page."""
+    chapters.sort(key=lambda chapter: chapter.page_idx)
     for i, chapter in enumerate(chapters):
         chapter.end_page_idx = (
-            chapters[i + 1].page_idx if i + 1 < len(chapters) else max(page_count - 1, chapter.page_idx)
+            max(chapters[i + 1].page_idx, chapter.page_idx + 1)
+            if i + 1 < len(chapters)
+            else max(page_count, chapter.page_idx + 1)
         )
     return chapters
 
 
-# ── v0.3: 框级/综合探究检测（页中 title 块，无页顶带约束）────────────────
-# 实测（必修1）：框标题 h=22-24，综合探究 h≈27，小节行 h≈21，课标题残留 h≈28。
-# 栏目名走黑名单；出版社页眉漏网走 PUBLISHER_NOISE。
+# ── Mid-page section-frame detection (no page-top band constraint) ─────────
+# Measured heading heights: frame ~22-24, exploration ~27, body lines ~21,
+# lesson-title wrap residue ~28. Column names go to the blacklist; stray
+# publisher header lines go to PUBLISHER_NOISE.
 
 PUBLISHER_NOISE = frozenset({"人民教育出版社", "出版社", "思想政治", "目录", "后记"})
 
@@ -141,14 +149,14 @@ def detect_frames(
     height_range: tuple[float, float] = (20.0, 25.0),
     extras_range: tuple[float, float] = (26.0, 29.0),
     first_lesson_page_idx: int | None = None,
-    lesson_titles: list[str] = (),
+    lesson_titles: Sequence[str] = (),
 ) -> tuple[list[dict], list[dict]]:
-    """Detect 框-level headings (and chapter-level extras like 综合探究).
+    """Detect section-frame headings (and chapter-level extras like 综合探究).
 
     Returns ``(frames, extras)`` — each item ``{title, page_idx, bbox, height}``.
-    框 = mid-page title blocks in the frame height band; extras (综合探究/后记)
-    sit in the slightly taller band. Blacklist + publisher noise + 课 regex
-    filtered out.
+    Frames are mid-page title blocks in the frame height band; extras
+    (exploration sections / afterword) sit in the slightly taller band.
+    Blacklist + publisher noise + lesson-level regex filtered out.
     """
     frames: list[dict] = []
     extras: list[dict] = []
@@ -160,7 +168,7 @@ def detect_frames(
             if not text or text in COLUMN_BLACKLIST or text in PUBLISHER_NOISE:
                 continue
             if CHAPTER_RE.match(text):
-                continue  # 课级走页脚法
+                continue  # lesson-level handled by the footer path
             height = block["bbox"][3] - block["bbox"][1]
             item = {
                 "title": text,
@@ -170,8 +178,12 @@ def detect_frames(
             }
             if height_range[0] <= height <= height_range[1]:
                 if len(text) >= 6:
-                    # 封面/前置页噪音 + 课标题换行残留（是某课标题的子串）
-                    if first_lesson_page_idx is not None and item["page_idx"] < first_lesson_page_idx:
+                    # front-matter noise + lesson-title wrap residue
+                    # (substring of a lesson title)
+                    if (
+                        first_lesson_page_idx is not None
+                        and item["page_idx"] < first_lesson_page_idx
+                    ):
                         continue
                     if any(text in lt for lt in lesson_titles):
                         continue
@@ -181,8 +193,7 @@ def detect_frames(
     return frames, extras
 
 
-# ── v0.4: 级别感知边界 + 偏移恒定校验（P0 方案 §4.5/§6）────────────────
-from .page_headers import page_facts
+# ── Level-aware boundaries + printed-offset consistency check ──────────────
 
 UNIT_RE_MAP = {
     "课": re.compile(r"^第\s*[一二三四五六七八九十百\d]+\s*课"),
@@ -191,27 +202,50 @@ UNIT_RE_MAP = {
     "单元": re.compile(r"^第\s*[一二三四五六七八九十百\d]+\s*单元"),
 }
 
+PARENT_UNITS = {
+    "课": ("单元", "章"),
+    "章": ("单元",),
+    "节": ("单元", "章"),
+    "单元": (),
+}
+
 
 def rebuild_from_headers_level(layout: dict, unit: str = "课") -> list[Chapter]:
-    """级别感知页脚法：只认目标级别（如"课"）的页眉变化为章界。
+    """Level-aware rebuild: only ``unit``-level running-header changes mark boundaries.
 
-    双级页眉教材（地理"第X章/第Y节"同页眉轮换）中，非目标级别的页眉变化
-    不构成边界——否则会误切出伪章节（P0 方案反例 #7）。
+    In textbooks with two-level running headers (e.g. rotating
+    "第X章/第Y节" pairs), a change at the other level must not start a
+    chapter — otherwise pseudo-chapters get split out.
     """
+    # Imported here to avoid a circular import (page_headers imports this
+    # module's CHAPTER_RE / Chapter / assign_page_ranges at top level).
+    from .page_headers import page_facts
+
     unit_re = UNIT_RE_MAP.get(unit)
     if unit_re is None:
         raise ValueError(f"unknown unit: {unit}")
     chapters: list[Chapter] = []
-    seen: set[str] = set()
-    page_count = len(layout.get("pdf_info", []))
-    for page in layout.get("pdf_info", []):
+    parent_titles: dict[str, str] = {}
+    last_boundary: tuple[str, ...] | None = None
+    page_count = layout_page_count(layout)
+    for page in sorted(layout.get("pdf_info", []), key=lambda item: item["page_idx"]):
         footers, printed = page_facts(page)
+        for title in footers:
+            for parent_unit in PARENT_UNITS[unit]:
+                if UNIT_RE_MAP[parent_unit].match(title):
+                    parent_titles[parent_unit] = title
+                    if parent_unit == "单元":
+                        parent_titles.pop("章", None)
         for title in footers:
             if not unit_re.match(title):
                 continue
-            if title in seen:
+            boundary = (
+                *(parent_titles.get(parent_unit, "") for parent_unit in PARENT_UNITS[unit]),
+                title,
+            )
+            if boundary == last_boundary:
                 continue
-            seen.add(title)
+            last_boundary = boundary
             chapters.append(
                 Chapter(
                     title=title,
@@ -224,9 +258,10 @@ def rebuild_from_headers_level(layout: dict, unit: str = "课") -> list[Chapter]
 
 
 def verify_offset(chapters: list[Chapter]) -> dict:
-    """偏移恒定校验：物理页(1-based) − 印刷页码 应全书恒定。
+    """Printed-offset consistency: physical (1-based) − printed page number.
 
-    偏移不一致 = 页脚法误判了章节边界（P0 方案 §6 校验逻辑）。
+    An offset that varies across chapters means a chapter boundary was
+    mis-detected.
     """
     offsets = sorted(
         {c.page_idx + 1 - c.meta["printed_page"] for c in chapters if c.meta.get("printed_page")}

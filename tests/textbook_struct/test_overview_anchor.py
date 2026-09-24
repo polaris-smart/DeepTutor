@@ -78,9 +78,10 @@ def test_rebuild_normal_three_units() -> None:
         "附录",
     ]
     assert [c.page_idx for c in chapters] == [0, 1, 3, 5, 6]
-    # assign_page_ranges 语义：end = 下一章起始页；导览覆盖 [0, 1)，附录覆盖 [6, 6].
+    # assign_page_ranges 语义（上游 v1.6.11 起）：end 为半开排他上界；
+    # 导览覆盖 [0, 1)，附录覆盖 [6, 7).
     assert chapters[0].end_page_idx == 1
-    assert chapters[-1].end_page_idx == 6
+    assert chapters[-1].end_page_idx == 7
     # 序号落 meta，供显示层/去重使用.
     assert [c.meta["unit_no"] for c in chapters[1:-1]] == [1, 2, 3]
 

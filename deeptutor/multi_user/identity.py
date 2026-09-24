@@ -24,7 +24,7 @@ from .book_permission import (
     public_permission_dict,
 )
 from .learner_profile import normalize_profile
-from .models import AccountPreset, Role
+from .models import VALID_ROLES, AccountPreset, Role, normalize_role
 from .paths import PROJECT_ROOT, SYSTEM_ROOT, migrate_legacy_multi_user_tree
 
 logger = logging.getLogger(__name__)
@@ -71,8 +71,6 @@ def _canonical_record(
     hashed = str(value.get("hash") or value.get("password_hash") or "")
     if not hashed:
         return None
-    from .models import normalize_role
-
     role = normalize_role(str(value.get("role") or default_role), default_role)
     preset = str(value.get("preset") or "standard")
     if preset not in {"standard", "learner", "custom"}:
@@ -122,8 +120,6 @@ def _migrate_legacy_users() -> dict[str, dict[str, Any]] | None:
     for username, value in legacy.items():
         role: Role = "admin" if not users else "user"
         if isinstance(value, dict):
-            from .models import normalize_role
-
             role = normalize_role(str(value.get("role") or ""), role)  # type: ignore[assignment]
         record = _canonical_record(username, value, default_role=role)
         if record is not None:
@@ -206,8 +202,6 @@ def load_users(  # nosec B107 - empty defaults mean "no env fallback supplied".
     for index, (username, value) in enumerate(users.items()):
         role: Role = "admin" if index == 0 else "user"
         if isinstance(value, dict):
-            from .models import normalize_role
-
             role = normalize_role(str(value.get("role") or ""), role)  # type: ignore[assignment]
         record = _canonical_record(str(username), value, default_role=role)
         if record is None:
@@ -543,8 +537,6 @@ def delete_avatar_file(user_id: str) -> None:
 
 
 def set_role(username: str, role: Role) -> bool:
-    from .models import VALID_ROLES
-
     if role not in VALID_ROLES:
         raise ValueError(f"role must be one of {sorted(VALID_ROLES)}")
     if not USERS_FILE.exists():
@@ -583,7 +575,9 @@ def set_children(username: str, children: list[str]) -> bool:
     return True
 
 
-def set_preset(username: str, preset: AccountPreset) -> bool:
+def set_preset(
+    username: str, preset: AccountPreset, *, expected_user_id: str | None = None
+) -> bool:
     """Update an account's configuration preset without changing its role."""
     if preset not in {"standard", "learner", "custom"}:
         raise ValueError("preset must be 'standard', 'learner', or 'custom'")
@@ -592,6 +586,11 @@ def set_preset(username: str, preset: AccountPreset) -> bool:
     with _USERS_WRITE_LOCK:
         users = load_users()
         if username not in users:
+            return False
+        if (
+            expected_user_id is not None
+            and str(users[username].get("id") or "") != expected_user_id
+        ):
             return False
         users[username]["preset"] = preset
         _write_users(users)

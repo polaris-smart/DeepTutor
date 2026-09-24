@@ -283,7 +283,9 @@ def _page_specs_from_layout(
     specs: list[dict[str, Any]] = []
     for index, chapter in enumerate(chapters):
         specs_pages: list[dict[str, Any]] = []
-        for pno in range(chapter.page_idx + 1, (chapter.end_page_idx or 0) + 1):
+        # end_page_idx 自上游 v1.6.11 起为半开排他上界（章覆盖
+        # [page_idx, end_page_idx)），续页区间相应取到 end-1。
+        for pno in range(chapter.page_idx + 1, chapter.end_page_idx or 0):
             if pno >= len(pages):
                 break
             text = page_text(pages[pno])

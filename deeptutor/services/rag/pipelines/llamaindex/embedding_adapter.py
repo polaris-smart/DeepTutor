@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from contextvars import ContextVar
+from dataclasses import dataclass
 import logging
 import threading
-from typing import Any, List
+from typing import Any, Callable, List
 
 from llama_index.core import Settings
 from llama_index.core.base.embeddings.base import BaseEmbedding
@@ -20,6 +21,24 @@ from deeptutor.services.embedding.validation import validate_embedding_batch
 from .config import chunk_geometry
 
 _LLAMAINDEX_EMBED_GROUP_ITEMS = 256
+
+
+@dataclass
+class _IndexingProgress:
+    total_batches: int
+    provider_batch_size: int
+    completed_batches: int = 0
+
+
+# An executor thread inherits the indexing operation's context. Keep both the
+# callback and its cumulative count there: a timed-out worker must never pick
+# up a later task's callback from a shared CustomEmbedding instance (#1478).
+_task_progress_callback: ContextVar[Callable[[int, int], None] | None] = ContextVar(
+    "llamaindex_progress_callback", default=None
+)
+_indexing_progress: ContextVar[_IndexingProgress | None] = ContextVar(
+    "llamaindex_indexing_progress", default=None
+)
 
 
 def _config_fingerprint(config: EmbeddingConfig) -> tuple[Any, ...]:
@@ -109,6 +128,35 @@ class CustomEmbedding(BaseEmbedding):
         batch_size = self._client_batch_size()
         return (max(0, item_count) + batch_size - 1) // batch_size
 
+    def __call__(self, nodes, **kwargs):
+        """Count provider batches across the full split-node set once.
+
+        K12 merge: upstream ContextVar channel (#1478 worker isolation) for the
+        pipeline path; our direct ``get_text_embedding_batch`` channel below
+        keeps standalone calls monotonic. ``_aget_text_embeddings`` reports via
+        exactly one channel (ContextVar wins).
+        """
+        callback = _task_progress_callback.get() or self._progress_callback
+        if callback is None or not nodes:
+            return super().__call__(nodes, **kwargs)
+        config = getattr(self._client, "config", None)
+        binding = getattr(config, "binding", "")
+        provider = EMBEDDING_PROVIDERS.get(binding)
+        provider_limit = provider.max_batch_items if provider else 256
+        batch_size = max(1, min(getattr(config, "batch_size", 10), provider_limit))
+        outer_size = self.embed_batch_size
+        total_batches = sum(
+            (min(outer_size, len(nodes) - start) + batch_size - 1) // batch_size
+            for start in range(0, len(nodes), outer_size)
+        )
+        token = _indexing_progress.set(
+            _IndexingProgress(total_batches=total_batches, provider_batch_size=batch_size)
+        )
+        try:
+            return super().__call__(nodes, **kwargs)
+        finally:
+            _indexing_progress.reset(token)
+
     def get_text_embedding_batch(
         self,
         texts: List[str],
@@ -122,7 +170,8 @@ class CustomEmbedding(BaseEmbedding):
         configured provider batch size. The provider callback therefore emits
         local sequences such as ``1/3, 2/3, 3/3`` hundreds of times. Treating
         those local values as whole-index progress makes the UI repeatedly hit
-        100% while embedding is still running.
+        100% while embedding is still running. (K12 fork: covers callers that
+        bypass ``__call__``; the pipeline path is handled by the ContextVar.)
         """
         outer_batch_size = max(1, int(self.embed_batch_size))
         total_requests = sum(
@@ -176,26 +225,39 @@ class CustomEmbedding(BaseEmbedding):
 
     async def _aget_text_embeddings(self, texts: List[str]) -> List[List[float]]:
         client = self.refresh_client()
-        request_count = self._request_count(len(texts))
+        # K12 merge: ContextVar channel (upstream, pipeline path) wins when
+        # active; otherwise our threading.local channel covers direct calls.
+        # Exactly one channel wraps the callback so progress is never doubled.
+        callback = _task_progress_callback.get() or self._progress_callback
+        progress = _indexing_progress.get()
         state = self._batch_progress
+        state_active = bool(getattr(state, "active", False))
         completed_before = int(getattr(state, "completed", 0))
+        if callback is not None and progress is not None:
+            offset = progress.completed_batches
+            sink = callback
 
-        def _report_progress(current: int, total: int) -> None:
-            callback = self._progress_callback
-            if callback is None:
-                return
-            if getattr(state, "active", False):
+            def report(batch_num: int, _total_batches: int) -> None:
+                sink(offset + batch_num, progress.total_batches)
+
+            callback = report
+        elif callback is not None and state_active:
+
+            def _report_direct(current: int, total: int) -> None:
                 callback(completed_before + current, int(state.total))
-            else:
-                callback(current, total)
 
+            callback = _report_direct
         embeddings = await client.embed(
             texts,
-            progress_callback=_report_progress if self._progress_callback else None,
+            progress_callback=callback,
             input_type="search_document",
         )
-        if getattr(state, "active", False):
-            state.completed = completed_before + request_count
+        if progress is not None:
+            progress.completed_batches += (
+                len(texts) + progress.provider_batch_size - 1
+            ) // progress.provider_batch_size
+        if state_active:
+            state.completed = completed_before + self._request_count(len(texts))
         return validate_embedding_batch(
             embeddings,
             expected_count=len(texts),
@@ -260,10 +322,8 @@ def configure_llamaindex_settings(logger=None) -> None:
 
 
 def set_progress_callback(callback) -> None:
-    """Attach an indexing progress callback to the active embedding adapter."""
-    embed_model = current_embedding()
-    if isinstance(embed_model, CustomEmbedding):
-        embed_model.set_progress_callback(callback)
+    """Bind a callback to this indexing context, not a shared adapter slot."""
+    _task_progress_callback.set(callback)
 
 
 async def verify_embedding_connectivity(logger=None) -> None:

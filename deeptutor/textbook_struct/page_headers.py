@@ -6,16 +6,16 @@ textbooks that furniture is gold:
   - ``page_number`` blocks carry the PRINTED page number
 
 A chapter starts where its running header first appears; the printed page
-number comes free on the very same page. This fixes both the TOC-page false
-positives of the title-block path (v0.1) and WB's 坑一 (printed↔physical
-offset measured per chapter, not guessed).
+number comes free on the very same page. This fixes the TOC-page false
+positives of the title-block path (v0.1), and measures the printed-vs-
+physical page offset per chapter instead of guessing it.
 """
 
 from __future__ import annotations
 
 import re
 
-from .chapter_rebuild import CHAPTER_RE, Chapter, assign_page_ranges
+from .chapter_rebuild import CHAPTER_RE, Chapter, assign_page_ranges, layout_page_count
 
 
 def _block_text(block: dict) -> str:
@@ -24,10 +24,11 @@ def _block_text(block: dict) -> str:
     ).strip()
 
 
-#: Running-header variants that embed the chapter token mid-text — the
-#: 苏教版 layout puts the chapter name in the *header* (“集合第1章”,
-#: “空间向量与立体几何 第6章”), often without leading “第”. Extracted and
-#: normalized to the canonical “第N章 章名” shape so the level filter and
+#: Running-header variants that embed the chapter token mid-text — some
+#: publishers print the chapter name in the running *header* (embedded
+#: mid-text, e.g. “集合第1章”, “空间向量与立体几何 第6章”), often without a
+#: leading “第”; others print it in the footer. Header variants are extracted
+#: and normalized to the canonical “第N章 章名” shape so the level filter and
 #: dedupe see the same vocabulary the footer path produces.
 HEADER_CHAPTER_RE = re.compile(
     r"^(?P<pre>.{0,20}?)\s*第\s*(?P<num>[一二三四五六七八九十百\d]+)\s*"
@@ -49,9 +50,10 @@ def page_facts(page: dict) -> tuple[list[str], str]:
     """Return ``(chapter_shaped_footers, printed_page_number)`` for one page.
 
     Chapter-shaped furniture is read from *both* running-header positions:
-    footer blocks matching ``CHAPTER_RE`` verbatim (人教版 convention) and
-    header blocks whose chapter token sits mid-text (苏教版 convention,
-    normalized via :func:`normalize_header_chapter`).
+    footer blocks matching ``CHAPTER_RE`` verbatim (publishers that print the
+    chapter name in the footer) and header blocks whose chapter token sits
+    mid-text (publishers that embed it in the header, normalized via
+    :func:`normalize_header_chapter`).
     """
     footers: list[str] = []
     printed = ""
@@ -75,12 +77,12 @@ def rebuild_from_headers(layout: dict) -> list[Chapter]:
     """Chapter starts = first page where each new running header appears.
 
     Titles are taken verbatim from the running header; ``meta`` carries the
-    printed page number of the start page (display layer decides which base to
-    show — WB 坑一's fix is data, not guesswork).
+    printed page number of the start page (the display layer decides which
+    base to show — the fix is data, not guesswork).
     """
     chapters: list[Chapter] = []
     seen: set[str] = set()
-    page_count = len(layout.get("pdf_info", []))
+    page_count = layout_page_count(layout)
     for page in layout.get("pdf_info", []):
         footers, printed = page_facts(page)
         for title in footers:

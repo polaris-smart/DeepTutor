@@ -12,13 +12,18 @@ Role = Literal["admin", "teacher", "student", "parent", "user"]
 AccountPreset = Literal["standard", "learner", "custom"]
 ScopeKind = Literal["admin", "user"]
 
-#: K12 fork: four roles. Role-bearing stores/validators must accept all four;
-#: authorization stays least-privilege — only "admin" elevates.
+#: The single source of truth for valid role values (K12 fork: five roles).
+#: Every role-bearing store/validator must accept exactly this set;
+#: authorization itself stays least-privilege — only "admin" elevates.
 VALID_ROLES: frozenset[str] = frozenset({"admin", "teacher", "student", "parent", "user"})
 
 
 def normalize_role(value: str, default: str = "user") -> str:
-    """Return the role when legal, else the default (least-privilege degrade)."""
+    """Return ``value`` when it is a legal role, else ``default``.
+
+    Least-privilege degrade: an unknown or corrupted role never keeps or
+    gains privileges — it falls back to the given default (usually "user").
+    """
     return value if value in VALID_ROLES else default
 
 

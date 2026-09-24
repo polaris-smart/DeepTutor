@@ -200,7 +200,8 @@ def set_role(username: str, role: str) -> bool:
     """
     Change the role for an existing user. Returns True on success.
 
-    Valid roles: 'admin', 'teacher', 'student', 'user' (K12 fork).
+    Valid roles are the entries of ``VALID_ROLES``
+    (K12 fork: 'admin', 'teacher', 'student', 'parent', 'user').
     """
     from deeptutor.multi_user.models import VALID_ROLES
 
