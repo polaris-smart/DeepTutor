@@ -242,9 +242,10 @@ class CustomEmbedding(BaseEmbedding):
 
             callback = report
         elif callback is not None and state_active:
+            sink = callback
 
             def _report_direct(current: int, total: int) -> None:
-                callback(completed_before + current, int(state.total))
+                sink(completed_before + current, int(state.total))
 
             callback = _report_direct
         embeddings = await client.embed(
