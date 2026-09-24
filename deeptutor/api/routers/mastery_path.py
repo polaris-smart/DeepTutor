@@ -266,9 +266,11 @@ class ReviewSettingsRequest(BaseModel):
     desired_retention: float = Field(..., ge=0.7, le=0.99, allow_inf_nan=False)
 
 
-class ChapterImport(BaseModel):
-    title: str
-    knowledge_points: list[str] = []
+# ChapterImport comes from deeptutor.services.mastery (imported above): the
+# K12 superset adds struct_path/textbook_node_id with defaults, so upstream
+# callers passing bare {title, knowledge_points} dicts stay valid. Do not
+# re-declare a local subset model here — it would shadow the import and
+# break the kp-tree bridge (pydantic rejects foreign same-named instances).
 
 
 class ImportFromBookRequest(BaseModel):
