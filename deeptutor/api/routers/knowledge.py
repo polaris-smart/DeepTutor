@@ -1241,6 +1241,10 @@ async def run_upload_processing_task(
                 return
 
             index_result = await adder.process_new_documents(staged_files)
+            # K12 fork (P7 auto-pipeline chain): the files that indexed
+            # cleanly feed the ingest tail chain below — the upstream rewrite
+            # of this block only consumes processed_count, so re-bind it here.
+            processed_files = index_result.processed_files
             _task_log(task_id, f"Indexed {index_result.processed_count} file(s)")
 
             if index_result.has_failures:

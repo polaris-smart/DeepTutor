@@ -21,16 +21,24 @@ from deeptutor.multi_user.models import VALID_ROLES, normalize_role
 # ---------------------------------------------------------------- models
 
 
-def test_valid_roles_contains_exactly_the_two_documented_roles():
-    assert VALID_ROLES == frozenset({"admin", "user"})
+def test_valid_roles_contains_exactly_the_documented_roles():
+    # K12 fork: five roles (upstream ships two). The whitelist itself is the
+    # contract — whatever it holds must match the fork's Role literal.
+    assert VALID_ROLES == frozenset({"admin", "teacher", "student", "parent", "user"})
 
 
 def test_normalize_role_passes_legal_roles_through():
     assert normalize_role("admin") == "admin"
     assert normalize_role("user") == "user"
+    # K12 fork: the extra roles are legal, not degraded.
+    assert normalize_role("teacher") == "teacher"
+    assert normalize_role("student") == "student"
+    assert normalize_role("parent") == "parent"
 
 
-@pytest.mark.parametrize("bogus", ["", "superadmin", "Admin", "teacher", "student", "root"])
+# K12 fork: teacher/student are legal roles here, so they leave the bogus list
+# (upstream's two-role model treats them as unknown values).
+@pytest.mark.parametrize("bogus", ["", "superadmin", "Admin", "root"])
 def test_normalize_role_degrades_unknown_values_to_user(bogus):
     assert normalize_role(bogus) == "user"
 
