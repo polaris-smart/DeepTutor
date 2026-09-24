@@ -375,6 +375,7 @@ async def _canonicalize_stage(
 
     specs: list[dict[str, Any]] = []
     toc: list[dict[str, Any]] = []
+    chapters: list[Any] = []
     if layout is not None:
         # 页脚法+页眉法: chapters from the running headers, pages from ranges.
         # 0 章 → 概述锚定法兜底（仅 en/英语书启用，见 chapter_rebuild.rebuild_with_fallback）。
@@ -385,7 +386,10 @@ async def _canonicalize_stage(
         )
         specs = await asyncio.to_thread(_page_specs_from_layout, layout, chapters, title)
 
-    if specs:
+    # 上游 v1.6.11 起 end_page_idx 为半开上界，单页章不再产生续页 spec——
+    # faithful 判据回归"保真法是否重建出章"（章树由 importer 从 layout 直
+    # 出，specs 只是续页阅读块增强），不再误判为 legacy_toc。
+    if chapters:
         request = CanonicalizeRequest(
             title=title,
             source="layout_json",
