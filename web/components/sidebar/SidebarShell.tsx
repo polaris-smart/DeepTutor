@@ -38,6 +38,7 @@ import {
   secondaryNavFor,
 } from "@/components/sidebar/nav-entries";
 import { useAuthStatus } from "@/hooks/useAuthStatus";
+import Tooltip from "@/shared/ui/Tooltip";
 import {
   mergeManualOrder,
   readSessionOrder,
@@ -245,19 +246,20 @@ export function SidebarShell({
           {secondaryNav.map((item) => {
             const active = isNavActive(pathname, item.href);
             return (
-              <Link
-                key={item.href}
-                href={item.href}
-                prefetch={false}
-                title={t(item.label) as string}
-                className={`relative flex h-9 w-9 items-center justify-center rounded-xl transition-all duration-150 ${
-                  active
-                    ? "bg-[var(--accent)] text-[var(--foreground)] shadow-sm"
-                    : "text-foreground/85 hover:bg-background/60 hover:text-[var(--foreground)]"
-                }`}
-              >
-                <item.icon size={18} strokeWidth={active ? 2 : 1.6} />
-              </Link>
+              <Tooltip key={item.href} label={t(item.label) as string} side="right">
+                <Link
+                  href={item.href}
+                  prefetch={false}
+                  aria-label={t(item.label) as string}
+                  className={`relative flex h-9 w-9 items-center justify-center rounded-xl transition-all duration-150 ${
+                    active
+                      ? "bg-[var(--accent)] text-[var(--foreground)] shadow-sm"
+                      : "text-foreground/85 hover:bg-background/60 hover:text-[var(--foreground)]"
+                  }`}
+                >
+                  <item.icon size={18} strokeWidth={active ? 2 : 1.6} />
+                </Link>
+              </Tooltip>
             );
           })}
           {renderedFooter}

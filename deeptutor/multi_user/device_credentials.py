@@ -156,7 +156,7 @@ def _active_account(user_id: str) -> tuple[str, dict[str, Any]] | None:
     if account is None:
         return None
     username, record = account
-    if bool(record.get("disabled")):
+    if str(record.get("role") or "user") == "admin" or bool(record.get("disabled")):
         return None
     if not is_learner_account(record.get("role"), record.get("preset")):
         return None

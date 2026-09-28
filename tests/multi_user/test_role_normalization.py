@@ -74,6 +74,18 @@ def test_set_role_rejects_unknown_roles(mu_isolated_root):
     assert load_users() == {}
 
 
+@pytest.mark.parametrize("role", ["teacher", "student"])
+def test_set_role_accepts_new_roles_and_round_trips(seed_user, role):
+    from deeptutor.multi_user.identity import load_users
+    from deeptutor.services.auth import set_role
+
+    seed_user("carol", "password1234")
+    assert set_role("carol", role) is True
+    # Round-trip through the canonicalization path: the new values persist.
+    roles = {username: record["role"] for username, record in load_users().items()}
+    assert roles["carol"] == role
+
+
 def test_corrupted_stored_role_degrades_to_user_on_load(mu_isolated_root):
     from deeptutor.multi_user import identity
 
@@ -109,14 +121,32 @@ def test_token_payload_degrades_unknown_roles_to_user():
     assert current.is_admin is False
 
 
+@pytest.mark.parametrize("role", ["teacher", "student"])
+def test_new_roles_do_not_elevate(role):
+    # Only "admin" elevates: the new roles carry strictly user-level
+    # capabilities until a deployment explicitly grants more.
+    current = user_from_token_payload(SimpleNamespace(user_id="u_n", username="n", role=role))
+    assert current.role == role
+    assert current.is_admin is False
+
+
 # ------------------------------------------------------- API validator
 
 
 def test_set_role_request_accepts_legal_roles():
     assert SetRoleRequest(role="admin").role == "admin"
+    assert SetRoleRequest(role="teacher").role == "teacher"
+    assert SetRoleRequest(role="student").role == "student"
     assert SetRoleRequest(role="user").role == "user"
 
 
 def test_set_role_request_rejects_unknown_roles():
     with pytest.raises(ValidationError):
         SetRoleRequest(role="superadmin")
+
+
+def test_set_role_request_still_rejects_parent():
+    # Negative control: "parent" is not admitted yet — the whitelist, not
+    # string truthiness, decides.
+    with pytest.raises(ValidationError):
+        SetRoleRequest(role="parent")

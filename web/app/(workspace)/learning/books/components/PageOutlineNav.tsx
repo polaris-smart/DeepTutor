@@ -23,6 +23,7 @@ import {
 import { useTranslation } from "react-i18next";
 
 import type { Block, BlockType, BlockStatus } from "@/lib/book-types";
+import Tooltip from "@/shared/ui/Tooltip";
 
 const TYPE_ICON: Record<BlockType, LucideIcon> = {
   text: AlignLeft,
@@ -233,15 +234,16 @@ export default function PageOutlineNav({
               <Layers className="h-3 w-3" />
               <span>{headerText}</span>
             </div>
-            <button
-              type="button"
-              onClick={() => setOutlineCollapsed(true)}
-              title={collapseTip}
-              aria-label={collapseTip}
-              className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--background)] hover:text-[var(--foreground)]"
-            >
-              <ChevronRight className="h-3.5 w-3.5" />
-            </button>
+            <Tooltip label={collapseTip}>
+              <button
+                type="button"
+                onClick={() => setOutlineCollapsed(true)}
+                aria-label={collapseTip}
+                className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--background)] hover:text-[var(--foreground)]"
+              >
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </Tooltip>
           </div>
 
           <ol className="flex-1 overflow-y-auto px-1.5 py-1.5">
@@ -255,8 +257,9 @@ export default function PageOutlineNav({
                 block.status === "pending" || block.status === "generating";
 
               return (
-                <li key={block.id}>
-                  <button
+                <li key={block.id} className="[&>span]:w-full">
+                  <Tooltip label={`${fallbackLabel} · ${label}`}>
+                    <button
                     type="button"
                     onClick={() => handleJump(block.id)}
                     className={[
@@ -286,12 +289,7 @@ export default function PageOutlineNav({
                       <span className="shrink-0 text-[10.5px] tabular-nums text-[var(--muted-foreground)]/70">
                         {String(idx + 1).padStart(2, "0")}
                       </span>
-                      <span
-                        className="truncate"
-                        title={`${fallbackLabel} · ${label}`}
-                      >
-                        {label}
-                      </span>
+                      <span className="truncate">{label}</span>
                     </span>
                     <span
                       className={[
@@ -299,7 +297,8 @@ export default function PageOutlineNav({
                         statusDotClass(block.status),
                       ].join(" ")}
                     />
-                  </button>
+                    </button>
+                  </Tooltip>
                 </li>
               );
             })}
@@ -307,27 +306,32 @@ export default function PageOutlineNav({
         </nav>
 
         {/* ── Collapsed handle: chevron-only button overlays the same card  */}
-        <button
-          type="button"
-          onClick={() => setOutlineCollapsed(false)}
-          title={expandTip}
-          aria-label={expandTip}
-          aria-hidden={!collapsed}
-          tabIndex={collapsed ? 0 : -1}
+        <div
           className={[
-            "group absolute inset-0 flex items-center justify-center text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]",
+            "absolute inset-0 [&>span]:h-full [&>span]:w-full",
             collapsed ? "pointer-events-auto" : "pointer-events-none",
           ].join(" ")}
-          style={{
-            opacity: collapsed ? 1 : 0,
-            transform: collapsed ? "translateX(0)" : "translateX(-6px)",
-            transition: collapsed
-              ? `opacity 220ms ease-out 120ms, transform 320ms ${EASE} 80ms`
-              : `opacity 140ms ease-out, transform 220ms ${EASE}`,
-          }}
         >
-          <ChevronRight className="h-3.5 w-3.5 rotate-180 transition-transform duration-200 group-hover:-translate-x-0.5" />
-        </button>
+          <Tooltip label={expandTip} suppressed={!collapsed}>
+            <button
+              type="button"
+              onClick={() => setOutlineCollapsed(false)}
+              aria-label={expandTip}
+              aria-hidden={!collapsed}
+              tabIndex={collapsed ? 0 : -1}
+              className="group flex h-full w-full items-center justify-center text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
+              style={{
+                opacity: collapsed ? 1 : 0,
+                transform: collapsed ? "translateX(0)" : "translateX(-6px)",
+                transition: collapsed
+                  ? `opacity 220ms ease-out 120ms, transform 320ms ${EASE} 80ms`
+                  : `opacity 140ms ease-out, transform 220ms ${EASE}`,
+              }}
+            >
+              <ChevronRight className="h-3.5 w-3.5 rotate-180 transition-transform duration-200 group-hover:-translate-x-0.5" />
+            </button>
+          </Tooltip>
+        </div>
       </div>
     </div>
   );

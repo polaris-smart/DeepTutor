@@ -647,6 +647,7 @@ _LEARNER_KB_READ_ROUTES = frozenset(
         "/api/knowledge-bases/{kb_name}/files",
         "/api/knowledge-bases/{kb_name}/files/{filename:path}",
         "/api/knowledge-bases/{kb_name}/file-preview-text/{filename:path}",
+        "/api/knowledge-bases/{kb_name}/visual-assets/{asset_id}",
         "/api/knowledge-bases/{kb_name}/progress",
     }
 )
@@ -670,6 +671,8 @@ def _learning_surface_for_path(
         ("/api/sessions", "chat"),
         ("/api/daily-plan", "daily-plan"),
         ("/api/assignments", "assignments"),
+        # Task cards are private to the learner's current content workspace.
+        ("/api/task-board", "chat"),
         # Mastery Path progress/topics are the learner's own per-user data;
         # the router already scopes every record to the current account, so
         # all methods (including progress PATCH/POST) belong to "chat".
@@ -1474,6 +1477,10 @@ async def get_users(_: TokenPayload = Depends(require_admin)) -> list[UserInfo]:
 def _require_local_learner(current: TokenPayload) -> tuple[str, dict]:
     """Resolve a self-service profile request to its local learner account."""
 
+    if current.role == "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Learner profile required"
+        )
     account = get_user_by_id(current.user_id)
     if account is None or account[0] != current.username:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -1525,7 +1532,7 @@ async def get_learner_profile(username: str, _: TokenPayload = Depends(require_a
     user = get_user(username)
     if (
         user is None
-        or str(user.get("role") or "user") != "user"
+        or str(user.get("role") or "user") == "admin"
         or str(user.get("preset") or "standard") != "learner"
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -1544,7 +1551,7 @@ async def put_learner_profile(
     user = get_user(username)
     if (
         user is None
-        or str(user.get("role") or "user") != "user"
+        or str(user.get("role") or "user") == "admin"
         or str(user.get("preset") or "standard") != "learner"
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")

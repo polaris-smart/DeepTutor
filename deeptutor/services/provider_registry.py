@@ -159,6 +159,7 @@ PROVIDER_ALIASES = {
     "novita_ai": "novita",
     "orca_router": "orcarouter",
     "orca-router": "orcarouter",
+    "cheaper_inference": "cheaperinference",
 }
 
 
@@ -315,6 +316,16 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         is_gateway=True,
         detect_by_base_keyword="unifically",
         default_api_base="https://api.unifically.com/v1",
+    ),
+    ProviderSpec(
+        name="cheaperinference",
+        keywords=("cheaperinference",),
+        env_key="CHEAPER_INFERENCE_API_KEY",
+        display_name="Cheaper Inference",
+        backend="openai_compat",
+        is_gateway=True,
+        detect_by_base_keyword="cheaperinference",
+        default_api_base="https://api.cheaperinference.com/v1",
     ),
     ProviderSpec(
         name="volcengine",

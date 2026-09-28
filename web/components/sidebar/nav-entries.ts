@@ -8,6 +8,7 @@ import {
   HeartHandshake,
   House,
   LayoutGrid,
+  ListTodo,
   PenLine,
   Settings,
   Users,
@@ -122,7 +123,17 @@ export const PRIMARY_NAV: NavEntry[] = [
     href: LEARNING_HUB,
     label: "Personalized Learning",
     icon: GraduationCap,
-    tooltipKey: "One tutor, your own way to learn.",
+    tooltipKey: 'One tutor, your own way to learn.',
+  },
+  { href: '/space', label: 'Learning Space', icon: LayoutGrid, tooltipKey: 'Space tooltip' },
+  { href: '/kanban', label: 'Task Board', icon: ListTodo, tooltipKey: 'kanban.intro' },
+  {
+    href: '/co-writer',
+    label: 'Co-Writer',
+    icon: PenLine,
+    tooltipKey: 'Co-Writer tooltip',
+    requires: 'llm',
+    defaultCollapsed: true,
   },
   {
     // My Agents is its own top-level feature (pulled out of the Learning

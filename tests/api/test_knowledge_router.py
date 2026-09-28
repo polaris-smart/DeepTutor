@@ -83,8 +83,6 @@ def _materialized_routes(app: "FastAPI"):
             yield SimpleNamespace(path=template, matches=_matches)
 
 
-
-
 @pytest.mark.parametrize(
     ("path", "route_path", "surface"),
     [
@@ -99,6 +97,11 @@ def _materialized_routes(app: "FastAPI"):
         (
             "/api/knowledge-bases/demo/file-preview-text/a.pdf",
             "/api/knowledge-bases/{kb_name}/file-preview-text/{filename:path}",
+            "reading",
+        ),
+        (
+            "/api/knowledge-bases/demo/visual-assets/abc123",
+            "/api/knowledge-bases/{kb_name}/visual-assets/{asset_id}",
             "reading",
         ),
         (
