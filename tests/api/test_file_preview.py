@@ -34,6 +34,18 @@ def _file_preview_routes(app):
         if nested is None:
             if getattr(route, "path", "") == "/api/file-preview/pdf":
                 flattened.append(SimpleNamespace(dependencies=list(route.dependant.dependencies)))
+            continue
+        ctx = getattr(route, "include_context", None)
+        prefix = str(getattr(ctx, "prefix", "") or "")
+        router_deps = list(getattr(ctx, "dependencies", None) or [])
+        for inner in nested.routes:
+            if prefix + str(getattr(inner, "path", "")) != "/api/file-preview/pdf":
+                continue
+            deps = list(inner.dependant.dependencies) + router_deps
+            flattened.append(SimpleNamespace(dependencies=deps))
+    return flattened
+
+
 @pytest.mark.parametrize("lazy", [False, True])
 def test_file_preview_route_normalizer_keeps_auth_dependency(lazy: bool) -> None:
     from fastapi import Depends

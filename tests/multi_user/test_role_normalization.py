@@ -145,8 +145,7 @@ def test_set_role_request_rejects_unknown_roles():
         SetRoleRequest(role="superadmin")
 
 
-def test_set_role_request_still_rejects_parent():
-    # Negative control: "parent" is not admitted yet — the whitelist, not
-    # string truthiness, decides.
-    with pytest.raises(ValidationError):
-        SetRoleRequest(role="parent")
+def test_set_role_request_accepts_parent():
+    # K12 fork: "parent" is a legal role (guardian guardian-restriction flows
+    # build on it), so the request validates instead of being rejected.
+    SetRoleRequest(role="parent")

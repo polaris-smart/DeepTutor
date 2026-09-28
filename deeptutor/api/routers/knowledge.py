@@ -1289,7 +1289,11 @@ async def run_upload_processing_task(
             # K12 fork (P7 auto-pipeline chain): the files that indexed
             # cleanly feed the ingest tail chain below — the upstream rewrite
             # of this block only consumes processed_count, so re-bind it here.
-            processed_files = index_result.processed_files
+            # v1.6.12: upstream objects carry processed_count again — derive
+            # defensively so both contracts feed the P7 tail (getattr default).
+            processed_files = getattr(index_result, "processed_files", None)
+            if processed_files is None:
+                processed_files = getattr(index_result, "processed_count", None)
             _task_log(task_id, f"Indexed {index_result.processed_count} file(s)")
 
             if index_result.has_failures:
@@ -1387,7 +1391,6 @@ async def run_upload_processing_task(
             )
         except Exception as e:
             import traceback as _tb
-
             error_msg = f"Upload processing failed (KB '{kb_name}'): {e}"
             trace = _tb.format_exc()
             if index_published:

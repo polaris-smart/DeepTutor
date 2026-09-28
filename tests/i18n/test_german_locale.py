@@ -60,14 +60,25 @@ def test_judge_speaks_german() -> None:
 
 
 def test_web_locale_covers_every_english_key() -> None:
-    assert set(_catalog("en")) == set(_catalog("de"))
+    # K12 fork: fork-added English keys have no German translation yet and are
+    # exempted via the same explicit allowlist the Ukrainian test uses (single
+    # source of truth). Upstream keys must stay covered 1:1.
+    from tests.i18n.test_ukrainian_locale import _K12_FORK_KEYS_UNTRANSLATED
+
+    en, de = _catalog("en"), _catalog("de")
+    assert set(en) - set(de) <= _K12_FORK_KEYS_UNTRANSLATED
+    assert set(de) - set(en) == set()
 
 
 def test_web_locale_keeps_interpolation_placeholders() -> None:
+    from tests.i18n.test_ukrainian_locale import _K12_FORK_KEYS_UNTRANSLATED
+
     en, de = _catalog("en"), _catalog("de")
     pattern = re.compile(r"\{\{[^}]+\}\}")
     mismatches = [
-        key for key in en if set(pattern.findall(en[key])) != set(pattern.findall(de[key]))
+        key
+        for key in en
+        if key in de and set(pattern.findall(en[key])) != set(pattern.findall(de[key]))
     ]
     assert mismatches == []
 
