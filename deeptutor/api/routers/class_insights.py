@@ -153,16 +153,25 @@ def _aggregate_student(username: str, user_id: str) -> dict | None:
     Returns ``None`` when the student has no readable learning data (skipped
     by the endpoint — fail-open). ``weak`` lists every knowledge point whose
     displayed mastery is below its type's gate threshold, weakest first.
+    ``has_attempts`` is False when the student has progress records but no
+    quiz or qualitative-mastery evidence yet — the signal the family view
+    uses to render a "no practice yet" empty state instead of a misleading 0%.
     """
     books = _load_student_books(user_id)
     if not books:
         return None
+
+    has_attempts = False
 
     kp_total = 0
     mastery_sum = 0.0
     weak: list[dict] = []
     last_active: float | None = None
     for progress in books:
+        # 空态判定信号：有进度记录但没有作答/定性掌握证据的学生，展示层应
+        # 以"暂无练习记录"空态呈现，而不是把未开答的 0% 显示成"什么都不会"。
+        if progress.quiz_attempts or progress.qualitative_mastery:
+            has_attempts = True
         kps = [kp for module in progress.modules for kp in module.knowledge_points]
         kp_total += len(kps)
         for kp in kps:
@@ -190,6 +199,7 @@ def _aggregate_student(username: str, user_id: str) -> dict | None:
             if last_active is not None
             else None
         ),
+        "has_attempts": has_attempts,
     }
 
 
@@ -246,6 +256,7 @@ async def class_overview(
                 "weak": [],
                 "last_active": None,
                 "no_data": True,
+                "has_attempts": False,
             }
         if student is not None:
             students.append(student)
@@ -384,6 +395,7 @@ async def my_children_overview(
                 "weak": [],
                 "last_active": None,
                 "no_data": True,
+                "has_attempts": False,
             }
         students.append(student)
 

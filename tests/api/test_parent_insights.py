@@ -87,6 +87,38 @@ def test_parent_sees_only_own_children(family_env: Path, monkeypatch: pytest.Mon
     by_name = {s["username"]: s for s in students}
     assert by_name["kid_b"]["no_data"] is True  # 无学习数据的孩子以占位出现
     assert by_name["kid_a"]["kp_total"] >= 1
+    # 有进度记录但零作答：has_attempts 为 False，前端据此渲染"暂无练习记录"空态
+    assert by_name["kid_a"]["has_attempts"] is False
+    assert by_name["kid_b"]["has_attempts"] is False
+
+
+def test_has_attempts_true_with_quiz_attempts(family_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 有作答记录的孩子 has_attempts 为 True，掌握度照常聚合展示
+    from deeptutor.multi_user import paths as mu_paths
+
+    learning_dir = mu_paths.USERS_ROOT / "u_a" / "user" / "workspace" / "learning"
+    learning_dir.mkdir(parents=True, exist_ok=True)
+    progress = {
+        "book_id": "bk_1", "book_title": "数学", "updated_at": 1700000000.0,
+        "modules": [{"id": "m1", "name": "m", "order": 1, "knowledge_points": [
+            {"id": "kp1", "module_id": "m1", "name": "集合", "type": "concept",
+             "interactions": 3, "correct": 3, "partial": 0, "wrong": 0,
+             "last_seen_at": 1700000000.0, "mastery": 0.9}]}],
+        "mastery_levels": {"kp1": 0.9},
+        "quiz_attempts": [
+            {"question_id": "q1", "knowledge_point_id": "kp1",
+             "is_correct": True, "timestamp": 1700000000.0},
+        ],
+    }
+    (learning_dir / "bk_1.json").write_text(json.dumps(progress), encoding="utf-8")
+
+    client = _client("parent", monkeypatch)
+    response = client.get("/api/v1/class-insights/my-children")
+    assert response.status_code == 200
+    by_name = {s["username"]: s for s in response.json()["students"]}
+    assert by_name["kid_a"]["has_attempts"] is True
+    assert by_name["kid_a"]["avg_mastery_pct"] > 0
+    assert by_name["kid_b"]["has_attempts"] is False  # 占位保持 False
 
 
 def test_student_cannot_use_parent_insights(family_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:

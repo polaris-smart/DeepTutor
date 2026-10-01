@@ -4913,6 +4913,8 @@
   "Emoji": "Emoji",
   "Feature locked": "Feature locked",
   "Your account doesn't have {{model}} assigned yet. Please contact your administrator to get access.": "Your account doesn't have {{model}} assigned yet. Please contact your administrator to get access.",
+  "No practice records yet": "No practice records yet",
+  "No practice records yet. Mastery will appear here once exercises are completed.": "No practice records yet. Mastery will appear here once exercises are completed.",
   "Select Persona": "Select Persona",
   "Choose a behavior persona to apply, or pick No persona to use the default.": "Choose a behavior persona to apply, or pick No persona to use the default.",
   "No persona": "No persona",

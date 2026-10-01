@@ -5155,6 +5155,8 @@
   "Weak Knowledge Points": "薄弱知识点",
   "Last Active": "最近活跃",
   "No weak knowledge points": "暂无薄弱知识点",
+  "No practice records yet": "暂无练习记录",
+  "No practice records yet. Mastery will appear here once exercises are completed.": "暂无练习记录，完成练习后这里会显示掌握情况。",
   "Generated at {{time}}": "生成于 {{time}}",
   "My Children": "我的孩子",
   "Per-child mastery overview": "孩子掌握度总览",

@@ -19,6 +19,9 @@ export interface ClassStudentInsight {
   last_active: string | null;
   /** Whitelist views mark rostered/linked students that have no data yet. */
   no_data?: boolean;
+  /** False when the student has progress records but no attempts yet —
+   * the family view renders a "no practice" empty state instead of a 0%. */
+  has_attempts?: boolean;
 }
 
 /** Response of GET /api/class-insights/overview. */

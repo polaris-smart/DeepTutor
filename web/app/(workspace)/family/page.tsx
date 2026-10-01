@@ -176,6 +176,9 @@ export default function FamilyInsightsPage() {
               <tbody className="divide-y divide-[var(--border)]">
                 {sorted.map((child) => {
                   const tier = tierOf(child.avg_mastery_pct);
+                  // 有进度记录但从未作答的孩子以"暂无练习记录"空态呈现，
+                  // 不渲染 0% 与红色薄弱点；旧后端无该字段时保持原渲染。
+                  const noAttempts = child.has_attempts === false;
                   return (
                     <tr
                       key={child.username}
@@ -184,7 +187,11 @@ export default function FamilyInsightsPage() {
                       <td className="px-5 py-3">
                         <div className="flex items-center gap-3">
                           <span
-                            className={`h-2.5 w-2.5 shrink-0 rounded-full ${TIER_BAR[tier]}`}
+                            className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+                              noAttempts
+                                ? "bg-[var(--muted-foreground)]/30"
+                                : TIER_BAR[tier]
+                            }`}
                             aria-hidden
                           />
                           <span className="min-w-0 truncate font-medium text-[var(--foreground)]">
@@ -204,6 +211,12 @@ export default function FamilyInsightsPage() {
                       <td className="px-5 py-3">
                         {child.no_data ? (
                           <span className="text-xs text-[var(--muted-foreground)]">—</span>
+                        ) : noAttempts ? (
+                          <span className="text-xs text-[var(--muted-foreground)]">
+                            {t(
+                              "No practice records yet. Mastery will appear here once exercises are completed.",
+                            )}
+                          </span>
                         ) : (
                           <div className="flex items-center gap-2">
                             <div className="h-2 w-28 overflow-hidden rounded-full bg-[var(--muted)]/50">
@@ -223,11 +236,13 @@ export default function FamilyInsightsPage() {
                         )}
                       </td>
                       <td className="px-5 py-3">
-                        {child.no_data || child.weak.length === 0 ? (
+                        {child.no_data || noAttempts || child.weak.length === 0 ? (
                           <span className="text-xs text-[var(--muted-foreground)]">
                             {child.no_data
                               ? t("No learning data yet")
-                              : t("No weak knowledge points")}
+                              : noAttempts
+                                ? t("No practice records yet")
+                                : t("No weak knowledge points")}
                           </span>
                         ) : (
                           <div className="flex max-w-xs flex-wrap gap-1">
