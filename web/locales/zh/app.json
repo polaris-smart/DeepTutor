@@ -4912,6 +4912,7 @@
   "Resolving entry…": "正在解析条目…",
   "Emoji": "表情符号",
   "Feature locked": "功能未解锁",
+  "an LLM model": "LLM 模型",
   "Your account doesn't have {{model}} assigned yet. Please contact your administrator to get access.": "你的账号尚未分配 {{model}}，请联系管理员开通。",
   "Select Persona": "选择预设",
   "Choose a behavior persona to apply, or pick No persona to use the default.": "选择要应用的行为预设，或选“无预设”使用默认。",
