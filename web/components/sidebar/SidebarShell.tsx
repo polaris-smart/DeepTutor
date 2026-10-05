@@ -399,29 +399,8 @@ export function SidebarShell({
             </Link>
           );
         })}
+        <VersionBadge onNavigate={closeDrawerOnNav} />
         {renderedFooter}
-        <div className="flex items-center gap-1">
-          {SECONDARY_NAV.map((item) => {
-            const active = isNavActive(pathname, item.href);
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                prefetch={false}
-                onClick={closeDrawerOnNav}
-                className={`flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2.5 py-1.5 text-[13px] transition-colors ${
-                  active
-                    ? "bg-[var(--accent)] font-medium text-[var(--foreground)]"
-                    : "text-foreground/85 hover:bg-background/60 hover:text-[var(--foreground)]"
-                }`}
-              >
-                <item.icon size={15} strokeWidth={active ? 1.9 : 1.6} />
-                <span>{t(item.label)}</span>
-              </Link>
-            );
-          })}
-          <VersionBadge onNavigate={closeDrawerOnNav} />
-        </div>
       </div>
       {!isMobile && (
         <div
