@@ -19,8 +19,9 @@ from deeptutor.services.config.runtime_settings import (
     load_mineru_settings,
 )
 
-# MinerU cloud rejects any single file above 200 pages, so the slicer must
-# never emit a part larger than that even if a setting asks for it.
+# The MinerU cloud API rejects any single file above 200 pages, so the PDF
+# auto-slicer must never emit a part larger than that even if a setting asks
+# for it.
 MAX_PAGES_PER_PART_CEILING = 200
 DEFAULT_MAX_PAGES_PER_PART = 180
 
@@ -29,6 +30,15 @@ class MinerUError(RuntimeError):
     """Raised when a MinerU parse fails (local CLI missing, cloud API error,
     misconfiguration). Carries a user-facing message; the capability layer
     surfaces it as a stream error."""
+
+    def __init__(self, message: str, *, code: str | None = None, detail: str = "") -> None:
+        super().__init__(message)
+        #: Machine-readable reason when one is known (``LocalParseReason``
+        #: values for local failures); ``None`` when the error is raised
+        #: without a classification.
+        self.code = code
+        #: Bounded diagnostic excerpt backing the message; ``""`` when none.
+        self.detail = detail
 
 
 @dataclass(frozen=True)
@@ -55,15 +65,17 @@ class MinerUConfig:
     enable_table: bool = True
     # 悦学 fork: 默认强制 OCR（中文教材/试卷多为扫描件，OCR 确保文字一致提取）
     is_ocr: bool = True
+    # Cloud-only opt-in; preserves all parser choices and the original PDF.
+    normalize_tiny_scans: bool = False
     # When False (default), a local parse fails fast instead of letting the
     # MinerU CLI silently download multi-GB model weights on first run. The user
     # opts in explicitly (Settings → Document Parsing) or via the one-click
     # download button. Cloud mode ignores this (no local models).
     allow_local_model_download: bool = False
-    # 悦学 fork: cloud-mode PDF auto-slicing. PDFs longer than this many pages
-    # are split into per-part PDFs, parsed one by one, and their artifacts
-    # merged back into a single working dir (see ``cloud.parse_cloud``). Values
-    # above the MinerU cloud ceiling are clamped in ``__post_init__``.
+    # Cloud-mode PDF auto-slicing. PDFs longer than this many pages are split
+    # into per-part PDFs, parsed one by one, and their artifacts merged back
+    # into a single working dir (see ``cloud.parse_cloud``). Values above the
+    # MinerU cloud ceiling are clamped in ``__post_init__``.
     max_pages_per_part: int = DEFAULT_MAX_PAGES_PER_PART
 
     def __post_init__(self) -> None:
@@ -111,6 +123,7 @@ def resolve_mineru_config() -> MinerUConfig:
         enable_formula=bool(settings.get("enable_formula", True)),
         enable_table=bool(settings.get("enable_table", True)),
         is_ocr=bool(settings.get("is_ocr", True)),
+        normalize_tiny_scans=bool(settings.get("normalize_tiny_scans", False)),
         allow_local_model_download=bool(settings.get("allow_local_model_download", False)),
         max_pages_per_part=(
             DEFAULT_MAX_PAGES_PER_PART

@@ -35,6 +35,7 @@ from pypdf import PdfReader, PdfWriter
 
 from deeptutor.services.keypool import KeyPool
 
+from .checkpoints import SliceCheckpoint, job_directory
 from .config import MinerUConfig, MinerUError
 from .formats import MINERU_PDF_FORMATS, MINERU_SUPPORTED_FORMATS
 
@@ -186,26 +187,35 @@ def _parse_pdf_in_parts(
     markdown_chunks: list[str] = []
     content_items: list = []
     has_content_list = False
+    checkpoint_job = job_directory(source_path, config)
 
     with tempfile.TemporaryDirectory(prefix="mineru-slice-") as tmp:
         parts = _split_pdf(source_path, config.max_pages_per_part, Path(tmp))
         total = len(parts)
         report(
-            f"MinerU cloud: {source_path.name} 共 {page_count} 页，超过单片上限 "
-            f"{config.max_pages_per_part} 页，自动分为 {total} 片解析"
+            f"MinerU cloud: {source_path.name} has {page_count} pages, exceeding the "
+            f"{config.max_pages_per_part}-page per-file limit; auto-splitting into "
+            f"{total} part(s)"
         )
         for index, part in enumerate(parts, start=1):
-            report(f"MinerU cloud: 第 {index}/{total} 片（页 {part.start + 1}-{part.end}）解析中")
-            archive_bytes = _upload_and_fetch_archive(
-                client,
-                part.path,
-                config,
-                key_pool,
-                report=report,
-                poll_interval=poll_interval,
-                timeout=timeout,
+            report(
+                f"MinerU cloud: parsing part {index}/{total} (pages {part.start + 1}-{part.end})"
             )
-            report(f"MinerU cloud: 合并第 {index}/{total} 片产物")
+            checkpoint = SliceCheckpoint(checkpoint_job, part.start, part.end)
+            archive_bytes = checkpoint.load()
+            if archive_bytes is None:
+                archive_bytes = _upload_and_fetch_archive(
+                    client,
+                    part.path,
+                    config,
+                    key_pool,
+                    report=report,
+                    poll_interval=poll_interval,
+                    timeout=timeout,
+                )
+            else:
+                report(f"MinerU cloud: reusing completed part {index}/{total}")
+            report(f"MinerU cloud: merging part {index}/{total} artifacts")
             with tempfile.TemporaryDirectory(prefix="mineru-part-") as part_tmp:
                 part_dir = Path(part_tmp) / "out"
                 part_dir.mkdir()
@@ -216,8 +226,14 @@ def _parse_pdf_in_parts(
                     markdown_chunks=markdown_chunks,
                     content_items=content_items,
                     part_index=index,
+                    page_offset=part.start,
+                    page_count=part.end - part.start,
                 )
                 has_content_list = True
+                try:
+                    checkpoint.save(archive_bytes)
+                except OSError:
+                    logger.warning("Could not save MinerU slice checkpoint; parsing continues")
 
     merged_md = "".join(
         chunk if chunk.endswith("\n") else chunk + "\n" for chunk in markdown_chunks
@@ -275,6 +291,8 @@ def _merge_part_artifacts(
     markdown_chunks: list[str],
     content_items: list,
     part_index: int,
+    page_offset: int = 0,
+    page_count: int | None = None,
 ) -> None:
     """Accumulate one part's artifacts: markdown text, ``images/`` (renamed with
     a part prefix so names stay globally unique) and ``content_list`` entries
@@ -299,6 +317,7 @@ def _merge_part_artifacts(
                 f"MinerU part {part_index} content list is unreadable: {exc}"
             ) from exc
         if isinstance(payload, list):
+            _offset_page_indices(payload, page_offset, page_count)
             _rewrite_image_paths(payload, rename_map)
             content_items.extend(payload)
 
@@ -311,6 +330,25 @@ def _merge_part_artifacts(
         if extra.name.endswith("_content_list.json"):
             continue
         shutil.copyfile(extra, working_dir / f"part{part_index:02d}_{extra.name}")
+
+
+def _offset_page_indices(node: object, offset: int, page_count: int | None) -> None:
+    """Restore zero-based source page indices, including nested content blocks."""
+    if isinstance(node, dict):
+        if "page_idx" in node:
+            index = node["page_idx"]
+            if (
+                type(index) is not int
+                or index < 0
+                or (page_count is not None and index >= page_count)
+            ):
+                raise MinerUError("MinerU slice returned an invalid page_idx")
+            node["page_idx"] = index + offset
+        for value in node.values():
+            _offset_page_indices(value, offset, page_count)
+    elif isinstance(node, list):
+        for value in node:
+            _offset_page_indices(value, offset, page_count)
 
 
 def _copy_part_images(images_dir: Path, target_dir: Path, part_index: int) -> dict[str, str]:

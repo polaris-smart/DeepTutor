@@ -25,7 +25,9 @@ from llama_index.core.schema import ImageNode
 
 from deeptutor.services.config.runtime_settings import DOCUMENT_PARSING_ENGINE_LITEPARSE
 from deeptutor.services.embedding import get_embedding_client
-from deeptutor.services.llm.client import get_llm_client
+from deeptutor.services.llm.image_caption_batch import ImageCaptionBatcher
+from deeptutor.services.llm.image_caption_cache import complete_image_caption
+from deeptutor.services.llm.image_description import get_image_description_client
 from deeptutor.services.rag.file_routing import FileTypeRouter
 from deeptutor.services.rag.visual_assets import VisualAssetCandidate, collect_visual_assets
 from deeptutor.utils.document_validator import DocumentValidator
@@ -149,7 +151,7 @@ def _enforce_metadata_budget(metadata: dict) -> dict:
             slim = {**rest, **identity}
     return slim
 
-from .config import image_description_limits
+from .config import image_description_batch_size, image_description_limits
 
 IMAGE_DESCRIPTION_SYSTEM_PROMPT = (
     "You describe images for a retrieval-augmented knowledge base. "
@@ -565,7 +567,7 @@ class LlamaIndexDocumentLoader:
         # keeps text-only embedding setups independent of LLM configuration and
         # reuses one client for the whole image batch.
         try:
-            llm_client = get_llm_client()
+            llm_client = get_image_description_client()
         except Exception as exc:
             self._log_skipped_images(sources, f"LLM client is unavailable ({exc})")
             return []
@@ -643,7 +645,64 @@ class LlamaIndexDocumentLoader:
 
         # gather preserves input order, so embedded/descriptions/contents stay
         # aligned regardless of completion order.
-        results = await asyncio.gather(*(_describe_one(source) for source in sources))
+        batch_size = image_description_batch_size()
+        if batch_size == 1:
+            results = await asyncio.gather(*(_describe_one(source) for source in sources))
+        else:
+            batcher = ImageCaptionBatcher(
+                llm_client,
+                prompt=IMAGE_DESCRIPTION_PROMPT,
+                system_prompt=IMAGE_DESCRIPTION_SYSTEM_PROMPT,
+            )
+
+            async def _describe_group(group: list[_ImageSource]):
+                nonlocal completed
+                prepared = []
+                try:
+                    async with semaphore:
+                        if batcher.halted:
+                            return []
+                        for source in group:
+                            try:
+                                payload = await asyncio.to_thread(
+                                    self._load_image_payload, source.path
+                                )
+                            except OSError:
+                                self.logger.warning(
+                                    "Failed to read caption image: %s", source.path.name
+                                )
+                                continue
+                            prepared.append((source, {**payload, "filename": source.path.name}))
+                        descriptions = await asyncio.wait_for(
+                            batcher.describe([payload for _, payload in prepared]),
+                            timeout=timeout_seconds,
+                        )
+                        return [
+                            (source, caption, {"image": payload["data_uri"]})
+                            for (source, payload), caption in zip(prepared, descriptions)
+                            if caption
+                        ]
+                except asyncio.TimeoutError:
+                    self.logger.warning(
+                        "Image caption batch exceeded its %ss deadline", timeout_seconds
+                    )
+                    return []
+                finally:
+                    for _ in group:
+                        completed += 1
+                        if image_progress_callback:
+                            try:
+                                image_progress_callback(completed, total)
+                            except Exception:
+                                pass
+
+            groups = await asyncio.gather(
+                *(
+                    _describe_group(sources[start : start + batch_size])
+                    for start in range(0, len(sources), batch_size)
+                )
+            )
+            results = [result for group in groups for result in group]
         for result in results:
             if result is None:
                 continue
@@ -716,7 +775,8 @@ class LlamaIndexDocumentLoader:
     async def _describe_image(
         self, llm_client: Any, file_path: Path, image_base64: str, mimetype: str
     ) -> str:
-        response = await llm_client.complete(
+        response = await complete_image_caption(
+            llm_client,
             IMAGE_DESCRIPTION_PROMPT,
             system_prompt=IMAGE_DESCRIPTION_SYSTEM_PROMPT,
             image_data=image_base64,
