@@ -173,7 +173,10 @@ def test_learner_preset_falls_back_to_the_conservative_policy(mu_isolated_root, 
 
     assert policy is not None
     assert policy["default_capability"] == "immersive_reading"
-    assert policy["allowed_surfaces"] == ["chat", "reading"]
+    # K12 fork: the learner preset exposes the yuedu student surfaces
+    # (daily plan + assignments) on top of the upstream conservative pair;
+    # books stays grant-gated (see test_surface_material_upload... below).
+    assert policy["allowed_surfaces"] == ["chat", "reading", "daily-plan", "assignments"]
     assert policy["reading"] == {
         "allow_upload": False,
         "material_ids": [],

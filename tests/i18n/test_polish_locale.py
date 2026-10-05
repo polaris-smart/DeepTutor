@@ -54,10 +54,14 @@ def test_language_directive_names_polish() -> None:
 
 
 def test_web_locale_covers_every_english_key() -> None:
-    en = _catalog("en")
-    pl = _catalog("pl")
+    # K12 fork: fork-added English keys have no Polish translation yet and are
+    # exempted via the same explicit allowlist the Ukrainian test uses (single
+    # source of truth). Upstream keys must stay covered 1:1.
+    from tests.i18n.test_ukrainian_locale import _K12_FORK_KEYS_UNTRANSLATED
 
-    assert set(en) <= set(pl)
+    en, pl = _catalog("en"), _catalog("pl")
+
+    assert set(en) - set(pl) <= _K12_FORK_KEYS_UNTRANSLATED
 
     extras = set(pl) - set(en)
     assert all(key.endswith(("_few", "_many")) for key in extras)

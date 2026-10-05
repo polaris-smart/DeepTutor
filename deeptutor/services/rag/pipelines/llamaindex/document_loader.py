@@ -139,17 +139,14 @@ def _enforce_metadata_budget(metadata: dict) -> dict:
         slim.pop(shed_key, None)
     # Still over — truncate every non-identity value to a short head.
     if _size(slim) > _METADATA_TOTAL_BUDGET:
-        identity = {
-            k: slim[k]
-            for k in ("file_name", "file_path")
-            if k in slim
-        }
+        identity = {k: slim[k] for k in ("file_name", "file_path") if k in slim}
         rest = {k: str(v)[:160] for k, v in slim.items() if k not in identity}
         slim = {**rest, **identity}
         while _size(slim) > _METADATA_TOTAL_BUDGET and len(rest) > 1:
             rest.pop(next(iter(rest)))
             slim = {**rest, **identity}
     return slim
+
 
 from .config import image_description_batch_size, image_description_limits
 
@@ -451,9 +448,7 @@ class LlamaIndexDocumentLoader:
                         except Exception:
                             continue
                         cached_name = str(
-                            record.get("source_name")
-                            or record.get("original_name")
-                            or ""
+                            record.get("source_name") or record.get("original_name") or ""
                         )
                         if cached_name and _norm(cached_name).startswith(want):
                             return source_dir
@@ -712,9 +707,7 @@ class LlamaIndexDocumentLoader:
 
         described = [r for r in results if r is not None]
         description_failures = [
-            source.path.name
-            for source, result in zip(sources, results)
-            if result is None
+            source.path.name for source, result in zip(sources, results) if result is None
         ]
         if description_failures:
             self.logger.warning("Image description failures: %s", ", ".join(description_failures))
@@ -858,9 +851,7 @@ class LlamaIndexDocumentLoader:
             try:
                 img_bytes = resolved.read_bytes()
                 if len(img_bytes) > _MAX_EMBED_IMAGE_SIZE:
-                    self.logger.debug(
-                        f"Image too large to embed ({len(img_bytes)}B): {img_path}"
-                    )
+                    self.logger.debug(f"Image too large to embed ({len(img_bytes)}B): {img_path}")
                     return m.group(0)
                 mime = mimetypes.guess_type(resolved.name)[0] or "application/octet-stream"
                 b64 = base64.b64encode(img_bytes).decode("ascii")
@@ -911,12 +902,8 @@ class LlamaIndexDocumentLoader:
                         # chunk size and LlamaIndex rejects the whole document.
                         # Tiered downgrade (判据 5): full slim tree → every
                         # branch's compressed 目-name list → chapter titles.
-                        tree_blob = _json.dumps(
-                            _slim_tree(payload["tree"]), ensure_ascii=False
-                        )
-                        metadata["doc_tree"] = _doc_tree_metadata(
-                            payload["tree"], tree_blob
-                        )
+                        tree_blob = _json.dumps(_slim_tree(payload["tree"]), ensure_ascii=False)
+                        metadata["doc_tree"] = _doc_tree_metadata(payload["tree"], tree_blob)
                     # Per-block struct_path/textbook_node_id/q_id: chunk-level
                     # bridge data. The doc-level Document's metadata carries
                     # them for downstream chunkers that split this document —
@@ -956,12 +943,8 @@ class LlamaIndexDocumentLoader:
                             budget -= len(blob) + 1
                             slim.append(entry)
                         if slim:
-                            metadata["di_block_meta"] = _json.dumps(
-                                slim, ensure_ascii=False
-                            )
-                            question_ids = [
-                                str(e["q_id"]) for e in slim if e.get("q_id")
-                            ]
+                            metadata["di_block_meta"] = _json.dumps(slim, ensure_ascii=False)
+                            question_ids = [str(e["q_id"]) for e in slim if e.get("q_id")]
                             if question_ids:
                                 metadata["di_q_ids"] = ",".join(question_ids)
             except Exception:
@@ -972,9 +955,7 @@ class LlamaIndexDocumentLoader:
                     metadata=_enforce_metadata_budget(metadata),
                 )
             )
-            self.logger.info(
-                f"Loaded: {file_path.name} ({len(text)} chars)"
-            )
+            self.logger.info(f"Loaded: {file_path.name} ({len(text)} chars)")
         else:
             if file_path.suffix.lower() == ".pdf" and extracted_image_count:
                 engine_label = parse_engine or "the active parser"

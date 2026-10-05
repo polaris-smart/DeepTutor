@@ -491,8 +491,7 @@ def _kp_visualizer_manifest(path_id: str) -> str:
             "[KP Visualizers · 学件挂载]\n"
             "以下知识点已绑定交互可视化学件（YuEdu 声明式包，按 id 引用）。"
             "讲解释义这些知识点时，请主动建议学员打开对应学件，"
-            "并给出具体观察点（拖动什么参数、观察什么变化）：\n"
-            + "\n".join(rows) + "\n"
+            "并给出具体观察点（拖动什么参数、观察什么变化）：\n" + "\n".join(rows) + "\n"
         )
     except Exception:
         logger.exception("Failed to build KP visualizer manifest for %s", path_id)

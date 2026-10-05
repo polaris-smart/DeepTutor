@@ -231,7 +231,6 @@ async def _cancel_active_learning_turn(book_id: str) -> None:
                     )
 
 
-
 @asynccontextmanager
 async def _exclusive_path_mutation(book_id: str):
     """Cancel the tutor, then exclude a newly racing tutor/API write."""

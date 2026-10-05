@@ -867,7 +867,11 @@ def find_gateway(
 
     for spec in PROVIDERS:
         _probe_key = api_key[0] if isinstance(api_key, list) and api_key else api_key
-        if spec.detect_by_key_prefix and _probe_key and _probe_key.startswith(spec.detect_by_key_prefix):
+        if (
+            spec.detect_by_key_prefix
+            and _probe_key
+            and _probe_key.startswith(spec.detect_by_key_prefix)
+        ):
             return spec
         if spec.detect_by_base_keyword and api_base and spec.detect_by_base_keyword in api_base:
             return spec

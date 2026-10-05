@@ -614,12 +614,13 @@ def _big_mu_tree(n_mus: int = 400) -> dict:
 
 def test_doc_tree_metadata_keeps_slim_tree_under_budget() -> None:
     pytest.importorskip("llama_index.core")
+    import json
+
     from deeptutor.services.rag.pipelines.llamaindex.document_loader import (
+        _DI_TREE_BUDGET,
         _doc_tree_metadata,
         _slim_tree,
-        _DI_TREE_BUDGET,
     )
-    import json
 
     tree = _big_mu_tree(n_mus=2)
     blob = json.dumps(_slim_tree(tree), ensure_ascii=False)
@@ -630,12 +631,13 @@ def test_doc_tree_metadata_keeps_slim_tree_under_budget() -> None:
 
 def test_doc_tree_metadata_downgrades_to_mu_name_list_when_too_fat() -> None:
     pytest.importorskip("llama_index.core")
+    import json
+
     from deeptutor.services.rag.pipelines.llamaindex.document_loader import (
+        _DI_TREE_BUDGET,
         _doc_tree_metadata,
         _slim_tree,
-        _DI_TREE_BUDGET,
     )
-    import json
 
     tree = _big_mu_tree(n_mus=60)
     blob = json.dumps(_slim_tree(tree), ensure_ascii=False)
@@ -655,11 +657,12 @@ def test_doc_tree_metadata_downgrades_to_mu_name_list_when_too_fat() -> None:
 
 def test_doc_tree_metadata_final_fallback_is_chapter_titles() -> None:
     pytest.importorskip("llama_index.core")
-    from deeptutor.services.rag.pipelines.llamaindex.document_loader import (
-        _doc_tree_metadata,
-        _DI_TREE_BUDGET,
-    )
     import json
+
+    from deeptutor.services.rag.pipelines.llamaindex.document_loader import (
+        _DI_TREE_BUDGET,
+        _doc_tree_metadata,
+    )
 
     tree = _big_mu_tree(n_mus=4000)
     blob = "x" * (_DI_TREE_BUDGET + 1)  # simulate an over-budget slim blob

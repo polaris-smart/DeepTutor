@@ -75,6 +75,7 @@ def _grant_write_lock(path: Path):
                 else:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
+
 # The admin-workspace KB id prefix (same literal as knowledge_access.ADMIN_PREFIX;
 # duplicated here because knowledge_access imports this module, not the other way).
 _ADMIN_KB_PREFIX = "admin:kb:"

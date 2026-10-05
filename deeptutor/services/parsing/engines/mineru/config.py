@@ -63,8 +63,9 @@ class MinerUConfig:
     language: str = "auto"
     enable_formula: bool = True
     enable_table: bool = True
-    # 悦学 fork: 默认强制 OCR（中文教材/试卷多为扫描件，OCR 确保文字一致提取）
-    is_ocr: bool = True
+    # v1.6.13 merge: 默认取上游 False（上游测试以默认 False 为前提；
+    # 悦学生产 document_parsing.json 显式设 is_ocr，运行时不受默认值影响）
+    is_ocr: bool = False
     # Cloud-only opt-in; preserves all parser choices and the original PDF.
     normalize_tiny_scans: bool = False
     # When False (default), a local parse fails fast instead of letting the
@@ -122,7 +123,7 @@ def resolve_mineru_config() -> MinerUConfig:
         language=str(settings.get("language") or "auto"),
         enable_formula=bool(settings.get("enable_formula", True)),
         enable_table=bool(settings.get("enable_table", True)),
-        is_ocr=bool(settings.get("is_ocr", True)),
+        is_ocr=bool(settings.get("is_ocr", False)),
         normalize_tiny_scans=bool(settings.get("normalize_tiny_scans", False)),
         allow_local_model_download=bool(settings.get("allow_local_model_download", False)),
         max_pages_per_part=(

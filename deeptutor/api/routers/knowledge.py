@@ -37,13 +37,13 @@ from fastapi import (
 from fastapi.responses import FileResponse, PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from deeptutor.api.routers.auth import require_admin
-from deeptutor.api.utils.progress_broadcaster import ProgressBroadcaster
 from deeptutor.api.routers.auth import (
     _local_admin_token_payload,
+    require_admin,
     require_admin_or_teacher,
     require_auth,
 )
+from deeptutor.api.utils.progress_broadcaster import ProgressBroadcaster
 from deeptutor.services.auth import TokenPayload
 
 
@@ -67,6 +67,8 @@ async def require_kb_writer(
             detail="KB content upload requires admin, teacher or parent access.",
         )
     return payload
+
+
 from deeptutor.api.utils.task_id_manager import TaskIDManager
 from deeptutor.api.utils.task_log_stream import capture_task_logs, get_task_stream_manager
 from deeptutor.knowledge.add_documents import (
@@ -1391,6 +1393,7 @@ async def run_upload_processing_task(
             )
         except Exception as e:
             import traceback as _tb
+
             error_msg = f"Upload processing failed (KB '{kb_name}'): {e}"
             trace = _tb.format_exc()
             if index_published:
@@ -2931,12 +2934,21 @@ def _resource_knowledge_bases() -> list[KnowledgeBaseInfo]:
 
 
 @router.get("/knowledge-bases", response_model=list[KnowledgeBaseInfo])
-async def list_knowledge_bases(group: str | None = Query(default=None)):
-    """Disk probes must not block the async worker or its other requests (#1711)."""
-    return await asyncio.to_thread(_list_knowledge_bases, group)
+async def list_knowledge_bases(group: str | None = None):
+    """Disk probes must not block the async worker or its other requests (#1711).
+
+    悦学 fork: ``group`` 查询参数过滤（默认裸 None 使 FastAPI 推断为可选 query
+    参数，同时保证非 FastAPI 直接调用时语义正确）；过滤在 worker 返回后于
+    事件循环侧应用，``_list_knowledge_bases`` 保持与上游一致的零参契约。
+    """
+    result = await asyncio.to_thread(_list_knowledge_bases)
+    if group is not None:
+        requested_group = group.strip()
+        result = [item for item in result if item.group == requested_group]
+    return result
 
 
-def _list_knowledge_bases(group: str | None = None):
+def _list_knowledge_bases():
     """List all available knowledge bases with their details."""
     from deeptutor.services.workspace.context import current_workspace_id
     from deeptutor.services.workspace.knowledge import library_request
@@ -3113,9 +3125,6 @@ def _list_knowledge_bases(group: str | None = None):
                             provenance_label=str(access.get("provenance_label") or ""),
                         )
                     )
-        if group is not None:
-            requested_group = group.strip()
-            result = [item for item in result if item.group == requested_group]
         return result
     except HTTPException:
         raise
@@ -4869,6 +4878,7 @@ async def sync_folder(kb_name: str, folder_id: str, background_tasks: Background
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/{kb_name}/videos")
 async def get_videos(
     kb_name: str,
@@ -4890,6 +4900,7 @@ async def get_videos(
     except Exception as exc:
         logger.error("Failed to query videos for KB '%s': %s", kb_name, exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
 
 @router.get("/{kb_name}/textbook-tree")
 async def get_textbook_tree(kb_name: str):
@@ -4930,9 +4941,7 @@ async def get_textbook_tree(kb_name: str):
                         "title": tree.get("title"),
                         "children": [
                             child
-                            for child in (
-                                {"title": str(title)} for title in chapters if title
-                            )
+                            for child in ({"title": str(title)} for title in chapters if title)
                             if child["title"]
                         ],
                     }
@@ -4963,6 +4972,7 @@ async def get_textbook_tree(kb_name: str):
     except Exception as exc:
         logger.error("Failed to read textbook tree for KB '%s': %s", kb_name, exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
 
 @router.get("/{kb_name}/docs/by-struct")
 async def get_docs_by_struct(
@@ -5018,7 +5028,7 @@ def _struct_path_matches(node_path: str, query: str) -> bool:
     if node_path == query:
         return True
     if node_path.startswith(query):
-        rest = node_path[len(query):]
+        rest = node_path[len(query) :]
         return rest.startswith("/") or rest.startswith(" ")
     return False
 
@@ -5153,8 +5163,6 @@ async def get_questions_by_struct(
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-
-
 def _load_kb_docstore(kb_name: str):
     """Load the active LlamaIndex docstore, or return ``None`` for an empty KB."""
     manager, resolved_name = _readable_kb(kb_name)
@@ -5171,12 +5179,14 @@ def _load_kb_docstore(kb_name: str):
 
     return resolved_name, SimpleDocumentStore.from_persist_dir(str(storage_dir))
 
+
 def _node_text(node) -> str:
     """Read display text across the LlamaIndex node API variants we support."""
     get_content = getattr(node, "get_content", None)
     if callable(get_content):
         return str(get_content() or "")
     return str(getattr(node, "text", "") or "")
+
 
 def _readable_kb(kb_name: str) -> tuple[KnowledgeBaseManager, str]:
     """Resolve an access-checked KB for read-only index inspection."""
@@ -5185,6 +5195,7 @@ def _readable_kb(kb_name: str) -> tuple[KnowledgeBaseManager, str]:
         return manager, _resolve_registered_kb_name(manager, kb_name)
     resource = resolve_kb(kb_name)
     return manager_for_resource(resource), resource.name
+
 
 def _video_index_for_kb(kb_name: str) -> tuple[str, Path]:
     """Resolve a registered KB, or a local video-only index awaiting registration."""
@@ -5203,7 +5214,6 @@ def _video_index_for_kb(kb_name: str) -> tuple[str, Path]:
             raise
         return kb_name, candidate
     return resolved_name, video_index_path(resolved_name, kb_base_dir=Path(manager.base_dir))
-
 
 
 class AddGitHubSourceRequest(BaseModel):

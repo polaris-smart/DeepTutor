@@ -19,8 +19,7 @@ from deeptutor.services.voice.adapters.openai_compat import (
     OpenAICompatTTSAdapter,
     OpenRouterTTSAdapter,
 )
-from deeptutor.services.voice.adapters.volc_plan import VolcPlanTTSAdapter
-from deeptutor.services.voice.adapters.volc_plan import VolcPlanSTTAdapter
+from deeptutor.services.voice.adapters.volc_plan import VolcPlanSTTAdapter, VolcPlanTTSAdapter
 from deeptutor.services.voice.adapters.volcengine import VolcengineSTTAdapter, VolcengineTTSAdapter
 from deeptutor.services.voice.base import BaseSTTAdapter, BaseTTSAdapter, VoiceProviderError
 

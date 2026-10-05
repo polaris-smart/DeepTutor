@@ -33,6 +33,7 @@ from .._turn_runtime_shared import (
     _extract_selection_tutor_context,
     _format_followup_question_context,
     _format_selection_tutor_context,
+    _kp_visualizer_manifest,
     _mastery_action_context,
     _mastery_path_id,
     _partner_group_references,
@@ -53,7 +54,6 @@ from .._turn_runtime_shared import (
     _stamp_content_offset,
     _timed_media_id,
     _timed_media_viewport,
-    _kp_visualizer_manifest,
     _topic_material_manifest,
     _TurnExecution,
     _workspace_mode,
@@ -1115,9 +1115,7 @@ class TurnExecutor:
                     update_gate_state(_gate_state, effective_user_message)
                     _remedy_msg, _ = check_and_remedy(assistant_content, _gate_state)
                     if _remedy_msg:
-                        assistant_content = (
-                            assistant_content.rstrip() + "\n\n" + _remedy_msg
-                        )
+                        assistant_content = assistant_content.rstrip() + "\n\n" + _remedy_msg
                     if any(
                         _gate_state.get(k)
                         for k in ("example_skipped", "max_hint_level", "low_confidence")
