@@ -399,8 +399,31 @@ export function SidebarShell({
             </Link>
           );
         })}
-        <VersionBadge onNavigate={closeDrawerOnNav} />
         {renderedFooter}
+        <div className="flex items-center gap-1">
+          {secondaryNav.map((item) => {
+            const active = isNavActive(pathname, item.href);
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                prefetch={false}
+                onClick={closeDrawerOnNav}
+                className={`flex min-w-0 flex-1 flex-col items-center gap-1 rounded-md px-1 py-1.5 text-[12px] transition-colors ${
+                  active
+                    ? "bg-[var(--accent)] font-medium text-[var(--foreground)]"
+                    : "text-foreground/85 hover:bg-background/60 hover:text-[var(--foreground)]"
+                }`}
+              >
+                <item.icon size={16} strokeWidth={active ? 1.9 : 1.6} />
+                <span className="w-full truncate text-center leading-none">
+                  {t(item.label)}
+                </span>
+              </Link>
+            );
+          })}
+          <VersionBadge onNavigate={closeDrawerOnNav} />
+        </div>
       </div>
       {!isMobile && (
         <div
