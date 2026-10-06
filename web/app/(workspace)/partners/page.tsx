@@ -10,8 +10,10 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { HeartHandshake, Loader2, Plus, Users } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { fetchAuthStatus } from "@/lib/auth";
 import { listPartners, type PartnerInfo } from "@/lib/partners-api";
 import { listPartnerGroups, type PartnerGroup } from "@/lib/partner-groups-api";
 import { formatRelativeTime } from "@/lib/relative-time";
@@ -31,6 +33,11 @@ function channelNames(partner: PartnerInfo): string[] {
 export default function PartnersPage() {
   const modeLabel = useDiscussionModeLabel();
   const { t, i18n } = useTranslation();
+  const router = useRouter();
+  // N10 路由闸：侧栏已对 learner 隐藏 Partners，但直达 URL 仍可达。照
+  // /admin/users 的拦截模式——未登录去 /login，非 teacher/admin 回首页；
+  // 放行前不渲染页面内容。auth 关闭时后端 status 固定 role="admin"，不锁死。
+  const [navAllowed, setNavAllowed] = useState(false);
   // Anyone may build partners of their own; an admin may also assign theirs to
   // other people. The list returns both — the caller's own partners in full and
   // assigned ones as identity cards — so there is one source either way.
@@ -41,6 +48,25 @@ export default function PartnersPage() {
   // A group needs at least two members, so the entry point stays inert until
   // there is something to convene.
   const canFormGroup = partners.length >= 2;
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchAuthStatus().then((status) => {
+      if (cancelled) return;
+      if (!status?.authenticated) {
+        router.replace("/login");
+        return;
+      }
+      if (status.role !== "teacher" && status.role !== "admin") {
+        router.replace("/");
+        return;
+      }
+      setNavAllowed(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
 
   useEffect(() => {
     let cancelled = false;
@@ -58,6 +84,9 @@ export default function PartnersPage() {
       cancelled = true;
     };
   }, []);
+
+  // 放行判定未落定前不渲染任何内容，learner 直达时只见重定向不见页面。
+  if (!navAllowed) return null;
 
   return (
     <div className="mx-auto h-full max-w-4xl overflow-y-auto px-6 py-8">

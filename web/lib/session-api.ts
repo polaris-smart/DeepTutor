@@ -411,6 +411,13 @@ export async function deleteSession(sessionId: string, workspaceId?: string): Pr
   const response = await apiFetch(apiUrl(scopedUrl(`/api/sessions/${sessionId}`, workspaceId)), {
     method: "DELETE",
   });
+  if (response.status === 409) {
+    // 后端在有活跃 turn（回复生成中）且无法停下时拒绝删除（409）。弹中文
+    // 提示后照常抛错——调用方状态保持"未删除"，与改前行为一致。
+    const conflictMessage = "会话正在生成回复，稍后再删除";
+    if (typeof window !== "undefined") window.alert(conflictMessage);
+    throw new Error(conflictMessage);
+  }
   await expectJson<{ deleted: boolean }>(response);
   invalidateClientCache("sessions:");
   notifySessionsChanged();

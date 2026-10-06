@@ -420,17 +420,40 @@ export default function ExamPaperAssembler() {
                 </p>
               </div>
             ) : (
-              textbooks.map((book) => (
-                <div key={book.doc_id} className="mb-1">
-                  {book.tree?.title
-                    ? renderTree(book.tree, "", 0)
-                    : (
-                        <div className="px-3 py-2 text-[12.5px] text-[var(--muted-foreground)]">
-                          {book.file_name}（无章节树）
-                        </div>
-                      )}
-                </div>
-              ))
+              textbooks.map((book) => {
+                const tree = book.tree;
+                if (tree?.title) {
+                  return (
+                    <div key={book.doc_id} className="mb-1">
+                      {renderTree(tree, "", 0)}
+                    </div>
+                  );
+                }
+                // doc_intel 建树在书名缺失时顶层 title 为空串：回退用
+                // file_name（缺失时首个 child 标题即顶行）做展示标签，顶层
+                // 章节按各自 struct_path 直接渲染，勾选路径才与后端
+                // by-struct 前缀匹配——不能把回退标签拼进路径。
+                const children = tree?.children ?? [];
+                if (children.length === 0) {
+                  return (
+                    <div key={book.doc_id} className="mb-1">
+                      <div className="px-3 py-2 text-[12.5px] text-[var(--muted-foreground)]">
+                        {book.file_name}（无章节树）
+                      </div>
+                    </div>
+                  );
+                }
+                return (
+                  <div key={book.doc_id} className="mb-1">
+                    {book.file_name && (
+                      <div className="truncate px-3 py-1.5 text-[12.5px] font-medium text-[var(--foreground)]">
+                        {book.file_name}
+                      </div>
+                    )}
+                    {children.map((child) => renderTree(child, "", 0))}
+                  </div>
+                );
+              })
             )}
           </div>
         </div>

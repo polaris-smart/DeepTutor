@@ -167,12 +167,12 @@ export const PRIMARY_NAV: NavEntry[] = [
   },
   {
     // 教师作业闭环: 布置/统计是教师侧工作台，学生只在 Learning Space 的
-    // 作业卡里作答，所以这一项只进教师全量导航，不进 learner 集。
+    // 作业卡里作答，所以这一项只进教师/管理员全量导航，不进 learner 集。
     href: "/assignments",
     label: "Assignments",
     icon: ClipboardList,
     tooltipKey: "Assignments tooltip",
-    roles: ["teacher"],
+    roles: ["teacher", "admin"],
   },
   {
     href: "/courses",
