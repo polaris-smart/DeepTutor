@@ -231,17 +231,51 @@ def test_docs_by_struct_requires_nonempty_path(client: TestClient, params: dict)
     assert response.status_code == 422
 
 
-def test_textbook_tree_reads_the_degraded_chapters_form(monkeypatch) -> None:
-    """document_loader 超 metadata 预算时把树降级成 {"title","chapters":[..]}；
-    端点必须兼容这个形态（章级标题列表 → children），否则选必三这类
-    大部头在结构浏览里显示为 0 本。"""
-    degraded = json.dumps(
-        {"title": "高中数学人教A版2019-选择性必修第三册",
-         "chapters": ["第六章 计数原理", "第七章随机变量及其分布"]},
+def test_textbook_tree_reads_the_muji_summary_form(monkeypatch) -> None:
+    """document_loader 超 metadata 预算的第二档降级 {"title","mujis":
+    [{"t": <课名>, "m": [<目名>…]}]}（数学四本大部头实锤）也要兼容：
+    每课展开成 children 分支、每个目一个子节点，否则 857 棵树被静默跳过。"""
+    mu_tree = json.dumps(
+        {
+            "title": "高中数学人教A版2019-必修第一册",
+            "mujis": [
+                {"t": "第一章 集合与常用逻辑用语", "m": ["1.1 集合的概念", "1.2 集合间的基本关系"]},
+                {"t": "第二章 一元二次函数、方程和不等式", "m": ["2.1 等式性质与不等式"]},
+            ],
+        },
         ensure_ascii=False,
     )
     node = _Node(
-        "bk_deg",
-        metadata={"file_name": "数学选三.pdf", "doc_tree": degraded,
-                  "doc_subject": "数学", "doc_type": "textbook"},
+        "bk_mu",
+        metadata={
+            "file_name": "数学必修一.pdf",
+            "doc_tree": mu_tree,
+            "doc_subject": "数学",
+            "doc_type": "textbook",
+        },
     )
+    docstore = SimpleNamespace(docs={"node-mu": node})
+    monkeypatch.setattr(
+        knowledge_module,
+        "_load_kb_docstore",
+        lambda kb_name: (kb_name, docstore),
+    )
+    response = TestClient(_build_app()).get("/api/v1/knowledge/数学/textbook-tree")
+    assert response.status_code == 200
+    textbooks = response.json()["textbooks"]
+    assert len(textbooks) == 1
+    tree = textbooks[0]["tree"]
+    assert tree["title"] == "高中数学人教A版2019-必修第一册"
+    children = tree["children"]
+    assert [c["title"] for c in children] == [
+        "第一章 集合与常用逻辑用语",
+        "第二章 一元二次函数、方程和不等式",
+    ]
+    assert [g["title"] for g in children[0]["children"]] == [
+        "1.1 集合的概念",
+        "1.2 集合间的基本关系",
+    ]
+    # Endpoint schema stays identical to the full/degraded tiers.
+    assert set(textbooks[0].keys()) == {
+        "doc_id", "file_name", "subject", "doc_type", "grade", "tree",
+    }

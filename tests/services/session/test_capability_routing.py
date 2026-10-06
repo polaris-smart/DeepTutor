@@ -156,6 +156,81 @@ async def test_per_turn_flag_opts_in_when_global_default_is_off(
     assert session["preferences"]["capability"] == "chat"
 
 
+@pytest.mark.asyncio
+async def test_explicit_visualize_ask_routes_without_routing_flag(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """N4: "画二次函数图像" in plain chat must reach the visualize capability
+    even with the global routing flag off — the canvas is the only channel
+    that renders the ask. The conversation itself stays in chat."""
+    captured: dict = {"global_enabled": False}
+    _configure_runtime(monkeypatch, captured, tmp_path)
+    runtime = TurnRuntimeManager(SQLiteSessionStore(tmp_path / "viz.db"))
+
+    session, turn = await runtime.start_turn(
+        {
+            "type": "start_turn",
+            "content": "画二次函数y=x^2的图像",
+            "session_id": None,
+            "capability": "chat",
+            "tools": ["web_search", "brainstorm"],
+            "knowledge_bases": [],
+            "attachments": [],
+            "language": "zh",
+            "config": {},
+        }
+    )
+    async for _event in runtime.subscribe_turn(turn["id"], after_seq=0):
+        pass
+
+    assert turn["capability"] == "visualize"
+    assert captured["active_capability"] == "visualize"
+    assert captured["metadata"]["capability_route"]["strategy"] == "rule"
+    assert captured["metadata"]["capability_route"]["capability"] == "visualize"
+    detail = await runtime.store.get_session(session["id"])
+    assert detail is not None
+    assert detail["preferences"]["capability"] == "chat"
+
+
+def test_visualize_route_rejects_non_ask_and_non_chat() -> None:
+    from deeptutor.runtime.capability_routing import route_explicit_visualize_request
+
+    # Explicit ask routes.
+    route = route_explicit_visualize_request("帮我画一个函数图像", "chat")
+    assert route is not None and route.capability == "visualize"
+    # Non-ask content stays in chat.
+    assert route_explicit_visualize_request("帮我总结一下这篇课文", "chat") is None
+    # Explicit non-chat capability is never overridden.
+    assert route_explicit_visualize_request("画一个函数图像", "deep_solve") is None
+    # Workspace turns are never routed.
+    assert (
+        route_explicit_visualize_request("画一个函数图像", "chat", workspace_mode="reading")
+        is None
+    )
+
+
+def test_visualize_route_respects_learning_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    import deeptutor.multi_user.learning_access as learning_access
+    from deeptutor.runtime.capability_routing import route_explicit_visualize_request
+
+    monkeypatch.setattr(
+        learning_access,
+        "current_learning_policy",
+        lambda: {"allowed_capabilities": ["chat", "immersive_reading"]},
+        raising=True,
+    )
+    assert route_explicit_visualize_request("画一个函数图像", "chat") is None
+
+    monkeypatch.setattr(
+        learning_access,
+        "current_learning_policy",
+        lambda: {"allowed_capabilities": ["chat", "visualize"]},
+        raising=True,
+    )
+    route = route_explicit_visualize_request("画一个函数图像", "chat")
+    assert route is not None and route.capability == "visualize"
+
+
 async def _run_turn(runtime: TurnRuntimeManager, payload: dict) -> tuple[dict, dict]:
     session, turn = await runtime.start_turn(
         {

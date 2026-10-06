@@ -323,6 +323,27 @@ FRONTEND_PORT=${FRONTEND_PORT:-3782}
 FRONTEND_HOST=${FRONTEND_HOST:-0.0.0.0}
 echo "[Frontend] 🚀 Starting Next.js frontend on ${FRONTEND_HOST}:${FRONTEND_PORT}..."
 
+# Startup-window 502 guard: web/proxy.ts rewrites /api/* to the backend at
+# request time, and Next boots well before uvicorn finishes its heavy init —
+# the first requests die with ECONNREFUSED (502). Wait (bounded, 2s backoff)
+# for the backend port to accept TCP before launching Next; the cost is paid
+# once at startup and never at request time. If the backend never comes up,
+# start anyway so the failure stays visible instead of hanging the container.
+BACKEND_PORT=${BACKEND_PORT:-8001}
+backend_wait_attempts=45
+for i in $(seq 1 "$backend_wait_attempts"); do
+    if (exec 3<>"/dev/tcp/127.0.0.1/${BACKEND_PORT}") 2>/dev/null; then
+        exec 3>&- 3<&- 2>/dev/null || true
+        echo "[Frontend] ✅ Backend :${BACKEND_PORT} is accepting connections (waited $((i * 2 - 2))s)."
+        break
+    fi
+    if [ "$i" -eq "$backend_wait_attempts" ]; then
+        echo "[Frontend] ⚠️ Backend :${BACKEND_PORT} not reachable after $((backend_wait_attempts * 2))s; starting frontend anyway."
+    else
+        sleep 2
+    fi
+done
+
 export PORT=${FRONTEND_PORT}
 export HOSTNAME=${FRONTEND_HOST}
 exec node /app/web/server.js
