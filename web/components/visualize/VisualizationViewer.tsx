@@ -243,7 +243,13 @@ function PluginIframeRenderer({ result }: { result: VisualizeCanvasResult }) {
       ref={iframeRef}
       src={entryUrl}
       title={result.presentation.title || result.renderer.id}
-      sandbox="allow-scripts"
+      // Plugin packages are first-party (admin-installed, served from
+      // /api/visualizers/*) and load their module assets from that same
+      // origin — a bare allow-scripts sandbox gives the frame an opaque
+      // origin, so those same-origin assets get blocked
+      // (ERR_BLOCKED_BY_RESPONSE.NotSameOrigin) and the panel paints blank.
+      // Same trust level as the session viewer's first-party iframes.
+      sandbox="allow-scripts allow-same-origin"
       className="w-full rounded-lg border-0 bg-[var(--card)]"
       style={{ minHeight: 320, height }}
       onLoad={() => {
@@ -252,7 +258,12 @@ function PluginIframeRenderer({ result }: { result: VisualizeCanvasResult }) {
             type: "deeptutor:visualization:render",
             schema_version: result.schema_version,
             renderer: result.renderer,
-            payload: result.payload,
+            // Packages declare payload_schema over the *inner* data object —
+            // the envelope wraps it as {format, data} (visualizer.json's
+            // payload_schema = renderer.js's `payload`). Posting the wrapper
+            // handed every package an empty canvas: title blank, default
+            // window, no curves (N4 终审实测).
+            payload: result.payload?.data,
             presentation: result.presentation,
             interaction: result.interaction,
           },

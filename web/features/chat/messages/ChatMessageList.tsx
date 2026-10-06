@@ -763,7 +763,15 @@ export const AssistantMessage = memo(function AssistantMessage({
   }, [msg.capability, resultEvent]);
 
   const visualizeResult = useMemo(() => {
-    if (msg.capability !== "visualize" || !resultEvent) return null;
+    // Auto-routed turns (an explicit "画…图像" ask that capability_routing
+    // lifted into the visualize capability) keep the chat row capability —
+    // the composer never picked visualize — so the routed source on the
+    // result event is what marks a canvas turn. Gating on the row capability
+    // alone rendered the committed envelope as a bare JSON/SVG code block
+    // (N4 实锤：路由已通、面板不渲染).
+    const visualizeTurn =
+      msg.capability === "visualize" || resultEvent?.source === "visualize";
+    if (!visualizeTurn || !resultEvent) return null;
     return extractVisualizeResult(resultEvent.metadata);
   }, [msg.capability, resultEvent]);
 

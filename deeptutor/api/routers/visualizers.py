@@ -17,7 +17,15 @@ router = APIRouter()
 _MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 _IFRAME_CSP = (
     "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; "
+    # 'unsafe-eval' is load-bearing for expression packages: graphers compile
+    # user-supplied math expressions through new Function after their own
+    # charset whitelist (visualizer.json payload_schema + renderer-side
+    # sanitiser). Without it every curve silently fails to draw and the
+    # package surfaces "无法解析的表达式" (N4 终审实测). Packages are
+    # first-party admin-installed assets and already run with 'unsafe-inline',
+    # so this grants no new privilege class; the rest of the policy stays
+    # deny-by-default (connect/frame/object/base/form all 'none').
+    "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' 'unsafe-eval'; "
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data: blob:; "
     "font-src 'self' data:; "

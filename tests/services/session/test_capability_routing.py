@@ -231,6 +231,34 @@ def test_visualize_route_respects_learning_policy(monkeypatch: pytest.MonkeyPatc
     assert route is not None and route.capability == "visualize"
 
 
+def test_visualize_route_routes_staff_without_learning_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """N4 v1011: teacher/admin plain chat carries no learning policy (grants
+    hold ``learning_policy: null``; admins bypass grants entirely), so an
+    explicit ask must route even though the composer capability stays
+    "chat" — and the chat frontend's send shape (``capability: null``) must
+    route as well."""
+    import deeptutor.multi_user.learning_access as learning_access
+    from deeptutor.runtime.capability_routing import route_explicit_visualize_request
+
+    monkeypatch.setattr(
+        learning_access,
+        "current_learning_policy",
+        lambda: None,
+        raising=True,
+    )
+    route = route_explicit_visualize_request(
+        "用可视化工具画一个二次函数 y=x²-2x-3 的图像", "chat"
+    )
+    assert route is not None and route.capability == "visualize"
+
+    route = route_explicit_visualize_request(
+        "用可视化工具画一个二次函数 y=x²-2x-3 的图像", None
+    )
+    assert route is not None and route.capability == "visualize"
+
+
 async def _run_turn(runtime: TurnRuntimeManager, payload: dict) -> tuple[dict, dict]:
     session, turn = await runtime.start_turn(
         {
