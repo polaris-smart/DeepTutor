@@ -106,6 +106,43 @@ def _coerce(name: str, loaded: Any) -> ReadingExtension | None:
     return candidate
 
 
+#: In-tree implementations of the entry points declared in pyproject.toml
+#: (``[project.entry-points."deeptutor.reading_extensions"]``). Imported
+#: lazily: these modules import from this one, so module-level imports here
+#: would be circular.
+_BUILTIN_READING_EXTENSIONS: tuple[tuple[str, str, str], ...] = (
+    ("read_aloud", "deeptutor.reading.read_aloud", "ReadAloudExtension"),
+    ("guided_learning", "deeptutor.reading.study_guidance", "StudyGuidanceExtension"),
+    ("vocabulary", "deeptutor.reading.vocabulary", "VocabularyExtension"),
+    ("quiz", "deeptutor.reading.quiz", "ReadingQuizExtension"),
+    ("translation", "deeptutor.reading.translation", "TranslationExtension"),
+)
+
+
+def _load_builtin_reading_extensions(log: logging.Logger) -> list[ReadingExtension]:
+    """Import the in-tree extensions the entry-point group declares.
+
+    Containers ship deeptutor as copied source without package metadata, so
+    ``importlib.metadata.entry_points`` resolves the group to nothing and
+    every built-in reader extension would silently vanish (read-aloud 404
+    实锤 2026-10). One broken module is skipped without affecting the rest,
+    exactly like the entry-point path.
+    """
+    import importlib
+
+    rows: list[ReadingExtension] = []
+    for name, module_name, attr in _BUILTIN_READING_EXTENSIONS:
+        try:
+            module = importlib.import_module(module_name)
+            row = _coerce(name, getattr(module, attr))
+        except Exception:
+            log.warning("Built-in reading extension %r failed to load.", name, exc_info=True)
+            continue
+        if row is not None:
+            rows.append(row)
+    return rows
+
+
 class ReadingExtensionRegistry:
     def __init__(self, extensions: list[ReadingExtension] | None = None) -> None:
         rows = (
@@ -113,6 +150,12 @@ class ReadingExtensionRegistry:
             if extensions is not None
             else load_entry_point_group(ENTRY_POINT_GROUP, _coerce, log=logger)
         )
+        if extensions is None and not rows:
+            # Entry points unavailable (source-copy containers have no dist
+            # metadata) — fall back to the in-tree implementations so the
+            # reader keeps its built-in extensions instead of an empty
+            # registry.
+            rows = _load_builtin_reading_extensions(logger)
         self._extensions: dict[str, ReadingExtension] = {}
         for row in rows:
             self._extensions.setdefault(row.manifest.id, row)

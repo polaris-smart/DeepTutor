@@ -85,4 +85,73 @@ def route_explicit_quiz_request(
     )
 
 
-__all__ = ["CapabilityRoute", "route_explicit_quiz_request"]
+# Visualization asks are likewise narrow: only an explicit request for a
+# drawn/rendered artifact lifts the turn into the visualize capability, whose
+# loop owns the submit_visualization tool and the canvas envelope. Unlike the
+# quiz route this one is deliberately NOT gated on capability_routing_enabled:
+# the canvas is the only channel that renders these asks, and the model already
+# attempts visualization unprompted (N4 实锤) — a disabled flag would silently
+# turn every "画二次函数图像" back into a bare code block. Learning accounts
+# stay protected: the route refuses unless their policy admits visualize,
+# mirroring apply_learning_policy which runs right after routing.
+_VISUALIZE_PATTERNS = (
+    re.compile(
+        r"\b(?:plot|draw|visuali[sz]e)\b[^.!?\n]{0,40}"
+        r"\b(?:graph|chart|diagram|function|curve|animation|figure)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:画|绘制|绘出|生成|输出)[^.!?\n]{0,24}"
+        r"(?:函数图像|图像|图象|图表|曲线|示意图|流程图|思维导图|概念图"
+        r"|动画|可视化|柱状图|折线图|饼图|统计图)"
+    ),
+)
+
+_VISUALIZE_REASON = "The user explicitly asked for a drawn or rendered visualization."
+
+
+def route_explicit_visualize_request(
+    content: Any,
+    requested_capability: Any,
+    *,
+    workspace_mode: Any = "",
+) -> CapabilityRoute | None:
+    """Return a rule-based visualize route before turn creation, or None.
+
+    Same guard rails as the quiz route (explicit ask only, chat requests only,
+    never inside a workspace) plus a learning-policy check so a learner whose
+    policy withholds visualize keeps the plain-chat surface.
+    """
+    requested = str(requested_capability or "chat")
+    if requested != "chat":
+        return None
+    if str(workspace_mode or "").strip():
+        return None
+    try:
+        from deeptutor.multi_user.learning_access import current_learning_policy
+
+        policy = current_learning_policy()
+    except Exception:
+        policy = None
+    if policy is not None:
+        allowed = {str(item) for item in (policy.get("allowed_capabilities") or [])}
+        if "visualize" not in allowed:
+            return None
+    message = str(content or "").strip()
+    if not message or not any(pattern.search(message) for pattern in _VISUALIZE_PATTERNS):
+        return None
+
+    return CapabilityRoute(
+        requested_capability=requested,
+        capability="visualize",
+        confidence=0.9,
+        strategy="rule",
+        reason=_VISUALIZE_REASON,
+    )
+
+
+__all__ = [
+    "CapabilityRoute",
+    "route_explicit_quiz_request",
+    "route_explicit_visualize_request",
+]

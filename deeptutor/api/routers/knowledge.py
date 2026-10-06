@@ -4935,6 +4935,28 @@ async def get_textbook_tree(kb_name: str):
             # Present it as children so structure browsing still shows the
             # book instead of silently dropping it (选必三大部头实锤).
             if not tree.get("children"):
+                # Tier-2 degraded form (数学大部头): {"title", "mujis":
+                # [{"t": <branch title>, "m": [<目名>…]}]} — expand each
+                # branch into children (branch node + one child per 目) so
+                # structure browsing keeps the book, same contract as the
+                # chapters fallback below; endpoint schema unchanged.
+                mujis = tree.get("mujis")
+                if isinstance(mujis, list) and mujis:
+                    tree = {
+                        "title": tree.get("title"),
+                        "children": [
+                            {
+                                "title": str(branch.get("t") or ""),
+                                "children": [
+                                    {"title": str(mu)}
+                                    for mu in (branch.get("m") or [])
+                                    if mu
+                                ],
+                            }
+                            for branch in mujis
+                            if isinstance(branch, dict) and branch.get("t")
+                        ],
+                    }
                 chapters = tree.get("chapters")
                 if isinstance(chapters, list) and chapters:
                     tree = {

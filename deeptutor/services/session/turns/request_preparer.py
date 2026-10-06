@@ -10,7 +10,10 @@ import uuid
 
 from deeptutor.core.stream import StreamEvent, StreamEventType
 from deeptutor.core.turn_request import TurnRequest
-from deeptutor.runtime.capability_routing import route_explicit_quiz_request
+from deeptutor.runtime.capability_routing import (
+    route_explicit_quiz_request,
+    route_explicit_visualize_request,
+)
 from deeptutor.services.session.workspace_preferences import (
     WORKSPACE_MODE_MASTERY,
     WORKSPACE_MODE_READING,
@@ -270,6 +273,12 @@ class TurnRequestPreparer:
             enabled=routing_enabled,
             workspace_mode=workspace_mode,
         )
+        if capability_route is None:
+            capability_route = route_explicit_visualize_request(
+                payload.get("content"),
+                requested_capability,
+                workspace_mode=workspace_mode,
+            )
         capability = (
             capability_route.capability if capability_route is not None else requested_capability
         )
