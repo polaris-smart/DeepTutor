@@ -289,6 +289,8 @@ protocol:
     协议修正：你选择了 ``FINISH`` 同时发起了工具调用。``FINISH`` 是终止输出——**不要**调工具。如果还需要信息，先用 ``TOOL``。
   label_with_tools: |-
     协议修正：你在不允许带 tool_calls 的标签下发起了工具调用。需要工具用 ``TOOL``，需要思考用 ``THINK``，需要终止输出用 ``FINISH``（**不**带工具）。
+  quiz_payload_invalid: |-
+    你的 FINISH 载荷未通过校验（{issues}）。请重新输出一条 FINISH：正文是单个完整、未被截断的 JSON 对象，包含 question、options（仅选择题）、correct_answer、explanation。
   force_finish: |-
     迭代预算已用完。现在必须给出终止输出：第一行必须是 ``FINISH``，**不要**再调用工具、**不要**用 ``THINK``。即使素材不完整，也请简短说明不确定性，并仍输出当前最有用的内容。
   force_finish_repair: |-

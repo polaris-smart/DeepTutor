@@ -384,6 +384,66 @@ def test_emit_quiz_question_structures_metadata() -> None:
 
 
 # ---------------------------------------------------------------------------
+# _QuizLoopHost.validate_terminal — in-loop payload gate (N14)
+# ---------------------------------------------------------------------------
+
+
+def _make_quiz_host() -> tuple[Any, QuizTemplate]:
+    from deeptutor.agents.question.pipeline import _QuizLoopHost
+
+    template = QuizTemplate(
+        question_id="q_1", topic="t", question_type="choice", difficulty="easy"
+    )
+    host = _QuizLoopHost(
+        pipeline=_make_pipeline(),
+        template=template,
+        stream=_StubStreamBus(),
+        context=None,
+        client=None,
+    )
+    return host, template
+
+
+def test_quiz_validate_terminal_accepts_complete_payload() -> None:
+    host, _template = _make_quiz_host()
+    text = (
+        '{"question": "What?", "options": {"A": "a", "B": "b", '
+        '"C": "c", "D": "d"}, "correct_answer": "A", "explanation": "because"}'
+    )
+    assert asyncio.run(host.validate_terminal("FINISH", text)) is None
+
+
+def test_quiz_validate_terminal_rejects_truncated_payload() -> None:
+    host, _template = _make_quiz_host()
+    truncated = '{"question": "Explain thermodynamics in detail", "expl'
+    violation = asyncio.run(host.validate_terminal("FINISH", truncated))
+    assert violation == "quiz_payload_invalid"
+    message = host.protocol_repair_message(violation)
+    assert "missing_question" in message
+    assert "missing_explanation" in message
+
+
+def test_quiz_validate_terminal_ignores_non_finish_labels() -> None:
+    host, _template = _make_quiz_host()
+    assert asyncio.run(host.validate_terminal("THINK", "not json at all")) is None
+
+
+def test_quiz_validate_terminal_rejects_empty_body() -> None:
+    host, _template = _make_quiz_host()
+    violation = asyncio.run(host.validate_terminal("FINISH", ""))
+    assert violation == "quiz_payload_invalid"
+    assert "missing_question" in host.protocol_repair_message(violation)
+
+
+def test_quiz_validate_terminal_falls_back_to_default_repair_wording() -> None:
+    host, _template = _make_quiz_host()
+    assert asyncio.run(host.validate_terminal("FINISH", "garbage")) == "quiz_payload_invalid"
+    # Unknown protocol violations still route through the YAML/base wording,
+    # not the quiz-payload message.
+    assert "quiz_payload_invalid" not in host.protocol_repair_message("missing_label")
+
+
+# ---------------------------------------------------------------------------
 # Quiz history loader integration with the sqlite store
 # ---------------------------------------------------------------------------
 

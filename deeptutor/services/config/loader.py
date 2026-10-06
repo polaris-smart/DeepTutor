@@ -314,8 +314,12 @@ DEFAULT_CHAT_PARAMS: dict[str, Any] = {
 DEFAULT_QUESTION_PARAMS: dict[str, Any] = {
     "answering": {"max_tokens": 4000},
     "planning": {"max_tokens": 6000},
-    "quiz_finish": {"max_tokens": 3000},
-    "repair": {"max_tokens": 2500},
+    # N14: a quiz FINISH body is one whole structured question JSON. 3000
+    # truncated content-heavy payloads, and a 2500 repair budget could never
+    # re-emit what 3000 could not hold (the inverted-budget trap) — so both
+    # ship at 6000.
+    "quiz_finish": {"max_tokens": 6000},
+    "repair": {"max_tokens": 6000},
     "tool_summarizer": {"max_tokens": 800},
 }
 

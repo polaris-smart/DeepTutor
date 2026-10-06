@@ -2259,6 +2259,7 @@ class _QuizLoopHost(_BaseLoopHost):
         super().__init__(pipeline=pipeline, stream=stream, context=context, client=client)
         self._template = template
         self._trace_id_prefix = f"quiz-{template.question_id}-iter"
+        self._last_payload_issues: list[str] = []
 
     def build_iteration_trace_meta(self, iteration: int) -> tuple[dict[str, Any], dict[str, Any]]:
         iter_call_id = new_call_id(f"quiz-{self._template.question_id}-iter-{iteration}")
@@ -2281,6 +2282,45 @@ class _QuizLoopHost(_BaseLoopHost):
     async def emit_final(self, text: str, final_meta: dict[str, Any]) -> None:
         # Intentional no-op. See class docstring.
         return
+
+    async def validate_terminal(self, label: str, text: str) -> str | None:
+        """Reject a malformed quiz payload while the loop can still repair.
+
+        The FINISH body carries the whole structured question JSON. It used
+        to be parsed only after the loop returned, so a truncated or
+        malformed payload bought one blind post-loop repair call (N14). This
+        hook runs the same parse + issue collection in-loop: a rejected
+        FINISH feeds back as a protocol violation and counts against the
+        ordinary max_iterations budget instead of burning an extra
+        always-failing repair round outside the loop.
+        """
+        if label != LABEL_FINISH:
+            return None
+        payload = self._pipeline._parse_quiz_payload(text)
+        normalized = self._pipeline._normalize_quiz_payload(self._template, payload)
+        issues = self._pipeline._collect_quiz_issues(self._template, normalized)
+        if not issues:
+            return None
+        self._last_payload_issues = issues
+        return "quiz_payload_invalid"
+
+    def protocol_repair_message(self, violation: str) -> str:
+        if violation == "quiz_payload_invalid":
+            issues = ", ".join(self._last_payload_issues or ("empty payload",))
+            # _t returns an unformatted default when the YAML key is
+            # absent, so the issue list is spliced in here rather than via
+            # a {issues} format kwarg.
+            message = self._pipeline._t(
+                "protocol.quiz_payload_invalid",
+                default=(
+                    "Your FINISH payload failed validation ({issues}). Re-emit "
+                    "a single FINISH message whose body is one complete, "
+                    "untruncated JSON object with question, options (choice "
+                    "questions only), correct_answer and explanation."
+                ),
+            )
+            return message.replace("{issues}", issues)
+        return super().protocol_repair_message(violation)
 
     async def force_finalize(
         self,

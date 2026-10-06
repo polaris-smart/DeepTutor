@@ -32,8 +32,11 @@ SHIPPED_BUDGETS: dict[str, dict[str, int]] = {
     "question": {
         "answering": 4000,
         "planning": 6000,
-        "quiz_finish": 3000,
-        "repair": 2500,
+        # N14 retune: quiz FINISH carries one whole question JSON, and a
+        # repair budget below the finish budget could never re-emit what the
+        # finish budget could not hold. Both ship at 6000.
+        "quiz_finish": 6000,
+        "repair": 6000,
         "tool_summarizer": 800,
     },
     "research": {

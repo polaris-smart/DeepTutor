@@ -308,6 +308,8 @@ protocol:
     Protocol correction: you chose ``FINISH`` while emitting tool_calls. ``FINISH`` is the terminal output — no tools. Use ``TOOL`` first if you still need information.
   label_with_tools: |-
     Protocol correction: you emitted tool_calls under a label that does not allow them. Use ``TOOL`` for tool calls; ``THINK`` for reasoning; ``FINISH`` for the terminal output (no tools).
+  quiz_payload_invalid: |-
+    Your FINISH payload failed validation ({issues}). Re-emit a single FINISH message whose body is one complete, untruncated JSON object with question, options (choice questions only), correct_answer and explanation.
   force_finish: |-
     The iteration budget is exhausted. Now produce the terminal output: the first line must be ``FINISH``. Do not call tools, do not use ``THINK``. If material is still incomplete, state the uncertainty briefly while still producing the most useful output you can.
   force_finish_repair: |-
