@@ -45,6 +45,10 @@ from deeptutor.services.voice.base import (
 )
 
 PLAN_URL_MARKER = "/plan/"
+# N9-B ASR fix: hold the final frame until recognition stalls (5s) before
+# finalizing; cap the hold so a dead session cannot hang transcribe() forever.
+_STALL_SECS = 5.0
+_HOLD_CAP_SECS = 120.0
 
 
 class VolcPlanTTSAdapter(BaseTTSAdapter):
@@ -272,15 +276,34 @@ class VolcPlanSTTAdapter(BaseSTTAdapter):
                 reader_task = asyncio.create_task(reader(wsc))
                 try:
                     await wsc.send(config_frame())
-                    for offset in range(0, len(audio), self._CHUNK):
-                        chunk = audio[offset:offset + self._CHUNK]
-                        last = offset + self._CHUNK >= len(audio)
-                        await wsc.send(audio_frame(chunk, last=last))
+                    # N9-B fix (ported from the verified n9b_runner.py
+                    # implementation, 2026-10-07): firing the final frame while
+                    # the server is still backlogged makes bigmodel_async close
+                    # the session early and truncate recognition (~1/3 of the
+                    # audio). Hold the final frame until recognition stalls
+                    # (5s < the server's 8s inter-packet watchdog) so the
+                    # server drains its backlog, then finalize.
+                    frames = [audio[o:o + self._CHUNK]
+                              for o in range(0, len(audio), self._CHUNK)]
+                    for chunk in frames[:-1]:
+                        await wsc.send(audio_frame(chunk, last=False))
                         # Gentle pacing keeps the server's 8s inter-packet
                         # watchdog happy without material slowdown.
                         await asyncio.sleep(0.03)
+                    if frames:
+                        t0 = loop.time()
+                        stall = 0.0
+                        prev = -1
+                        while loop.time() - t0 < _HOLD_CAP_SECS:
+                            await asyncio.sleep(0.5)
+                            cur = len(texts[-1]) if texts else 0
+                            stall = 0.0 if cur != prev else stall + 0.5
+                            prev = cur
+                            if stall >= _STALL_SECS:
+                                break
+                        await wsc.send(audio_frame(frames[-1], last=True))
                     # Drain results until the server goes quiet for a while.
-                    deadline = loop.time() + 30
+                    deadline = loop.time() + 15
                     while loop.time() < deadline:
                         if errors:
                             break
@@ -288,7 +311,7 @@ class VolcPlanSTTAdapter(BaseSTTAdapter):
                             raw = await asyncio.wait_for(wsc.recv(), timeout=5)
                             parse_frame(raw)
                             if texts:
-                                deadline = loop.time() + 8
+                                deadline = loop.time() + 5
                         except asyncio.TimeoutError:
                             break
                         except Exception:
@@ -299,7 +322,9 @@ class VolcPlanSTTAdapter(BaseSTTAdapter):
                         await wsc.close()
                     except Exception:
                         pass
-            if errors:
+            # The 8s watchdog may kill an idle session right after recognition
+            # finished; the accumulated text is still valid - keep it.
+            if errors and not texts:
                 raise VoiceProviderError(f"Volcano ASR error: {errors[-1][:300]}")
             return (texts[-1] if texts else "").strip()
 

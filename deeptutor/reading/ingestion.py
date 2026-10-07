@@ -81,7 +81,9 @@ _MEDIA_MIME = {
 # Cut the audio into pieces a speech-to-text endpoint will accept. The pieces
 # are a transport detail: cue timings come back from the provider and are
 # rebased onto the clip, so this number no longer sets transcript granularity.
-MEDIA_CHUNK_SECONDS = 600
+# N9-B fix (2026-10-07): 600s ASR sessions truncate server-side (bigmodel_async
+# closes the session while backlogged); 60s slices transcribe fully.
+MEDIA_CHUNK_SECONDS = 60
 MEDIA_PENDING_TEXT = "[Transcribing this media…]"
 MEDIA_COVER_ASSET = "cover.jpg"
 MAX_TRANSCRIPT_CUES = 20_000
