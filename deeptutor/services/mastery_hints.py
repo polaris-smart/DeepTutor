@@ -40,6 +40,8 @@ import logging
 import time
 from typing import Any
 
+from deeptutor.services import hint_resilience
+from deeptutor.services.hint_resilience import NegativeResultCache
 from deeptutor.services.prompt.language import is_chinese as _is_zh
 from deeptutor.services.singleflight_cache import AsyncSingleFlightTTLCache
 
@@ -51,7 +53,7 @@ logger = logging.getLogger(__name__)
 _MAX_HINT_CHARS = {"zh": 44, "en": 110}
 # Bounded because it sits on a request path. The composer shows its static
 # placeholder until this returns, so an overrun costs a nicety, not a screen.
-_LLM_TIMEOUT = 12.0
+_LLM_TIMEOUT = hint_resilience.LLM_TIMEOUT_SECONDS
 # How much of the transcript reaches the prompt. The last exchange is what a
 # follow-up question has to avoid repeating; anything older is already
 # summarized by where the waypoint sits.
@@ -65,17 +67,24 @@ _CACHE_TTL_SECONDS = 30 * 60
 
 @dataclass(frozen=True, slots=True)
 class AskHint:
-    """One question the learner could ask, and what it was written for."""
+    """One question the learner could ask, and what it was written for.
+
+    ``reason`` is empty on success and names the failure class when the hint
+    is empty, so an "unavailable" can be told apart from a plain "nothing to
+    ask yet" without changing what either means to the composer.
+    """
 
     hint: str
     knowledge_point_id: str
     generated_at: float
+    reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "hint": self.hint,
             "knowledge_point_id": self.knowledge_point_id,
             "generated_at": self.generated_at,
+            "reason": self.reason,
         }
 
 
@@ -86,6 +95,12 @@ _hint_cache = AsyncSingleFlightTTLCache[str, AskHint](
 )
 _cache = _hint_cache.values
 _inflight = _hint_cache.inflight
+# A failed generation is remembered briefly so the same screen asking again
+# within the minute gets the same answer without paying the timeout twice.
+_negative_cache: NegativeResultCache[str, AskHint] = NegativeResultCache(
+    limit=_CACHE_LIMIT,
+    ttl_seconds=hint_resilience.NEGATIVE_TTL_SECONDS,
+)
 
 
 def _cache_key(path_id: str, kp_id: str, anchor: str) -> str:
@@ -305,11 +320,16 @@ def _sanitize(raw: str, language: str) -> str:
     return text
 
 
+def _empty_with_reason(knowledge_point_id: str, reason: str) -> AskHint:
+    return AskHint(
+        hint="", knowledge_point_id=knowledge_point_id, generated_at=time.time(), reason=reason
+    )
+
+
 async def _generate(path_id: str, session_id: str, key_hint: str) -> AskHint:
     material = await _collect(path_id, session_id)
-    empty = AskHint(hint="", knowledge_point_id=key_hint, generated_at=time.time())
     if not material:
-        return empty
+        return _empty_with_reason(key_hint, "")
 
     from deeptutor.services.settings.interface_settings import get_response_language
 
@@ -320,9 +340,20 @@ async def _generate(path_id: str, session_id: str, key_hint: str) -> AskHint:
         language = "en"
     zh = _is_zh(language)
 
+    # Same probe reading ask-hint makes: with no task profile the call would
+    # wait out the whole timeout to fail anyway, and the empty answer costs
+    # nothing to give now.
+    from deeptutor.services.model_selection.tasks import TaskKind
+
+    if not hint_resilience.task_profile_configured(TaskKind.MASTERY_ASK_HINT):
+        return _empty_with_reason(
+            key_hint, hint_resilience.REASON_TASK_PROFILE_NOT_CONFIGURED
+        )
+
+    started = time.monotonic()
     try:
         from deeptutor.services.llm import complete
-        from deeptutor.services.model_selection.tasks import TaskKind, task_llm_scope
+        from deeptutor.services.model_selection.tasks import task_llm_scope
 
         # Same call class as titles and starter lines — short, frequent, and
         # nobody asked for it — so it runs on the task model when one is set.
@@ -338,11 +369,20 @@ async def _generate(path_id: str, session_id: str, key_hint: str) -> AskHint:
                 timeout=_LLM_TIMEOUT,
             )
     except asyncio.TimeoutError:
-        logger.debug("ask-hint LLM call timed out")
-        return empty
+        logger.warning(
+            "ask-hint: LLM call timed out after %.1fs — returning empty hint (%s)",
+            time.monotonic() - started,
+            hint_resilience.REASON_LLM_TIMEOUT,
+        )
+        return _empty_with_reason(key_hint, hint_resilience.REASON_LLM_TIMEOUT)
     except Exception:
-        logger.debug("ask-hint LLM call failed", exc_info=True)
-        return empty
+        logger.warning(
+            "ask-hint: LLM call failed after %.1fs — returning empty hint (%s)",
+            time.monotonic() - started,
+            hint_resilience.REASON_LLM_UNAVAILABLE,
+            exc_info=True,
+        )
+        return _empty_with_reason(key_hint, hint_resilience.REASON_LLM_UNAVAILABLE)
 
     return AskHint(
         hint=_sanitize(raw, language),
@@ -362,9 +402,14 @@ async def get_ask_hint(path_id: str, session_id: str = "") -> dict[str, Any]:
     """
     material = await _collect(path_id, session_id)
     if not material:
-        return AskHint(hint="", knowledge_point_id="", generated_at=time.time()).to_dict()
+        return _empty_with_reason("", "")
 
     key = _cache_key(path_id, material.anchor, session_id)
+    # The same screen asking again within the minute gets the remembered
+    # empty answer, timeout unpaid.
+    negative = _negative_cache.recall(key)
+    if negative is not None:
+        return negative.to_dict()
     try:
         value = await _hint_cache.get_or_create(
             key,
@@ -372,8 +417,10 @@ async def get_ask_hint(path_id: str, session_id: str = "") -> dict[str, Any]:
             cache_when=lambda item: bool(item.hint),
         )
     except Exception:
-        logger.debug("ask-hint generation failed", exc_info=True)
-        return AskHint(hint="", knowledge_point_id="", generated_at=time.time()).to_dict()
+        logger.warning("ask-hint generation failed — returning empty hint", exc_info=True)
+        return _empty_with_reason("", hint_resilience.REASON_LLM_UNAVAILABLE)
+    if not value.hint:
+        _negative_cache.remember(key, value)
     return value.to_dict()
 
 

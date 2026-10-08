@@ -15,13 +15,15 @@ import re
 import time
 from typing import Any
 
+from deeptutor.services import hint_resilience
+from deeptutor.services.hint_resilience import NegativeResultCache
 from deeptutor.services.prompt.language import is_chinese as _is_zh
 from deeptutor.services.singleflight_cache import AsyncSingleFlightTTLCache
 
 logger = logging.getLogger(__name__)
 
 _MAX_HINT_CHARS = {"zh": 44, "en": 110}
-_LLM_TIMEOUT = 12.0
+_LLM_TIMEOUT = hint_resilience.LLM_TIMEOUT_SECONDS
 _HISTORY_TURNS = 4
 _MAX_MESSAGE_CHARS = 700
 _MAX_SELECTION_CHARS = 2000
@@ -33,17 +35,24 @@ _CACHE_TTL_SECONDS = 30 * 60
 
 @dataclass(frozen=True, slots=True)
 class AskHint:
-    """One learner-voiced question and the material it was written for."""
+    """One learner-voiced question and the material it was written for.
+
+    ``reason`` is empty on success and names the failure class on an empty
+    hint, so a caller can tell "no question to ask" from "the writer never
+    answered" without either meaning anything different to the composer.
+    """
 
     hint: str
     material_id: str
     generated_at: float
+    reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "hint": self.hint,
             "material_id": self.material_id,
             "generated_at": self.generated_at,
+            "reason": self.reason,
         }
 
 
@@ -54,6 +63,12 @@ _hint_cache = AsyncSingleFlightTTLCache[str, AskHint](
 )
 _cache = _hint_cache.values
 _inflight = _hint_cache.inflight
+# Empty results get their own short TTL: a repeat within the minute should
+# not pay the timeout again, but the minute after that may try once more.
+_negative_cache: NegativeResultCache[str, AskHint] = NegativeResultCache(
+    limit=_CACHE_LIMIT,
+    ttl_seconds=hint_resilience.NEGATIVE_TTL_SECONDS,
+)
 
 
 def _locator_bucket(locator: int | None) -> str:
@@ -431,19 +446,43 @@ async def _call_llm(material: _Material, language: str) -> str:
         )
 
 
+def _empty_with_reason(material_id: str, reason: str) -> AskHint:
+    return AskHint(hint="", material_id=material_id, generated_at=time.time(), reason=reason)
+
+
 async def _generate(material: _Material) -> AskHint:
-    empty = AskHint(hint="", material_id=material.material_id, generated_at=time.time())
     if not material:
-        return empty
+        return _empty_with_reason(material.material_id, "")
+    # No task profile means the call would run on whatever global model is
+    # configured — or, when none is, hang for the full timeout before failing
+    # anyway. The answer is the same either way, so ask the settings once and
+    # skip the wait.
+    from deeptutor.services.model_selection.tasks import TaskKind
+
+    if not hint_resilience.task_profile_configured(TaskKind.READING_ASK_HINT):
+        return _empty_with_reason(
+            material.material_id, hint_resilience.REASON_TASK_PROFILE_NOT_CONFIGURED
+        )
+
     language = _response_language()
+    started = time.monotonic()
     try:
         raw = await _call_llm(material, language)
     except asyncio.TimeoutError:
-        logger.debug("reading ask-hint LLM call timed out")
-        return empty
+        logger.warning(
+            "reading ask-hint: LLM call timed out after %.1fs — returning empty hint (%s)",
+            time.monotonic() - started,
+            hint_resilience.REASON_LLM_TIMEOUT,
+        )
+        return _empty_with_reason(material.material_id, hint_resilience.REASON_LLM_TIMEOUT)
     except Exception:
-        logger.debug("reading ask-hint LLM call failed", exc_info=True)
-        return empty
+        logger.warning(
+            "reading ask-hint: LLM call failed after %.1fs — returning empty hint (%s)",
+            time.monotonic() - started,
+            hint_resilience.REASON_LLM_UNAVAILABLE,
+            exc_info=True,
+        )
+        return _empty_with_reason(material.material_id, hint_resilience.REASON_LLM_UNAVAILABLE)
     return AskHint(
         hint=_sanitize(raw, language, material.last_answer),
         material_id=material.material_id,
@@ -486,6 +525,11 @@ async def get_ask_hint(
         material.locator,
         material.transcript_length,
     )
+    # A remembered empty result answers the same repeat within its short TTL,
+    # so the caller does not pay the timeout again for the same screen.
+    negative = _negative_cache.recall(key)
+    if negative is not None:
+        return negative.to_dict()
     try:
         value = await _hint_cache.get_or_create(
             key,
@@ -493,10 +537,13 @@ async def get_ask_hint(
             cache_when=lambda item: bool(item.hint),
         )
     except Exception:
-        logger.debug("reading ask-hint generation failed", exc_info=True)
-        return AskHint(
-            hint="", material_id=material.material_id, generated_at=time.time()
-        ).to_dict()
+        logger.warning(
+            "reading ask-hint generation failed — returning empty hint",
+            exc_info=True,
+        )
+        return _empty_with_reason(material.material_id, hint_resilience.REASON_LLM_UNAVAILABLE)
+    if not value.hint:
+        _negative_cache.remember(key, value)
     return value.to_dict()
 
 
