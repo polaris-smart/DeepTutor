@@ -166,3 +166,36 @@ async def test_task_profile_not_configured_short_circuits(
     second = await reading_hints.get_ask_hint("workspace-noprofile", locator=7)
 
     assert second == result
+
+
+@pytest.mark.asyncio
+async def test_llm_call_requests_roomy_token_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Thinking models burn completion budget reasoning before answering.
+
+    The hint question is short, but the reasoning chain is not — the call
+    must reserve enough completion tokens for both or the answer is truncated
+    to an empty string.
+    """
+
+    async def collect(*_args: object) -> reading_hints._Material:
+        return _material()
+
+    captured: dict[str, object] = {}
+
+    async def spy(**kwargs: object) -> str:
+        captured.update(kwargs)
+        return "Why do I need a residual connection here?"
+
+    monkeypatch.setattr(reading_hints, "_collect", collect)
+    monkeypatch.setattr(llm_module, "complete", spy)
+    monkeypatch.setattr(reading_hints, "_response_language", lambda: "en")
+    monkeypatch.setattr(
+        reading_hints.hint_resilience, "task_profile_configured", lambda _kind: True
+    )
+
+    result = await reading_hints.get_ask_hint("workspace-budget", locator=7)
+
+    assert result["hint"] == "Why do I need a residual connection here?"
+    assert captured["max_tokens"] >= 2048

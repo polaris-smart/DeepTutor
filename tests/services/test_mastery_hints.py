@@ -156,3 +156,35 @@ async def test_successful_hint_is_unchanged_and_cached(
     assert first["hint"] == "Why does the router need the intent and not just the query?"
     assert first["reason"] == ""
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_llm_call_requests_roomy_token_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Thinking models burn completion budget reasoning before answering.
+
+    The hint question is short, but the reasoning chain is not — the call
+    must reserve enough completion tokens for both or the answer is truncated
+    to an empty string.
+    """
+
+    async def collect(*_args: object) -> mastery_hints._Material:
+        return _material()
+
+    captured: dict[str, object] = {}
+
+    async def spy(**kwargs: object) -> str:
+        captured.update(kwargs)
+        return "Why does the router need the intent and not just the query?"
+
+    monkeypatch.setattr(mastery_hints, "_collect", collect)
+    monkeypatch.setattr(llm_module, "complete", spy)
+    monkeypatch.setattr(
+        mastery_hints.hint_resilience, "task_profile_configured", lambda _kind: True
+    )
+
+    result = await mastery_hints.get_ask_hint("path-1", "session-1")
+
+    assert result["hint"] == "Why does the router need the intent and not just the query?"
+    assert captured["max_tokens"] >= 2048

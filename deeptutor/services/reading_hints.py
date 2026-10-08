@@ -439,7 +439,7 @@ async def _call_llm(material: _Material, language: str) -> str:
                 prompt=_render(material, zh),
                 system_prompt=_SYSTEM_ZH if zh else _SYSTEM_EN,
                 temperature=0.7,
-                max_tokens=120,
+                max_tokens=2048,
                 max_retries=0,
             ),
             timeout=_LLM_TIMEOUT,
