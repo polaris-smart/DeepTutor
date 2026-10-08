@@ -1660,6 +1660,32 @@ def test_file_preview_text_times_out_instead_of_hanging(monkeypatch, tmp_path: P
     assert elapsed < 1.0
 
 
+def test_task_stream_get_is_readonly(monkeypatch) -> None:
+    """N37: a fabricated task id 404s without registering state; finished → JSON."""
+    from deeptutor.api.utils.task_log_stream import (
+        KnowledgeTaskStreamManager,
+        get_task_stream_manager,
+    )
+
+    monkeypatch.setattr(
+        KnowledgeTaskStreamManager, "_instance", KnowledgeTaskStreamManager()
+    )
+
+    with TestClient(_build_app()) as client:
+        ghost = client.get("/api/knowledge-bases/tasks/ghost-id/stream")
+        assert ghost.status_code == 404
+        assert ghost.json() == {"detail": "Task not found"}
+        assert get_task_stream_manager().retained_task_count() == 0
+
+        manager = get_task_stream_manager()
+        manager.ensure_task("real-task")
+        manager.emit_complete("real-task", "done")
+        finished = client.get("/api/knowledge-bases/tasks/real-task/stream")
+        assert finished.status_code == 200
+        assert finished.json()["event"] == "complete"
+        assert finished.json()["payload"]["detail"] == "done"
+
+
 def test_reindex_accepts_default_alias(monkeypatch, tmp_path: Path) -> None:
     manager = _FakeKBManager(tmp_path / "knowledge_bases")
     manager.config["knowledge_bases"]["actual-kb"] = {

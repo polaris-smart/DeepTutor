@@ -228,3 +228,31 @@ def test_task_buffer_has_approximate_byte_ceiling():
 
     assert manager._buffer_bytes["large-task"] <= manager._MAX_BYTES_PER_TASK
     assert len(manager._buffers["large-task"]) < 20
+
+
+def test_readonly_queries_do_not_materialize_unknown_task():
+    """N37: peeking a fabricated task id must register nothing (no side effects)."""
+    manager = KnowledgeTaskStreamManager()
+
+    assert manager.knows_task("ghost-id") is False
+    assert manager.peek_terminal("ghost-id") is None
+
+    assert manager.retained_task_count() == 0
+
+
+def test_terminal_task_is_peekable_while_running_task_is_not():
+    manager = KnowledgeTaskStreamManager()
+
+    manager.ensure_task("task-done")
+    manager.emit_log("task-done", "working")
+    assert manager.knows_task("task-done") is True
+    assert manager.peek_terminal("task-done") is None
+
+    manager.emit_complete("task-done", "finished")
+    terminal = manager.peek_terminal("task-done")
+    assert terminal is not None
+    assert terminal["event"] == "complete"
+    assert terminal["payload"]["detail"] == "finished"
+
+    manager.emit_failed("task-failed", "boom")
+    assert manager.peek_terminal("task-failed")["event"] == "failed"

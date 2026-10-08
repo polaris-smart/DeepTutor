@@ -241,6 +241,26 @@ class KnowledgeTaskStreamManager:
             self._prune_locked(time.monotonic())
             return len(self._buffers)
 
+    def knows_task(self, task_id: str) -> bool:
+        """Read-only: whether this task was ever registered (no side effects).
+
+        Used by the stream endpoint so a fabricated task id cannot materialise
+        a buffer plus an idle keep-alive connection (issue N37).
+        """
+        with self._lock:
+            return task_id in self._buffers or task_id in self._terminal_tombstones
+
+    def peek_terminal(self, task_id: str) -> dict[str, Any] | None:
+        """Read-only: the terminal event of a finished task, if still buffered."""
+        with self._lock:
+            buffer = self._buffers.get(task_id)
+            if not buffer:
+                return None
+            last = buffer[-1]
+            if last.get("event") not in {"complete", "failed"}:
+                return None
+            return last
+
     @staticmethod
     def _schedule_memory_reclaim() -> None:
         """Run after the producing coroutine unwinds and releases job locals."""

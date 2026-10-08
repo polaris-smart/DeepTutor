@@ -34,7 +34,13 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import FileResponse, PlainTextResponse, Response, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    PlainTextResponse,
+    Response,
+    StreamingResponse,
+)
 from pydantic import BaseModel, Field
 
 from deeptutor.api.routers.auth import (
@@ -3500,9 +3506,19 @@ async def delete_knowledge_base(
 
 @router.get("/knowledge-bases/tasks/{task_id}/stream")
 async def stream_task_logs(task_id: str):
-    """Stream task-specific logs for knowledge-base operations."""
+    """Stream task-specific logs for knowledge-base operations.
+
+    Read-only semantics (N37): an unknown task id answers 404 without
+    materialising a manager entry or an idle keep-alive stream, and a task
+    that already reached ``complete``/``failed`` returns that terminal event
+    as JSON instead of an endless SSE connection. Live tasks stream as before.
+    """
     manager = get_task_stream_manager()
-    manager.ensure_task(task_id)
+    terminal = manager.peek_terminal(task_id)
+    if terminal is not None:
+        return JSONResponse(terminal)
+    if not manager.knows_task(task_id):
+        raise HTTPException(status_code=404, detail="Task not found")
     return StreamingResponse(
         manager.stream(task_id),
         media_type="text/event-stream",
