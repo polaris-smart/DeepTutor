@@ -104,3 +104,12 @@ def test_hub_detail_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     assert data["version"] == "1.0.0"
     assert "# Body" in data["content"]
     assert data["web_url"] == "https://eduhub.deeptutor.info/skills/socratic-tutor"
+
+
+def test_hub_detail_unknown_slug_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    """N48: a fabricated slug must answer 404, not leak the upstream miss as 502."""
+    monkeypatch.setattr(hub_module, "get_hub_provider", lambda name: _mock_provider())
+    client = TestClient(_build_app())
+    resp = client.get("/api/skills/hub/detail", params={"slug": "no-such-skill"})
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Skill not found in hub"

@@ -101,6 +101,15 @@ class HubError(Exception):
     """A hub interaction failed (network, protocol, or configuration)."""
 
 
+class HubSkillNotFoundError(HubError):
+    """The hub answered 404 for a specific skill: the slug does not exist.
+
+    Raised by ``ClawHubProvider._get`` so detail-style endpoints can answer a
+    fabricated slug with 404 instead of leaking the upstream miss as a 502
+    (issue N48). Callers that only catch ``HubError`` keep their behavior.
+    """
+
+
 @dataclass(slots=True)
 class HubSkillRef:
     """One hub listing: enough to show a search row and stamp provenance."""
@@ -308,7 +317,7 @@ class ClawHubProvider:
         except httpx.HTTPError as exc:
             raise HubError(f"{self.name}: request failed: {exc}") from exc
         if response.status_code == 404:
-            raise HubError(f"{self.name}: not found: {path}")
+            raise HubSkillNotFoundError(f"{self.name}: not found: {path}")
         if response.status_code >= 400:
             raise HubError(
                 f"{self.name}: HTTP {response.status_code} for {path}: {response.text[:200]}"

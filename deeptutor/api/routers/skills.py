@@ -181,7 +181,12 @@ async def hub_detail(slug: str, hub: str = "eduhub") -> dict[str, object]:
     """Full metadata + SKILL.md body for one hub skill (browser detail view)."""
     import asyncio
 
-    from deeptutor.services.skill.hub import ClawHubProvider, HubError, get_hub_provider
+    from deeptutor.services.skill.hub import (
+        ClawHubProvider,
+        HubError,
+        HubSkillNotFoundError,
+        get_hub_provider,
+    )
 
     try:
         provider = get_hub_provider(hub)
@@ -191,6 +196,9 @@ async def hub_detail(slug: str, hub: str = "eduhub") -> dict[str, object]:
         raise HTTPException(status_code=400, detail=f"Hub `{hub}` does not support browsing.")
     try:
         detail = await asyncio.to_thread(provider.detail, slug)
+    except HubSkillNotFoundError as exc:
+        # N48: a fabricated slug is a client error, not an upstream outage.
+        raise HTTPException(status_code=404, detail="Skill not found in hub") from exc
     except HubError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     detail["web_url"] = f"{provider.web_origin}/skills/{slug}"
