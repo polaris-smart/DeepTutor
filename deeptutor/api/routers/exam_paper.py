@@ -8,18 +8,22 @@ answer sheet appended at the end. Read-only with respect to the knowledge
 base — nothing is written into the index; the document is streamed back as
 an attachment (the same contract as ``question/paper-reorder/export``).
 
-Data source: the active LlamaIndex docstore, where the doc_intel qa_split
-pass tags question blocks with ``is_question=true`` (plus ``q_id`` /
-``q_type`` / ``has_answer``) and answer blocks with ``is_answer=true`` and
-the same ``q_id``. A requested id resolves by docstore node id first, then
-by ``q_id`` metadata, so both the by-struct API output and raw ``q_id``
-values work. Missing ids are skipped with a warning header instead of
-aborting the whole paper (fail-open).
+Data source: the active LlamaIndex docstore. Question markers come in two
+shapes — flat qa_split nodes tag blocks with ``is_question=true`` (plus
+``q_id`` / ``q_type`` / ``has_answer``) and answer blocks with
+``is_answer=true`` at the top level, while 试卷库-style indexes keep those
+markers inside the serialized ``di_block_meta`` JSON list (unpacked by the
+same ``_doc_intel_question_metadata`` helper the by-struct API uses). A
+requested id resolves by docstore node id first, then by ``q_id``
+metadata, so both the by-struct API output and raw ``q_id`` values work.
+Missing ids are skipped with a warning header instead of aborting the
+whole paper (fail-open).
 """
 
 from __future__ import annotations
 
 from io import BytesIO
+import json
 import logging
 import re
 from typing import Any
@@ -28,6 +32,10 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
 
+# Sibling-router reuse (same package, no import cycle: nothing besides
+# api/main imports either router). Keeps the by-struct and assemble
+# question-node semantics on one implementation.
+from deeptutor.api.routers.knowledge import _doc_intel_question_metadata
 from deeptutor.multi_user.context import get_current_user
 from deeptutor.services.config import PROJECT_ROOT, load_config_with_main
 
@@ -98,19 +106,51 @@ def _node_q_id(metadata: dict[str, Any]) -> str:
     return str(metadata.get("q_id") or "")
 
 
+def _di_block_entries(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the per-block dicts of the serialized ``di_block_meta`` list."""
+    raw = metadata.get("di_block_meta")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(raw, list):
+        return []
+    return [block for block in raw if isinstance(block, dict)]
+
+
+def _question_view(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Return the metadata view carrying this node's question markers.
+
+    Flat qa_split nodes keep ``is_question`` / ``q_id`` at the top level
+    (preserved as-is, matching the pre-di_block_meta behaviour). 试卷库
+    indexes instead serialize per-block markers into ``di_block_meta`` with
+    neither field at the top level — mirror the by-struct API by reusing its
+    unpacker and surfacing the first question view. Empty dict = not a
+    question.
+    """
+    if metadata.get("is_question") or _node_q_id(metadata):
+        return metadata
+    views = _doc_intel_question_metadata(metadata)
+    return views[0] if views else {}
+
+
 def _resolve_question_nodes(nodes: list[Any], q_ids: list[str]) -> tuple[list[dict], list[str]]:
     """Resolve requested ids to question payloads; return (found, missing).
 
     Each requested id is tried as a docstore node id first (the by-struct API
     output), then as a ``q_id`` metadata value. A matched node is only kept
-    when it actually looks like a question (``is_question`` or a ``q_id``
-    marker), so an answer/analysis node id can never be exported as a stem.
+    when it actually looks like a question — top-level ``is_question`` /
+    ``q_id`` markers, or a non-empty ``_doc_intel_question_metadata`` view
+    (the serialized ``di_block_meta`` shape), so an answer/analysis node id
+    can never be exported as a stem. ``di_block_meta`` matches take their
+    ``q_id`` / ``q_type`` from the first question view; the stem text still
+    comes from the node body.
     """
     by_node_id = {str(getattr(node, "node_id", "")): node for node in nodes}
     by_q_id: dict[str, Any] = {}
     for node in nodes:
-        metadata = _node_metadata(node)
-        qid = _node_q_id(metadata)
+        qid = str(_question_view(_node_metadata(node)).get("q_id") or "")
         if qid and qid not in by_q_id:
             by_q_id[qid] = node
 
@@ -127,11 +167,11 @@ def _resolve_question_nodes(nodes: list[Any], q_ids: list[str]) -> tuple[list[di
         if node is None:
             missing.append(requested)
             continue
-        metadata = _node_metadata(node)
-        qid = _node_q_id(metadata)
-        if not (metadata.get("is_question") or qid):
+        view = _question_view(_node_metadata(node))
+        if not view:
             missing.append(requested)
             continue
+        qid = str(view.get("q_id") or "")
         dedupe_key = str(getattr(node, "node_id", "")) or qid
         if dedupe_key in seen:
             continue
@@ -143,7 +183,7 @@ def _resolve_question_nodes(nodes: list[Any], q_ids: list[str]) -> tuple[list[di
                 "text": _strip_leading_number(_node_text(node))[
                     :DOCX_MAX_QUESTION_CHARS
                 ],
-                "question_type": str(metadata.get("q_type") or ""),
+                "question_type": str(view.get("q_type") or ""),
                 "answer": "",
             }
         )
@@ -156,21 +196,33 @@ def _build_answer_map(nodes: list[Any]) -> dict[str, str]:
     The qa_split pass tags the answer block with ``is_answer=true`` and the
     same ``q_id`` as its question. Some stores also embed the answer directly
     on the question node (``answer`` / ``correct_answer`` metadata) — that
-    inline value wins over the standalone block.
+    inline value wins over the standalone block. The serialized
+    ``di_block_meta`` shape carries answer blocks the same way (per-block
+    ``is_answer`` + ``q_id``, absent from the top level), with the block's
+    text head as the answer text; inline fields still win at merge time.
     """
     answers: dict[str, str] = {}
     inline: dict[str, str] = {}
     for node in nodes:
         metadata = _node_metadata(node)
         qid = _node_q_id(metadata)
-        if not qid:
-            continue
-        text = _node_text(node).strip()
-        if metadata.get("is_answer") and text and qid not in answers:
-            answers[qid] = text
-        inline_value = str(metadata.get("answer") or metadata.get("correct_answer") or "").strip()
-        if inline_value and qid not in inline:
-            inline[qid] = inline_value
+        if qid:
+            text = _node_text(node).strip()
+            if metadata.get("is_answer") and text and qid not in answers:
+                answers[qid] = text
+            inline_value = str(metadata.get("answer") or metadata.get("correct_answer") or "").strip()
+            if inline_value and qid not in inline:
+                inline[qid] = inline_value
+        for block in _di_block_entries(metadata):
+            block_qid = str(block.get("q_id") or "")
+            block_text = str(block.get("text") or "").strip()
+            if (
+                block.get("is_answer")
+                and block_qid
+                and block_text
+                and block_qid not in answers
+            ):
+                answers[block_qid] = block_text
     # Inline answer wins over the standalone block; a question whose answer
     # lives only inline (no is_answer block) is still covered.
     return {

@@ -499,6 +499,95 @@ def test_assemble_answers_require_teacher_role(monkeypatch: pytest.MonkeyPatch) 
     assert ok_response.status_code == 200
 
 
+def _exam_paper_kb_docstore() -> SimpleNamespace:
+    """试卷库-style store: qa_split markers live only inside ``di_block_meta``.
+
+    Top-level metadata carries neither ``is_question`` nor ``q_id`` — the
+    exact shape the by-struct API unpacks (knowledge.py
+    ``_doc_intel_question_metadata``) and assemble must now match.
+    """
+    block_meta = json.dumps(
+        [
+            {
+                "is_question": True,
+                "q_id": "P0-1",
+                "q_type": "choice",
+                "text": "1. 计算 7 - 2 的值。",
+            },
+            {"is_answer": True, "q_id": "P0-1", "text": "答案：8"},
+        ],
+        ensure_ascii=False,
+    )
+    return _docstore(
+        _Node(
+            "n-qb",
+            text="1. 计算 7 - 2 的值。",
+            metadata={
+                "file_name": "试卷库-期中卷.pdf",
+                "di_block_meta": block_meta,
+            },
+        ),
+        # A plain body chunk without doc_intel markers.
+        _Node("n-body", text="考试说明……", metadata={"file_name": "试卷库-期中卷.pdf"}),
+    )
+
+
+def test_assemble_matches_di_block_meta_question_by_node_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """判据①：试卷库节点顶层无 is_question/q_id，题标注在 di_block_meta ——
+    by-struct 返回的 node_id 必须能直接组卷，题干出自 docx 文本源。"""
+    from docx import Document
+
+    with _assemble_client(monkeypatch, _exam_paper_kb_docstore()) as client:
+        response = client.post(
+            "/api/v1/exam-paper/assemble",
+            json={"kb_name": "试卷库", "q_ids": ["n-qb"]},
+        )
+
+    assert response.status_code == 200
+    assert response.content[:2] == b"PK"
+    doc = Document(BytesIO(response.content))
+    texts = [p.text for p in doc.paragraphs if p.text.strip()]
+    assert "1. 计算 7 - 2 的值。" in texts
+
+
+def test_assemble_matches_di_block_meta_question_by_q_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """判据②：同一节点按 di_block_meta 里的 q_id（P0-1）请求 → 命中。"""
+    with _assemble_client(monkeypatch, _exam_paper_kb_docstore()) as client:
+        response = client.post(
+            "/api/v1/exam-paper/assemble",
+            json={"kb_name": "试卷库", "q_ids": ["P0-1"]},
+        )
+
+    assert response.status_code == 200
+    assert response.content[:2] == b"PK"
+
+
+def test_assemble_answers_from_di_block_meta_answer_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """判据③：答案块 is_answer 在 di_block_meta 时 include_answers=true
+    出「参考答案」（di_block_meta 形状按块文本头尽力而为，inline 字段仍优先）。"""
+    from docx import Document
+
+    with _assemble_client(
+        monkeypatch, _exam_paper_kb_docstore(), role="teacher"
+    ) as client:
+        response = client.post(
+            "/api/v1/exam-paper/assemble",
+            json={"kb_name": "试卷库", "q_ids": ["n-qb"], "include_answers": True},
+        )
+
+    assert response.status_code == 200
+    doc = Document(BytesIO(response.content))
+    texts = [p.text for p in doc.paragraphs if p.text.strip()]
+    assert "参考答案" in texts
+    assert "1. 答案：8" in texts
+
+
 # ── route registration smoke ───────────────────────────────────────────────
 
 
