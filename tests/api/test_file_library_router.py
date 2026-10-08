@@ -114,6 +114,24 @@ def test_list_files_returns_active(library_app: LibraryAppFactory) -> None:
     assert {e["filename"] for e in entries} == {"f1.txt", "f2.txt"}
 
 
+def test_list_endpoint_accepts_bare_and_trailing_slash(
+    library_app: LibraryAppFactory,
+) -> None:
+    """N47: both /files/library and /files/library/ serve the list directly.
+
+    A slash-only route made the bare path depend on an external 308 redirect
+    that dead-looped against the backend 404. Neither form may rely on a
+    redirect now.
+    """
+    client, _ = library_app()
+    bare = client.get("/files/library", follow_redirects=False)
+    assert bare.status_code == 200
+    assert bare.json() == []
+    slashed = client.get("/files/library/", follow_redirects=False)
+    assert slashed.status_code == 200
+    assert slashed.json() == []
+
+
 def test_list_files_excludes_deleted(library_app: LibraryAppFactory) -> None:
     client, _ = library_app()
     r = client.post(

@@ -2,7 +2,8 @@
 
 URL shape::
 
-    GET   /files/library/              — list files (newest first)
+    GET   /files/library              — list files (newest first; the
+                                        trailing-slash form is equivalent)
     POST  /files/library/              — upload a file (multipart)
     GET   /files/library/search        — search by filename (query param: q)
     GET   /files/library/{file_id}     — get one entry
@@ -50,8 +51,11 @@ def _mime_type(filename: str) -> str:
 
 # ── endpoints ──────────────────────────────────────────────────────────────
 
-
+# N47: the list endpoint registers both the bare and the trailing-slash path.
+# A slash-only route forced the bare path through an external 308 redirect,
+# which dead-looped against backends that normalize the slash away.
 @router.get("/", operation_id="library_list")
+@router.get("", operation_id="library_list_no_slash")
 async def list_library_files(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
