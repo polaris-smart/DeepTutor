@@ -125,6 +125,10 @@ class CodeBuddyAuthService:
     async def _probe_locked(self) -> None:
         if await self._probe_local_login():
             return
+        if self._error_code == "credential_unreadable":
+            # N44: keep the credential_unreadable signal — the SDK probe can
+            # not see credentials the process itself is not allowed to read.
+            return
         try:
             flow = await _start_sdk_authenticate()
             if getattr(flow, "auth_url", ""):
@@ -147,7 +151,18 @@ class CodeBuddyAuthService:
         """
         from deeptutor.services.codebuddy_credentials import load_credentials, probe_account
 
-        credentials = load_credentials()
+        try:
+            credentials = load_credentials()
+        except OSError:
+            # N44: credential paths owned by another user (e.g. /root/.local
+            # on a shared host) raise PermissionError while probing. That is
+            # an "unauthenticated" answer, never a 500.
+            self._connection = "disconnected"
+            self._operation_state = "failed"
+            self._authorize_url = None
+            self._user_label = None
+            self._error_code = "credential_unreadable"
+            return False
         if credentials is None:
             return False
         try:

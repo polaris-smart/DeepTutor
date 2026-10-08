@@ -136,6 +136,38 @@ async def test_status_accepts_ide_session_without_the_sdk(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_status_degrades_when_credentials_are_unreadable(monkeypatch) -> None:
+    """N44: unreadable credential paths answer unauthenticated, never raise.
+
+    On a shared host the probe may walk e.g. /root/.local/share/CodeBuddy and
+    hit PermissionError; status must degrade to a stable public state instead
+    of a 500, and the SDK must not be probed behind credentials the process
+    cannot read.
+    """
+
+    def unreadable():
+        raise PermissionError(13, "Permission denied")
+
+    async def unused_sdk():
+        raise AssertionError("the SDK must not be probed for unreadable credentials")
+
+    monkeypatch.setattr(
+        "deeptutor.services.codebuddy_credentials.find_auth_file", unreadable
+    )
+    monkeypatch.setattr(codebuddy_auth, "_start_sdk_authenticate", unused_sdk)
+
+    status = await CodeBuddyAuthService().status()
+
+    assert status == {
+        "connection": "disconnected",
+        "operation_state": "failed",
+        "authorize_url": None,
+        "user_label": None,
+        "error_code": "credential_unreadable",
+    }
+
+
+@pytest.mark.asyncio
 async def test_logout_explains_that_an_ide_session_ends_in_the_ide(tmp_path, monkeypatch) -> None:
     """DeepTutor never ends a session it does not own.
 

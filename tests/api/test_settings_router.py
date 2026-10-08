@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from deeptutor.api.routers import settings as settings_router
+from deeptutor.services.codebuddy_auth import CodeBuddyAuthService
 from deeptutor.services.codex_auth.contracts import CodexAuthError
 from deeptutor.services.config.provider_runtime import (
     ResolvedEmbeddingConfig,
@@ -1470,6 +1471,31 @@ async def test_codebuddy_auth_routes_use_admin_scoped_service(monkeypatch) -> No
         "connection": "disconnected",
         "user_label": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_codebuddy_auth_status_degrades_on_unreadable_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """N44: unreadable credential paths answer 200 unauthenticated, not a 500."""
+
+    def unreadable():
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(settings_router, "_require_settings_admin", lambda: None)
+    monkeypatch.setattr(
+        "deeptutor.services.codebuddy_credentials.find_auth_file", unreadable
+    )
+    monkeypatch.setattr(
+        settings_router,
+        "get_codebuddy_auth_service",
+        lambda: CodeBuddyAuthService(),
+    )
+
+    status = await settings_router.get_codebuddy_auth_status()
+
+    assert status["connection"] == "disconnected"
+    assert status["error_code"] == "credential_unreadable"
 
 
 @pytest.mark.asyncio
