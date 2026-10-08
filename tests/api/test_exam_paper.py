@@ -275,16 +275,30 @@ def test_questions_by_struct_matches_full_book_path(monkeypatch: pytest.MonkeyPa
     assert [q["q_id"] for q in questions] == ["P5-11"]
 
 
-def test_questions_by_struct_requires_nonempty_struct_path(
+def test_questions_by_struct_without_struct_path_lists_all(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Missing or empty struct_path skips the prefix filter and lists every question."""
     with _questions_client(monkeypatch, _teacher_edition_docstore()) as client:
-        response = client.get(
+        response = client.get("/api/数学/questions/by-struct", params={})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["struct_path"] == ""
+    assert payload["has_doc_intel"] is True
+    assert payload["hint"] == ""
+    assert [q["q_id"] for q in payload["questions"]] == ["P3-1", "P3-2", "P5-11"]
+
+    with _questions_client(monkeypatch, _teacher_edition_docstore()) as client:
+        empty_response = client.get(
             "/api/数学/questions/by-struct",
-            params={},
+            params={"struct_path": ""},
         )
 
-    assert response.status_code == 422
+    assert empty_response.status_code == 200
+    empty_payload = empty_response.json()
+    assert empty_payload["struct_path"] == ""
+    assert [q["q_id"] for q in empty_payload["questions"]] == ["P3-1", "P3-2", "P5-11"]
 
 
 def test_questions_by_struct_returns_empty_with_hint_when_no_doc_intel(

@@ -5106,14 +5106,18 @@ def _doc_intel_question_metadata(metadata: dict) -> list[dict]:
 @router.get("/{kb_name}/questions/by-struct")
 async def get_questions_by_struct(
     kb_name: str,
-    struct_path: str = Query(..., min_length=1),
+    struct_path: str | None = Query(None),
     limit: int = Query(200, ge=1, le=1000),
 ):
     """Return doc_intel question nodes under a textbook structure path.
 
     Reads both flat qa_split fields and the serialized ``di_block_meta`` shape
-    used by existing indexes. A KB whose nodes carry no doc_intel markers
-    returns an empty list with a hint instead of an error (fail-open).
+    used by existing indexes. When ``struct_path`` is omitted or empty the
+    path filter is skipped and every doc_intel question in the KB is listed
+    (capped by ``limit``, in traversal order) — the 试卷库 KBs keep empty
+    struct paths, so filtering there would never select anything. A KB whose
+    nodes carry no doc_intel markers returns an empty list with a hint
+    instead of an error (fail-open).
     """
     try:
         resolved_name, docstore = await asyncio.to_thread(_load_kb_docstore, kb_name)
@@ -5128,7 +5132,7 @@ async def get_questions_by_struct(
                 for question_metadata in _doc_intel_question_metadata(metadata):
                     has_doc_intel = True
                     node_struct_path = str(question_metadata.get("struct_path") or "")
-                    if not _struct_path_matches(node_struct_path, struct_path):
+                    if struct_path and not _struct_path_matches(node_struct_path, struct_path):
                         continue
                     q_id = str(question_metadata.get("q_id") or "")
                     question_key = (
@@ -5173,7 +5177,7 @@ async def get_questions_by_struct(
             hint = "该知识库还没有索引（docstore 为空），请先上传并处理文档。"
         return {
             "kb_name": resolved_name,
-            "struct_path": struct_path,
+            "struct_path": struct_path or "",
             "questions": questions,
             "has_doc_intel": has_doc_intel,
             "hint": hint,
