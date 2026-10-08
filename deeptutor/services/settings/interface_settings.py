@@ -24,8 +24,12 @@ UiLanguage = Literal["en", "zh", "fr", "de", "uk", "pl"]
 DEFAULT_UI_SETTINGS: dict[str, Any] = {
     # "snow" is the pure-white neutral theme, shown as "Default" in the UI.
     "theme": "snow",
-    "language": "en",
-    "response_language": "en",
+    # This deployment is Chinese-first (悦学): every real reader lands on the
+    # reader-facing surfaces before ever opening settings, so an unset
+    # interface.json must mean Chinese, not English. Users who explicitly
+    # saved another language keep it — saved values override defaults.
+    "language": "zh",
+    "response_language": "zh",
     # When true, TTS verbalizes LaTeX (fractions, powers, Greek). Dollar
     # delimiters are stripped either way so the voice never says "dollar".
     "voice_math_speak": True,

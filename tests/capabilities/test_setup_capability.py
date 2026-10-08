@@ -157,6 +157,13 @@ async def test_setup_can_select_malay_reply_language(isolated_settings: Path) ->
 
 @pytest.mark.asyncio
 async def test_apply_reports_a_coupled_setting(isolated_settings: Path) -> None:
+    from deeptutor.services.settings.interface_settings import update_ui_settings
+
+    # A file that predates the split stores only the interface language, so
+    # the reply language is still inherited from it. Seeding English keeps the
+    # en→zh move observable now that the deployment default itself is zh.
+    update_ui_settings({"language": "en"})
+
     outcome = await apply_setting("interface.language", "zh")
 
     assert outcome.ok
@@ -184,13 +191,19 @@ async def test_apply_can_be_reverted_with_the_returned_previous(
 async def test_apply_rejects_a_value_outside_the_offered_choices(
     isolated_settings: Path,
 ) -> None:
-    from deeptutor.services.settings.interface_settings import get_ui_settings
+    from deeptutor.services.settings.interface_settings import (
+        DEFAULT_UI_SETTINGS,
+        get_ui_settings,
+    )
 
     outcome = await apply_setting("interface.language", "klingon")
 
     assert not outcome.ok
     assert "not one of the available options" in outcome.error
-    assert get_ui_settings()["language"] == "en"
+    # A rejected value must not be persisted, so the reader still reports the
+    # deployment default — compared against the constant rather than a
+    # hard-coded locale so the fork's zh default does not masquerade as a bug.
+    assert get_ui_settings()["language"] == DEFAULT_UI_SETTINGS["language"]
 
 
 @pytest.mark.asyncio

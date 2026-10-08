@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from deeptutor.services.settings.interface_settings import (
+    DEFAULT_UI_SETTINGS,
     get_response_language,
     get_ui_language,
     get_ui_settings,
@@ -36,8 +37,11 @@ def test_get_ui_language_reads_per_user_interface_json(mu_isolated_root, as_user
 
 def test_get_ui_language_defaults_when_no_file(mu_isolated_root, as_user):
     with as_user("u_alice", role="user"):
-        # Bob has nothing on disk yet — falls back to the default "en".
-        assert get_ui_language() == "en"
+        # Bob has nothing on disk yet, so the reader reports the deployment
+        # default. Compared against the constant rather than a hard-coded
+        # locale — this fork ships zh, and the caller-provided default
+        # argument is unreachable once get_ui_settings() has merged defaults.
+        assert get_ui_language() == DEFAULT_UI_SETTINGS["language"]
 
 
 def test_response_language_is_scoped_independently_per_user(mu_isolated_root, as_user):

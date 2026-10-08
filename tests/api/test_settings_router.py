@@ -1904,8 +1904,13 @@ async def test_ui_endpoints_do_not_freeze_defaults_into_the_file(
 
     stored = json.loads(settings_file.read_text(encoding="utf-8"))
     assert stored == {"theme": "dark"}, f"only the changed field belongs on disk: {stored}"
-    # The read path still reports the full picture.
-    assert settings_router.load_ui_settings()["language"] == "en"
+    # The read path still reports the full picture — compared against the
+    # constant rather than a hard-coded locale, so the fork's zh default is
+    # not mistaken for a value frozen into the file.
+    assert (
+        settings_router.load_ui_settings()["language"]
+        == interface_settings.DEFAULT_UI_SETTINGS["language"]
+    )
 
 
 @pytest.mark.asyncio
