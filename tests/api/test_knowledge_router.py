@@ -5,6 +5,7 @@ import hashlib
 import importlib
 import json
 from pathlib import Path
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -1626,6 +1627,37 @@ def test_file_preview_text_returns_422_for_extraction_errors(monkeypatch, tmp_pa
 
     assert response.status_code == 422
     assert "no extractable text" in response.json()["detail"]
+
+
+def test_file_preview_text_times_out_instead_of_hanging(monkeypatch, tmp_path: Path) -> None:
+    """N36: a stuck extraction must answer 422 promptly, never hang forever."""
+    manager = _FakeKBManager(tmp_path / "knowledge_bases")
+    manager.config["knowledge_bases"]["actual-kb"] = {
+        "path": "actual-kb",
+        "status": "ready",
+    }
+    raw_dir = manager.base_dir / "actual-kb" / "raw"
+    raw_dir.mkdir(parents=True)
+    (raw_dir / "textbook.pdf").write_bytes(b"%PDF-1.4")
+
+    def _stuck_extract(*_args, **_kwargs) -> str:
+        time.sleep(1.0)
+        return "late"
+
+    monkeypatch.setattr(knowledge_router_module, "get_kb_manager", lambda: manager)
+    monkeypatch.setattr(knowledge_router_module, "extract_text_from_path", _stuck_extract)
+    monkeypatch.setattr(knowledge_router_module, "_FILE_PREVIEW_TEXT_TIMEOUT_SECONDS", 0.1)
+
+    with TestClient(_build_app()) as client:
+        started = time.monotonic()
+        response = client.get("/api/knowledge-bases/actual-kb/file-preview-text/textbook.pdf")
+        elapsed = time.monotonic() - started
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["detail"]["detail"] == "File too large for text preview"
+    assert "/files/textbook.pdf" in body["detail"]["suggestion"]
+    assert elapsed < 1.0
 
 
 def test_reindex_accepts_default_alias(monkeypatch, tmp_path: Path) -> None:

@@ -3333,6 +3333,12 @@ async def move_kb_file(kb_name: str, payload: MoveFilePayload):
     return {"status": "ok", "path": dest.relative_to(raw_dir.resolve()).as_posix()}
 
 
+# N36: a whole-textbook PDF used to grind this preview for minutes with zero
+# bytes and no error. Extraction is capped; past the cap the client is pointed
+# at the download route instead of being left hanging.
+_FILE_PREVIEW_TEXT_TIMEOUT_SECONDS = 15.0
+
+
 @router.get("/knowledge-bases/{kb_name}/file-preview-text/{filename:path}")
 async def serve_kb_raw_file_text_preview(kb_name: str, filename: str):
     """Serve extracted plain text for a raw KB document preview."""
@@ -3343,12 +3349,28 @@ async def serve_kb_raw_file_text_preview(kb_name: str, filename: str):
             "max_chars": MAX_EXTRACTED_CHARS_PER_DOC,
         }
         if extract_text_from_path is _DEFAULT_EXTRACT_TEXT_FROM_PATH:
-            text = await extract_text_from_path_isolated(target, **extraction_kwargs)
+            text = await asyncio.wait_for(
+                extract_text_from_path_isolated(target, **extraction_kwargs),
+                timeout=_FILE_PREVIEW_TEXT_TIMEOUT_SECONDS,
+            )
         else:
             # Preserve the router's long-standing monkeypatch/integration seam.
-            text = await asyncio.to_thread(extract_text_from_path, target, **extraction_kwargs)
+            text = await asyncio.wait_for(
+                asyncio.to_thread(extract_text_from_path, target, **extraction_kwargs),
+                timeout=_FILE_PREVIEW_TEXT_TIMEOUT_SECONDS,
+            )
     except DocumentExtractionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        # ``TimeoutError`` subclasses ``OSError`` — catch it first so a hung
+        # extraction answers 422, never the OSError 404.
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "detail": "File too large for text preview",
+                "suggestion": f"use /api/knowledge-bases/{kb_name}/files/{filename} download",
+            },
+        ) from exc
     except OSError as exc:
         raise HTTPException(status_code=404, detail="File not found") from exc
 
