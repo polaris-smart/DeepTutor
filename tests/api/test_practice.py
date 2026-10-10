@@ -176,7 +176,9 @@ def test_import_preview_commit_retries_dedup_tags_and_no_source_overwrite(bank):
     assert result["valid"] == 1 and result["token"]
     assert repo.overview("UTC")["total"] == 0  # preview does not alter the bank
     commit = client.post("/practice/import/commit", json={"token": result["token"]})
-    assert commit.json() == {"created": 1, "duplicates": 0, "total": 1}
+    body = commit.json()
+    assert body["created"] == 1 and body["duplicates"] == 0 and body["total"] == 1
+    assert len(body["created_entry_ids"]) == 1
     assert (
         client.post("/practice/import/commit", json={"token": result["token"]}).json()
         == commit.json()
@@ -192,6 +194,25 @@ def test_import_preview_commit_retries_dedup_tags_and_no_source_overwrite(bank):
     assert entry["result"] == "ungraded"
     assert {category["name"] for category in entry["categories"]} == {"数学", "复习"}
     assert repo.overview("UTC")["mistakes"] == 1
+
+
+def test_import_commit_returns_created_entry_ids_that_resolve(bank):
+    """N64a: automation consumes the created ids without a second search."""
+    store, repo, client = bank
+    data = b"question,answer\n1+1=?,2\n2+2=?,4\n"
+    result = client.post(
+        "/practice/import/preview", files={"file": ("two.csv", data)}, data={"target": "bank"}
+    ).json()
+    assert result["valid"] == 2
+    body = client.post("/practice/import/commit", json={"token": result["token"]}).json()
+    assert body["created"] == 2 and body["total"] == 2
+    assert len(body["created_entry_ids"]) == 2
+    assert len(set(body["created_entry_ids"])) == 2
+    for entry_id in body["created_entry_ids"]:
+        assert client.get(f"/practice/questions/{entry_id}").status_code == 200
+    # Replayed commits keep reporting the same ids (persisted result).
+    replay = client.post("/practice/import/commit", json={"token": result["token"]}).json()
+    assert replay["created_entry_ids"] == body["created_entry_ids"]
 
 
 def test_invalid_row_blocks_entire_import_and_reports_line(bank):

@@ -355,7 +355,10 @@ class PracticeStore:
             if not staged:
                 raise LookupError("Import preview not found. Select the file again.")
             if staged["result_json"]:
-                return json.loads(staged["result_json"])
+                result = json.loads(staged["result_json"])
+                # Results staged before created_entry_ids existed keep the contract.
+                result.setdefault("created_entry_ids", [])
+                return result
             if now - staged["created_at"] > DAY:
                 raise ValueError("Import preview expired. Select the file again.")
             payload = json.loads(staged["payload_json"])
@@ -366,6 +369,7 @@ class PracticeStore:
             # ephemeral preview receipt or a synthetic chat session.
             origin_ref = "practice-import"
             created, skipped = 0, 0
+            created_entry_ids: list[int] = []
             for question in questions:
                 cursor = conn.execute(
                     """
@@ -392,14 +396,18 @@ class PracticeStore:
                         "import:" + token,
                     ),
                 )
-                created += cursor.rowcount
-                skipped += 1 - cursor.rowcount
+                created_now = cursor.rowcount
+                created += created_now
+                skipped += 1 - created_now
                 entry_id = conn.execute(
                     """SELECT id FROM notebook_entries
                     WHERE origin_type='external_import' AND origin_ref=?
                       AND question_id=? AND turn_id=''""",
                     (origin_ref, question["question_id"]),
                 ).fetchone()[0]
+                if created_now:
+                    # N64a: automation needs the ids this commit actually created.
+                    created_entry_ids.append(entry_id)
                 if staged["target"] == "mistakes":
                     conn.execute(
                         "INSERT OR IGNORE INTO practice_review_state(entry_id, first_wrong_at, due_at) VALUES(?, ?, ?)",
@@ -420,7 +428,12 @@ class PracticeStore:
                         "INSERT OR IGNORE INTO notebook_entry_categories(entry_id, category_id) SELECT ?, id FROM notebook_categories WHERE name=?",
                         (entry_id, tag),
                     )
-            result = {"created": created, "duplicates": skipped, "total": created + skipped}
+            result = {
+                "created": created,
+                "duplicates": skipped,
+                "total": created + skipped,
+                "created_entry_ids": created_entry_ids,
+            }
             conn.execute(
                 "UPDATE practice_imports SET result_json=?, payload_json='[]' WHERE token=?",
                 (json.dumps(result), token),
