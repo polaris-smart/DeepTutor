@@ -2,6 +2,7 @@
 
 from deeptutor.services.partner_groups.manager import (
     PartnerGroupManager,
+    PartnerGroupSlugConflict,
     get_partner_group_manager,
 )
 from deeptutor.services.partner_groups.memory import shared_memory_registry
@@ -11,6 +12,7 @@ from deeptutor.services.partner_groups.modes import discussion_mode_registry
 __all__ = [
     "PartnerGroupConfig",
     "PartnerGroupManager",
+    "PartnerGroupSlugConflict",
     "PartnerInvocation",
     "discussion_mode_registry",
     "get_partner_group_manager",

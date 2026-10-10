@@ -124,6 +124,19 @@ def test_group_crud_and_extension_catalogs(client: TestClient) -> None:
     assert client.get(f"/api/partner-groups/{group_id}").status_code == 404
 
 
+def test_same_name_recreate_conflicts_with_existing_group_id(client: TestClient) -> None:
+    """N66: slug collisions answer 409 carrying the existing group_id."""
+    payload = {"name": "Study panel", "member_ids": ["ada", "bob"]}
+    created = client.post("/api/partner-groups", json=payload)
+    assert created.status_code == 200
+    group_id = created.json()["group_id"]
+    assert group_id == "study-panel"  # name slug, unchanged
+
+    conflict = client.post("/api/partner-groups", json=payload)
+    assert conflict.status_code == 409
+    assert group_id in conflict.json()["detail"]
+
+
 def test_group_requires_two_visible_partners(client: TestClient) -> None:
     response = client.post(
         "/api/partner-groups",

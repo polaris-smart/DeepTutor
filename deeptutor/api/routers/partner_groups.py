@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconn
 from pydantic import BaseModel, Field
 
 from deeptutor.services.partner_groups import (
+    PartnerGroupSlugConflict,
     discussion_mode_registry,
     get_partner_group_manager,
     shared_memory_registry,
@@ -96,6 +97,9 @@ async def list_shared_memory_types():
 async def create_partner_group(payload: CreatePartnerGroupRequest):
     try:
         group = get_partner_group_manager().create_group(**payload.model_dump())
+    except PartnerGroupSlugConflict as exc:
+        # N66: same-name rebuild carries the existing group_id in the conflict.
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     return get_partner_group_manager().describe_group(group)

@@ -38,6 +38,10 @@ if TYPE_CHECKING:
 
 GroupEmitter = Callable[[dict[str, Any]], Awaitable[None]]
 
+
+class PartnerGroupSlugConflict(ValueError):
+    """The slugified name already maps to an existing Partner Group id (N66)."""
+
 _LIVE_REPLAY_MAX_FRAMES = 512
 _LIVE_REPLAY_MAX_TURNS = 64
 _MENTION_PATTERN = re.compile(r"(?<![\w@])@([^\s@,，:：;；!?！？。.]+)")
@@ -184,12 +188,17 @@ class PartnerGroupManager:
         # otherwise an implementation with eager I/O can pollute every group.
         shared_memory_registry.validate(shared_memory)
         base = slugify_partner_id(name) or "group"
-        group_id = base
-        while self.store.get(group_id) is not None:
-            group_id = f"{base}-{uuid4().hex[:6]}"
+        existing = self.store.get(base)
+        if existing is not None:
+            # N66: a same-name rebuild must not silently fork a suffixed id;
+            # surface the collision with the existing group_id so the client
+            # can reuse, rename, or delete the original.
+            raise PartnerGroupSlugConflict(
+                f"A Partner Group with this name already exists (group_id={existing.group_id})."
+            )
         now = utc_now()
         group = PartnerGroupConfig(
-            group_id=group_id,
+            group_id=base,
             owner_id=get_current_user().id,
             name=str(name).strip()[:80],
             description=str(description).strip()[:500],
