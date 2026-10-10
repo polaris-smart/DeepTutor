@@ -85,3 +85,78 @@ def test_resolve_material_routes_bilibili_urls(monkeypatch: pytest.MonkeyPatch) 
 def test_bilibili_request_duck_types_video_id() -> None:
     r = parse_bilibili_url("https://www.bilibili.com/video/BV1GJ411x7h7?p=3")
     assert r.video_id == "BV1GJ411x7h7-p3"  # shared pipeline keying
+
+
+def test_bilibili_view_retries_once_on_412_then_raises_retryable_upstream_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """N68: exactly one delayed retry on 412, then a retryable upstream error."""
+    import asyncio
+
+    from deeptutor.video_learning.service import TimedMediaUpstreamError
+
+    calls = {"count": 0}
+
+    class FakeResponse:
+        status_code = 412
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, *args, **kwargs):
+            calls["count"] += 1
+            return FakeResponse()
+
+    monkeypatch.setattr(vls_module().httpx, "AsyncClient", FakeClient)
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(vls_module().asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(TimedMediaUpstreamError) as excinfo:
+        asyncio.run(vls_module()._bilibili_view("BV1GJ411x7h7", 1))
+    assert calls["count"] == 2  # original attempt + exactly one retry
+    assert sleeps == [vls_module().BILIBILI_RATE_LIMIT_RETRY_DELAY_SECONDS]
+    assert excinfo.value.upstream_status == 412
+    assert "retry later" in str(excinfo.value)
+
+
+def test_resolve_endpoint_maps_persistent_412_to_retryable_502(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """N68: persistent 412 answers 502 {detail, upstream}, not a bare 400."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from deeptutor.api.routers import video_learning as video_router
+    from deeptutor.video_learning.service import TimedMediaUpstreamError
+
+    async def fake_resolve(*args, **kwargs):
+        raise TimedMediaUpstreamError("Bilibili temporary rate-limit (412), retry later", 412)
+
+    monkeypatch.setattr(video_router, "resolve_material", fake_resolve)
+    app = FastAPI()
+    app.include_router(video_router.router, prefix="/api/video-learning")
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/video-learning/materials/resolve",
+            json={
+                "url": "https://www.bilibili.com/video/BV1GJ411x7h7",
+                "provider_override": "bilibili",
+            },
+        )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == {
+        "detail": "Bilibili temporary rate-limit (412), retry later",
+        "upstream": 412,
+    }

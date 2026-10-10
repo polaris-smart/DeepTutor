@@ -17,6 +17,7 @@ from deeptutor.services.notebook.service import NotebookCorruptedError
 from deeptutor.video_learning import (
     TimedMediaError,
     TimedMediaNotFound,
+    TimedMediaUpstreamError,
     create_mark,
     delete_mark,
     get_mark,
@@ -107,6 +108,12 @@ class VideoLearningSettingsRequest(BaseModel):
 def _http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, TimedMediaNotFound):
         return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, TimedMediaUpstreamError):
+        # N68: retryable upstream failures stay distinguishable from hard 400s.
+        return HTTPException(
+            status_code=502,
+            detail={"detail": str(exc), "upstream": exc.upstream_status},
+        )
     if isinstance(exc, TimedMediaError):
         return HTTPException(status_code=400, detail=str(exc))
     return HTTPException(status_code=500, detail="Video learning could not complete the request.")

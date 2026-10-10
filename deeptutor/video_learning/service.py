@@ -26,6 +26,7 @@ from deeptutor.services.file_io import atomic_write_json
 ProviderName = Literal["youtube", "invidious", "bilibili"]
 MAX_TRANSCRIPT_CUES = 20_000
 MAX_TRANSCRIPT_BYTES = 2 * 1024 * 1024
+BILIBILI_RATE_LIMIT_RETRY_DELAY_SECONDS = 2.0
 MIN_SEGMENT_SECONDS = 20
 MAX_SEGMENT_SECONDS = 90
 YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"}
@@ -43,6 +44,14 @@ class TimedMediaError(RuntimeError):
 
 class TimedMediaNotFound(TimedMediaError):
     """The requested material is absent from the current user's workspace."""
+
+
+class TimedMediaUpstreamError(TimedMediaError):
+    """An upstream provider failure that callers may retry later (N68)."""
+
+    def __init__(self, message: str, upstream_status: int) -> None:
+        super().__init__(message)
+        self.upstream_status = upstream_status
 
 
 @dataclass(frozen=True, slots=True)
@@ -638,12 +647,27 @@ async def _invidious_resolution(
 
 
 async def _bilibili_view(bvid: str, page: int) -> dict[str, Any]:
-    """Public view API: title/duration/cid for the requested page. No login."""
+    """Public view API: title/duration/cid for the requested page. No login.
+
+    Bilibili's anti-crawler intermittently answers 412; one delayed retry
+    rides out the transient window, and a persistent 412 surfaces as a
+    retryable upstream error instead of a bare client-error (N68).
+    """
     async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
         response = await client.get(
             "https://api.bilibili.com/x/web-interface/view",
             params={"bvid": bvid},
         )
+        if response.status_code == 412:
+            await asyncio.sleep(BILIBILI_RATE_LIMIT_RETRY_DELAY_SECONDS)
+            response = await client.get(
+                "https://api.bilibili.com/x/web-interface/view",
+                params={"bvid": bvid},
+            )
+            if response.status_code == 412:
+                raise TimedMediaUpstreamError(
+                    "Bilibili temporary rate-limit (412), retry later", 412
+                )
         if response.status_code >= 400:
             raise TimedMediaError(f"Bilibili view API returned HTTP {response.status_code}.")
         payload = response.json()
