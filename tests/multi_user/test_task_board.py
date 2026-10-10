@@ -127,6 +127,30 @@ def test_create_edit_move_archive_restore_and_reload(client):
     assert saved["updated_at"] >= card["updated_at"]
 
 
+def test_archived_cards_hidden_by_default_and_visible_with_include_archived(client):
+    """N63: archived cards must not accumulate in the default board snapshot."""
+    active = client.post(
+        "/api/task-board/cards", json={"title": "Active task"}, headers=headers()
+    ).json()["cards"][0]
+    archived = client.post(
+        "/api/task-board/cards", json={"title": "Old task"}, headers=headers()
+    ).json()["cards"][-1]
+    response = client.patch(
+        f"/api/task-board/cards/{archived['id']}", json={"archived": True}, headers=headers()
+    )
+    assert response.status_code == 200
+
+    default_board = client.get("/api/task-board", headers=headers()).json()
+    assert [card["id"] for card in default_board["cards"]] == [active["id"]]
+
+    full_board = client.get(
+        "/api/task-board", headers=headers(), params={"include_archived": "true"}
+    ).json()
+    by_id = {card["id"]: card for card in full_board["cards"]}
+    assert set(by_id) == {active["id"], archived["id"]}
+    assert by_id[archived["id"]]["archived"] is True
+
+
 @pytest.mark.parametrize(
     "payload",
     [{"title": " "}, {"title": "x" * 161}, {"title": "Valid", "note": "x" * 2001}, {"id": "x"}],

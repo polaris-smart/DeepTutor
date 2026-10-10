@@ -8,9 +8,9 @@ router = APIRouter()
 
 
 @router.get("", response_model=TaskBoard)
-def get_board() -> TaskBoard:
-    """Return active and archived cards in the current workspace."""
-    return get_task_board_store().read()
+def get_board(include_archived: bool = False) -> TaskBoard:
+    """Return the board snapshot; archived cards only with ``include_archived``."""
+    return get_task_board_store().read(include_archived=include_archived)
 
 
 @router.post("/cards", response_model=TaskBoard, status_code=201)

@@ -89,12 +89,19 @@ class TaskBoardStore:
         rows = connection.execute("SELECT * FROM cards ORDER BY created_at, id")
         return TaskBoard(cards=[TaskCard.model_validate(dict(row)) for row in rows])
 
-    def read(self) -> TaskBoard:
-        """Read cards without creating storage for an unused board."""
+    def read(self, include_archived: bool = False) -> TaskBoard:
+        """Read cards without creating storage for an unused board.
+
+        Archived cards stay on disk but stay out of the default snapshot so
+        repeated archive cycles cannot accumulate ghosts on the board (N63).
+        """
         if not self.path.exists():
             return TaskBoard(cards=[])
         with closing(self._connect()) as connection:
-            return self._snapshot(connection)
+            board = self._snapshot(connection)
+        if include_archived:
+            return board
+        return TaskBoard(cards=[card for card in board.cards if not card.archived])
 
     def create(self, payload: CreateCard) -> TaskBoard:
         """Add a task and return the snapshot committed by this transaction."""
