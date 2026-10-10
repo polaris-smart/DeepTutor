@@ -194,7 +194,10 @@ class UpsertEntryRequest(BaseModel):
         self.origin_ref = self.origin_ref.strip()
         if self.origin_type == "conversation":
             if not self.session_id:
-                raise ValueError("conversation entries require session_id")
+                raise ValueError(
+                    "conversation entries require session_id; use origin_type="
+                    "external_import or document_analysis (with origin_ref) for non-chat entries"
+                )
             if self.origin_ref and self.origin_ref != self.session_id:
                 raise ValueError("conversation origin_ref must match session_id")
             self.origin_ref = self.session_id

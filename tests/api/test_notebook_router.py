@@ -157,6 +157,23 @@ def test_upsert_entry_persists_base64_answer_image(
     assert stored_path.read_bytes() == b"image-bytes"
 
 
+def test_upsert_conversation_without_session_id_suggests_alternative_origins(
+    store: SQLiteSessionStore,
+) -> None:
+    """N62: the 422 must name the alternative origin_type values, not just fail."""
+    with TestClient(_build_app(store)) as client:
+        response = client.post(
+            "/api/question-notebook/entries/upsert",
+            json={"origin_type": "conversation", "question_id": "q1", "question": "Capital?"},
+        )
+
+    assert response.status_code == 422
+    message = str(response.json()["detail"])
+    assert "session_id" in message
+    assert "external_import" in message
+    assert "document_analysis" in message
+
+
 def test_independent_entry_uses_stable_answer_image_owner_and_cleans_up(
     store: SQLiteSessionStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
