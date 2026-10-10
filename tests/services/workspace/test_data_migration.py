@@ -31,7 +31,9 @@ def test_task_board_export_and_migration_preserve_archived_cards(account):
         assert any(name.endswith("cards.sqlite") for name in archive.namelist())
     assert migrate_data("", target, ["task-board"])["status"] == "completed"
     with workspace_context(target):
-        assert get_task_board_store().read() == expected
+        # Migration fidelity is checked at storage level: read(include_archived)
+        # because the board's default snapshot now hides archived cards (N63).
+        assert get_task_board_store().read(include_archived=True) == expected
     with workspace_context():
         assert get_task_board_store().read().cards == []
 
