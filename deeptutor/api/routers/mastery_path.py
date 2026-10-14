@@ -116,7 +116,7 @@ def _modules_from_canonical_tree(book_id: str, tree: dict[str, Any]) -> list[Lea
 
     modules: list[LearningModule] = []
     for i, (anchor_title, mus) in enumerate(groups):
-        module_id = f"{book_id}_ch{i}"
+        module_id = f"{book_id}_m{i}"
         kps = [
             KnowledgePoint(
                 id=f"{module_id}_kp{j}",
@@ -1323,10 +1323,10 @@ async def _run_book_import(
         for i, ch in enumerate(body.chapters):
             kps = [
                 KnowledgePoint(
-                    id=f"{book_id}_ch{i}_kp{j}",
+                    id=f"{book_id}_m{i}_kp{j}",
                     name=kp_name,
                     type=KnowledgeType("concept"),
-                    module_id=f"{book_id}_ch{i}",
+                    module_id=f"{book_id}_m{i}",
                     # Bridge to the textbook-tree node the chapter came from; the
                     # whole chapter shares one anchor (per-KP anchors can be sent
                     # through init-modules instead).
@@ -1337,7 +1337,7 @@ async def _run_book_import(
             ]
             modules.append(
                 LearningModule(
-                    id=f"{book_id}_ch{i}",
+                    id=f"{book_id}_m{i}",
                     name=ch.title or f"Chapter {i + 1}",
                     order=i,
                     pass_threshold=0.7,

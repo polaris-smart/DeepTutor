@@ -97,6 +97,21 @@ def save_assignment(record: dict[str, Any]) -> dict[str, Any]:
     return stored
 
 
+def delete_assignment(assignment_id: str) -> bool:
+    """Remove one assignment record (and its submissions) by id.
+
+    Returns ``True`` when a record was removed, ``False`` when the id was
+    unknown (or already gone) — callers report that distinction themselves.
+    """
+    with _ASSIGNMENTS_WRITE_LOCK:
+        assignments = read_assignments()
+        if str(assignment_id or "") not in assignments:
+            return False
+        del assignments[str(assignment_id)]
+        write_assignments(assignments)
+    return True
+
+
 def add_submission(
     assignment_id: str,
     student_id: str,

@@ -597,6 +597,104 @@ def _link_assignment_errors(record: dict[str, Any], results: list[dict[str, Any]
     return {"linked": int(linked), "skipped": None}
 
 
+def _record_mastery_attempts(record: dict[str, Any], results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Bridge graded submission results into the student's mastery state.
+
+    The submit flow used to stop at :func:`_link_assignment_errors` (error
+    bookkeeping only), so a first-time correct answer never touched the
+    mastery path and the map counts froze at ``new``.  This bridge records
+    every graded item as a :class:`QuizAttempt` in the *student's own*
+    LearningProgress — correct answers are the mastery evidence, wrong ones
+    add the attempt on top of the existing error-record logic — then
+    recomputes ``mastery_levels`` from the full attempt history, mirroring
+    :func:`LearningService.calculate_mastery`.  Only an *existing* progress
+    for the assignment's book participates (nothing is created), and an item
+    whose ``kp_id`` does not exist in the student's path (e.g. a teacher-side
+    KP id from a different naming source) is skipped and reported rather than
+    written into a dangling id.  A resubmission replaces the assignment's
+    previous attempts (last attempt wins, same as ``add_submission``).
+    """
+    assignment_id = str(record.get("assignment_id") or "")
+    book_id = str(record.get("book_id") or "").strip()
+    if not book_id:
+        return {"recorded": 0, "skipped": [{"kp_id": "*", "reason": "no_book"}]}
+    if not results:
+        return {"recorded": 0, "skipped": []}
+
+    try:
+        from deeptutor.learning.mastery import compute_mastery
+        from deeptutor.learning.grading import classify_error
+        from deeptutor.learning.models import QuizAttempt
+        from deeptutor.learning.storage import LearningStore
+
+        mastery = LearningStore()
+    except Exception as exc:  # noqa: BLE001 - the submission itself must not fail
+        logger.warning("Assignments: mastery store unavailable for attempt bridge: %s", exc)
+        return {"recorded": 0, "skipped": [{"kp_id": "*", "reason": "store_unavailable"}]}
+
+    try:
+        progress = mastery.load(book_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Assignments: progress %s unreadable for attempt bridge: %s", book_id, exc)
+        return {"recorded": 0, "skipped": [{"kp_id": "*", "reason": "progress_unreadable"}]}
+    if progress is None:
+        # 学生还没有这本书的路径 —— 不自动创建,跳过并说明。
+        return {"recorded": 0, "skipped": [{"kp_id": "*", "reason": "no_progress"}]}
+    module_by_kp = {
+        kp.id: module.id for module in progress.modules for kp in module.knowledge_points
+    }
+
+    skipped: list[dict[str, str]] = []
+
+    def apply(tx: Any) -> int:
+        recorded = 0
+        skipped.clear()
+        attribution = f"assignment:{assignment_id}"
+        # Resubmission replaces this assignment's earlier attempts.
+        tx.progress.quiz_attempts = [
+            attempt
+            for attempt in tx.progress.quiz_attempts
+            if attempt.self_attribution != attribution
+        ]
+        for result in results:
+            kp_id = str(result.get("kp_id") or "")
+            module_id = module_by_kp.get(kp_id)
+            if module_id is None:
+                skipped.append({"kp_id": kp_id, "reason": "kp_not_in_progress"})
+                continue
+            is_correct = bool(result.get("correct"))
+            tx.progress.quiz_attempts.append(
+                QuizAttempt(
+                    question_id=_assignment_question_id(assignment_id, result["q_idx"]),
+                    knowledge_point_id=kp_id,
+                    module_id=module_id,
+                    is_correct=is_correct,
+                    user_answer=result.get("answer"),
+                    self_attribution=attribution,
+                    error_type=None if is_correct else classify_error(str(result.get("answer") or "")),
+                )
+            )
+            recorded += 1
+        for kp_id in {str(r.get("kp_id") or "") for r in results} & set(module_by_kp):
+            correctness = [
+                attempt.is_correct
+                for attempt in tx.progress.quiz_attempts
+                if attempt.knowledge_point_id == kp_id and not attempt.voided
+            ]
+            tx.progress.mastery_levels[kp_id] = compute_mastery(correctness)
+        tx.touch()
+        return recorded
+
+    try:
+        recorded = mastery.mutate(book_id, apply, create=False)[1]
+    except KeyError:
+        return {"recorded": 0, "skipped": [{"kp_id": "*", "reason": "no_progress"}]}
+    except Exception as exc:  # noqa: BLE001 - the submission itself must not fail
+        logger.warning("Assignments: attempt bridge failed for %s/%s: %s", book_id, assignment_id, exc)
+        return {"recorded": 0, "skipped": [{"kp_id": "*", "reason": "bridge_failed"}]}
+    return {"recorded": int(recorded), "skipped": skipped}
+
+
 @router.post("/{assignment_id}/submit")
 async def submit_assignment(
     assignment_id: str,
@@ -659,6 +757,7 @@ async def submit_assignment(
         raise HTTPException(status_code=404, detail="Assignment not found")
 
     error_link = await asyncio.to_thread(_link_assignment_errors, record, results)
+    mastery_link = await asyncio.to_thread(_record_mastery_attempts, record, results)
     correct_count = sum(1 for result in results if result["correct"])
     return {
         "assignment_id": assignment_id,
@@ -666,4 +765,39 @@ async def submit_assignment(
         "total": len(results),
         "results": [_public_result(result) for result in results],
         "error_link": error_link,
+        "mastery_link": mastery_link,
     }
+
+
+@router.delete("/{assignment_id}")
+async def delete_assignment(
+    assignment_id: str,
+    force: bool = False,
+    current: TokenPayload = Depends(require_teacher),
+) -> dict[str, Any]:
+    """Remove one assignment (N63 test-residue cleanup + teacher housekeeping).
+
+    Guards: only the assigning teacher may delete (owner gate — 404 when the
+    record does not exist, 403 when it belongs to another teacher), and an
+    assignment that already carries student submissions is refused with 409
+    unless ``force=true`` is passed, so graded work is never destroyed by a
+    stray click while test residues (submitted, then thrown away) stay
+    cleanable.
+    """
+    username = str(getattr(current, "username", "") or "")
+    record = store.get_assignment(assignment_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    if str(record.get("teacher_id") or "") != username:
+        raise HTTPException(status_code=403, detail="You can only manage your own assignments.")
+    submission_count = len(record.get("submissions") or {})
+    if submission_count and not force:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Assignment already has submissions; pass force=true to delete "
+                "them together with the assignment."
+            ),
+        )
+    removed = store.delete_assignment(assignment_id)
+    return {"ok": bool(removed), "assignment_id": assignment_id, "removed_submissions": submission_count}
