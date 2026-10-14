@@ -321,3 +321,85 @@ def test_delete_requires_submitted_force(client, mu_isolated_root, make_user, mo
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["removed_submissions"] == 1
+
+
+# ---------------------------------------------------------------------------
+# v1020: KP id 归一 —— 教师侧存量 progress 仍是 legacy `_ch{i}_kp{j}` 命名
+# （v1019 只改生成源, 不改写已落盘记录）, item 带的 ch id 与学生路径 m id
+# 同根同序位, 桥必须经学生 active path 的序位网格解析后回写。
+# ---------------------------------------------------------------------------
+
+
+def _rewrite_teacher_progress_legacy_ch(users: dict, kp_count: int = 2) -> str:
+    """把教师侧 progress 改写成 v1019 之前的 `_ch{i}_kp{j}` 存量形态。"""
+    store = _store_as(users, "t_tea")
+
+    def apply(tx) -> None:
+        for module in tx.progress.modules:
+            module.id = module.id.replace("_m", "_ch", 1)
+            for position, kp in enumerate(module.knowledge_points):
+                kp.module_id = module.id
+                kp.id = f"{module.id}_kp{position}"
+        tx.touch()
+
+    store.mutate(BOOK, apply, create=False)
+    return f"{BOOK}_ch0_kp0"
+
+
+def test_legacy_ch_item_resolves_to_student_path(client, seeded) -> None:
+    """topic_* 场景: 教师 ch 前缀 item + 学生 m 前缀路径 → recorded=1。
+
+    seeded 里教师/学生同走对齐后的 m 命名; 这里把教师侧改回存量 ch 命名
+    并重绑题、重建作业（item 的 kp_id 即 ch id）, 学生提交后:
+    attempt 落在学生路径 `_m0_kp0` 上, counts new→learning。
+    """
+    users = seeded["users"]
+    ch_kp = _rewrite_teacher_progress_legacy_ch(users)
+    assert ch_kp == f"{BOOK}_ch0_kp0"
+    _bind_question(client, "t_tea", ch_kp)
+    cls = create_class(name="归一班", teacher="t_tea", students=["t_stu"])
+    resp = client.post(
+        "/api/assignments",
+        json={"class_id": cls["id"], "book_id": BOOK, "title": "归一", "kp_ids": [ch_kp]},
+        headers={"x-test-user": "t_tea"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["skipped"] == []
+    assignment_id = body["assignment"]["assignment_id"]
+
+    resp = client.post(
+        f"/api/assignments/{assignment_id}/submit",
+        json={"answers": [{"q_idx": 0, "answer": "C"}]},
+        headers={"x-test-user": "t_stu"},
+    )
+    assert resp.status_code == 200, resp.text
+    link = resp.json()["mastery_link"]
+    # 回写判据: ch 前缀 item 解析到路径 id, 不再 skipped。
+    assert link["recorded"] == 1, link
+    assert link["skipped"] == []
+
+    path_kp = f"{BOOK}_m0_kp0"
+    progress = _store_as(users, "t_stu").load(BOOK)
+    attempts = [a for a in progress.quiz_attempts if a.knowledge_point_id == path_kp]
+    assert len(attempts) == 1 and attempts[0].is_correct
+    # 悬挂 id 零写入: ch id 不得出现在学生路径里。
+    assert all(a.knowledge_point_id != ch_kp for a in progress.quiz_attempts)
+    # counts 迁移: 答对 KP new→learning。
+    assert _status(progress, next(kp for m in progress.modules for kp in m.knowledge_points if kp.id == path_kp)) == "learning"
+
+
+def test_cross_root_ch_item_is_not_remapped(client, seeded) -> None:
+    """异根（不同书）的 ch id 不许经序位映射写进当前路径。"""
+    from deeptutor.api.routers.assignments import _record_mastery_attempts
+
+    report = _record_mastery_attempts(
+        {"assignment_id": seeded["assignment_id"], "book_id": BOOK},
+        [{"kp_id": "bk_other_ch0_kp0", "q_idx": 0, "answer": "C", "correct": True}],
+    )
+    assert report["recorded"] == 0
+    assert report["skipped"] == [
+        {"kp_id": "bk_other_ch0_kp0", "reason": "kp_not_in_progress"}
+    ]
+    progress = _store_as(seeded["users"], "t_stu").load(BOOK)
+    assert all(a.knowledge_point_id != "bk_other_ch0_kp0" for a in progress.quiz_attempts)

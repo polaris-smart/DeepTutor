@@ -597,6 +597,12 @@ def _link_assignment_errors(record: dict[str, Any], results: list[dict[str, Any]
     return {"linked": int(linked), "skipped": None}
 
 
+#: Teacher-side progress created before the v1019 ``_m{i}`` naming alignment
+#: still carries ``_ch{i}_kp{j}`` ids (a generator rename never rewrites
+#: records already on disk). Same book, same ordering, different module token.
+_LEGACY_KP_ID = re.compile(r"^(?:(?P<root>.+)_)?(?:ch|m)(?P<module>\d+)_kp(?P<kp>\d+)$")
+
+
 def _record_mastery_attempts(record: dict[str, Any], results: list[dict[str, Any]]) -> dict[str, Any]:
     """Bridge graded submission results into the student's mastery state.
 
@@ -608,11 +614,14 @@ def _record_mastery_attempts(record: dict[str, Any], results: list[dict[str, Any
     add the attempt on top of the existing error-record logic — then
     recomputes ``mastery_levels`` from the full attempt history, mirroring
     :func:`LearningService.calculate_mastery`.  Only an *existing* progress
-    for the assignment's book participates (nothing is created), and an item
-    whose ``kp_id`` does not exist in the student's path (e.g. a teacher-side
-    KP id from a different naming source) is skipped and reported rather than
-    written into a dangling id.  A resubmission replaces the assignment's
-    previous attempts (last attempt wins, same as ``add_submission``).
+    for the assignment's book participates (nothing is created).  An item
+    whose ``kp_id`` is not on the student's path is first resolved through
+    the path's ordinal grid when it shares the path root but uses the legacy
+    ``_ch{i}_kp{j}`` module token (pre-v1019 teacher progress); anything
+    still unresolved (e.g. a genuinely different book) is skipped and
+    reported rather than written into a dangling id.  A resubmission
+    replaces the assignment's previous attempts (last attempt wins, same as
+    ``add_submission``).
     """
     assignment_id = str(record.get("assignment_id") or "")
     book_id = str(record.get("book_id") or "").strip()
@@ -643,6 +652,29 @@ def _record_mastery_attempts(record: dict[str, Any], results: list[dict[str, Any
     module_by_kp = {
         kp.id: module.id for module in progress.modules for kp in module.knowledge_points
     }
+    # Ordinal grid of the student's *active* path: (module order, KP position)
+    # → path KP id. A teacher item whose id shares the path root but uses the
+    # legacy ``_ch{i}_kp{j}`` token resolves through this grid instead of
+    # string equality — the two namings enumerate the same book in the same
+    # order, so ``{root}_ch0_kp0`` and ``{root}_m0_kp0`` are one objective.
+    # Roots that differ from the path (a different book) are never remapped.
+    ordinal_by_kp: dict[tuple[int, int], str] = {}
+    for module in progress.modules:
+        for position, kp in enumerate(module.knowledge_points):
+            ordinal_by_kp[(int(module.order), position)] = kp.id
+
+    def resolve_kp(kp_id: str) -> str:
+        if kp_id in module_by_kp:
+            return kp_id
+        match = _LEGACY_KP_ID.match(kp_id)
+        if match is None:
+            return kp_id
+        root = match.group("root")
+        if root is not None and root != book_id:
+            return kp_id
+        return ordinal_by_kp.get(
+            (int(match.group("module")), int(match.group("kp"))), kp_id
+        )
 
     skipped: list[dict[str, str]] = []
 
@@ -657,7 +689,7 @@ def _record_mastery_attempts(record: dict[str, Any], results: list[dict[str, Any
             if attempt.self_attribution != attribution
         ]
         for result in results:
-            kp_id = str(result.get("kp_id") or "")
+            kp_id = resolve_kp(str(result.get("kp_id") or ""))
             module_id = module_by_kp.get(kp_id)
             if module_id is None:
                 skipped.append({"kp_id": kp_id, "reason": "kp_not_in_progress"})
@@ -675,7 +707,7 @@ def _record_mastery_attempts(record: dict[str, Any], results: list[dict[str, Any
                 )
             )
             recorded += 1
-        for kp_id in {str(r.get("kp_id") or "") for r in results} & set(module_by_kp):
+        for kp_id in {resolve_kp(str(r.get("kp_id") or "")) for r in results} & set(module_by_kp):
             correctness = [
                 attempt.is_correct
                 for attempt in tx.progress.quiz_attempts
