@@ -155,6 +155,32 @@ class TestProvisioning:
         ws = partners_root / "ada" / "workspace"
         assert (ws / "user" / "workspace" / "skills" / target / "SKILL.md").exists()
 
+    def test_account_level_skill_copies_from_panel_root(self, partners_root):
+        # /api/skills create·update·PUT write to the requesting user's
+        # system-binding root, a different directory than the scope workspace
+        # the legacy resolution chain checked. Regression (v1022): provisioning
+        # an assigned panel skill — e.g. a4-takehome — failed with
+        # FileNotFoundError; the account-level leg of _skill_source_dir closes
+        # that wall without a second skill system.
+        from deeptutor.services.skill.service import get_skill_service
+
+        account = get_skill_service().root / "a4-takehome"
+        account.mkdir(parents=True)
+        (account / "SKILL.md").write_text(
+            "---\nname: a4-takehome\ndescription: panel skill\n---\n\nBody.",
+            encoding="utf-8",
+        )
+
+        report = provision_assets("ada", skills=["a4-takehome"])
+        assert report["errors"] == []
+        assert report["copied"]["skills"] == ["a4-takehome"]
+
+        ws = partners_root / "ada" / "workspace"
+        assert (ws / "user" / "workspace" / "skills" / "a4-takehome" / "SKILL.md").exists()
+        # The partner-side inventory is the same skills/ root read_skill uses.
+        names = [s["name"] for s in list_assets("ada")["skills"]]
+        assert "a4-takehome" in names
+
     def test_provisioning_is_idempotent(self, partners_root):
         admin_root = partners_root.parent
         _seed_admin_kb(admin_root)

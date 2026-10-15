@@ -236,6 +236,17 @@ def _skill_source_dir(skill_name: str) -> Path:
     if (own / "SKILL.md").exists():
         return own
 
+    from deeptutor.services.skill.service import get_skill_service
+
+    # Account-level panel storage: /api/skills create·update·install write to
+    # the requesting user's system-binding root — a different directory than
+    # the scope workspace checked above. Resolved in the requester's context,
+    # so visibility is exactly what the skills panel already enforces (the
+    # user root shadows builtins there too).
+    account = get_skill_service().root / skill_name
+    if (account / "SKILL.md").exists():
+        return account
+
     builtin = BUILTIN_SKILLS_ROOT / skill_name
     if (builtin / "SKILL.md").exists():
         return builtin
