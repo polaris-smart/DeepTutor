@@ -1357,8 +1357,22 @@ async def _run_book_import(
 
 @router.post("/progress/{book_id}/import-from-book")
 async def import_from_book(book_id: str, body: ImportFromBookRequest):
+    """Import a mastery path, gated by the same book access as the bookshelf.
+
+    Importing a book's content into a mastery path is a read of that book, so
+    the caller must be able to read it (``resolve_book``): the owner, or an
+    account with a read/edit grant. A denied or unknown book id is a flat 403
+    — like import-from-kp-tree's 404, the two cases stay indistinguishable so
+    neither endpoint can be probed. The canonical KP tree is read from the
+    book's canonical store (the owner's workspace for a granted book), so a
+    granted reader gets the same 目级 modules the owner would.
+    """
     _validate_book_id(book_id)
-    return await _run_book_import(book_id, body)
+    resolved = resolve_book(book_id)
+    if resolved is None:
+        raise HTTPException(status_code=403, detail="Book access denied")
+    tree = await asyncio.to_thread(resolved.engine.storage.load_canonical_kp_tree, book_id)
+    return await _run_book_import(book_id, body, tree=tree)
 
 
 @router.post("/progress/{book_id}/import-from-kp-tree")

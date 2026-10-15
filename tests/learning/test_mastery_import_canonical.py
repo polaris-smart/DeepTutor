@@ -127,6 +127,8 @@ def test_import_from_book_prefers_cached_canonical_tree(isolated: dict) -> None:
 
 
 def test_import_from_book_falls_back_without_cache(isolated: dict) -> None:
+    # 书必须真实存在（caller 是 owner）：v1021 起无授权/不存在 → 403。
+    isolated["book_storage"].save_book(Book(id="bk_mech", title="机械书"))
     response = isolated["client"].post(
         "/api/v1/learning/progress/bk_mech/import-from-book",
         json={

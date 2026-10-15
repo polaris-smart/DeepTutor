@@ -43,6 +43,32 @@ def client(mu_isolated_root, make_user, monkeypatch):
     users_file.write_text(json.dumps({"t_stu": {"role": "student"}}), encoding="utf-8")
 
     storage_module._storages.clear()
+    # 书必须真实存在且归教师（v1021 起 import-from-book 校验书访问，无授权
+    # 403）：在 t_tea workspace 建 BOOK，教师 import 走 own 分支；学生 import
+    # 同一本书走既有 grant 机制（read 授权，peer 解析）。
+    from deeptutor.book.models import Book
+    from deeptutor.book.storage import BookStorage
+    from deeptutor.multi_user import book_access as book_access_module
+    from deeptutor.multi_user.book_permission import BookPermission
+    from deeptutor.multi_user.paths import get_path_service_for_scope
+
+    BookStorage(path_service=get_path_service_for_scope(teacher.scope)).save_book(
+        Book(id=BOOK, title="桥测试书")
+    )
+    # book_access._auth_enabled() 读 services.auth 的 AUTH_ENABLED（非 routers
+    # .auth 副本），学生 peer grant 解析需要它为 True。
+    from deeptutor.services import auth as services_auth
+
+    monkeypatch.setattr(services_auth, "AUTH_ENABLED", True)
+    monkeypatch.setattr(
+        book_access_module,
+        "permission_for_user",
+        lambda user: (
+            BookPermission(books=((BOOK, "read"),))
+            if user.id == "t_stu"
+            else BookPermission()
+        ),
+    )
     monkeypatch.setattr(
         mastery_router, "_cancel_active_learning_turn", lambda book_id: asyncio.sleep(0)
     )
@@ -271,6 +297,29 @@ def test_delete_requires_submitted_force(client, mu_isolated_root, make_user, mo
     users_file.parent.mkdir(parents=True, exist_ok=True)
     users_file.write_text(json.dumps({"t_stu": {"role": "student"}}), encoding="utf-8")
     storage_module._storages.clear()
+    # 同 client fixture：书归教师 + 学生 read grant（v1021 书访问校验）。
+    from deeptutor.book.models import Book
+    from deeptutor.book.storage import BookStorage
+    from deeptutor.multi_user import book_access as book_access_module
+    from deeptutor.multi_user.book_permission import BookPermission
+    from deeptutor.multi_user.paths import get_path_service_for_scope
+
+    BookStorage(
+        path_service=get_path_service_for_scope(users["t_tea"].scope)
+    ).save_book(Book(id=BOOK, title="桥测试书"))
+    # 同 client fixture：services.auth.AUTH_ENABLED 供 peer grant 解析。
+    from deeptutor.services import auth as services_auth
+
+    monkeypatch.setattr(services_auth, "AUTH_ENABLED", True)
+    monkeypatch.setattr(
+        book_access_module,
+        "permission_for_user",
+        lambda user: (
+            BookPermission(books=((BOOK, "read"),))
+            if user.id == "t_stu"
+            else BookPermission()
+        ),
+    )
     monkeypatch.setattr(
         mastery_router, "_cancel_active_learning_turn", lambda book_id: asyncio.sleep(0)
     )

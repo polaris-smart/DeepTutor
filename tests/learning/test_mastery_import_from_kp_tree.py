@@ -275,3 +275,107 @@ def test_import_from_kp_tree_read_grant_allows_import(isolated: dict, monkeypatc
         progress = LearningStore().load("bk_kp")
     assert progress is not None
     assert [m.name for m in progress.modules] == ["6.2 排列与组合"]
+
+
+def _peer_book_in_user_workspace(isolated: dict, owner_id: str, book_id: str) -> None:
+    """Create *book_id* (with its canonical KP tree) inside *owner_id*'s workspace."""
+    from deeptutor.multi_user import book_access
+
+    storage = book_access._peer_book_storage(owner_id)
+    storage.save_book(Book(id=book_id, title="同伴工作区的书"))
+    assert storage.save_canonical_kp_tree(book_id, KP_TREE) is True
+
+
+def _granted_user(isolated: dict, user_id: str, username: str) -> CurrentUser:
+    from deeptutor.multi_user.models import UserScope
+
+    return CurrentUser(
+        id=user_id,
+        username=username,
+        role="user",
+        scope=UserScope(
+            kind="user",
+            user_id=user_id,
+            root=(isolated["admin_root"] / "users" / user_id).resolve(),
+        ),
+    )
+
+
+def test_import_from_kp_tree_peer_grant_allows_import(isolated: dict, monkeypatch) -> None:
+    """Peer grant（书在另一普通用户工作区）同样可通：path 落读者自己的库。
+
+    授权来源=既有 grant 机制（permission_for_user 的 per-book 条目），不造
+    新权限体系；书体与 canonical 树读 owner 工作区（_peer_book_owner 扫描）。
+    """
+    from deeptutor.multi_user import book_access
+    from deeptutor.multi_user.book_permission import BookPermission
+    from deeptutor.services import auth as auth_service
+
+    monkeypatch.setattr(auth_service, "AUTH_ENABLED", True)
+    monkeypatch.setattr(
+        book_access,
+        "permission_for_user",
+        lambda user: BookPermission(books=(("bk_peer", "read"),)),
+    )
+    _peer_book_in_user_workspace(isolated, "u_owner", "bk_peer")
+    carol = _granted_user(isolated, "u_carol", "carol")
+    isolated["current"]["user"] = carol
+    response = isolated["client"].post(
+        "/api/v1/learning/progress/bk_peer/import-from-kp-tree", json={}
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["module_count"] == 1
+
+    with _as(carol):
+        progress = LearningStore().load("bk_peer")
+    assert progress is not None
+    assert [m.name for m in progress.modules] == ["6.2 排列与组合"]
+
+
+def test_import_from_book_denies_ungranted_book(isolated: dict, monkeypatch) -> None:
+    """无授权书 import-from-book → 403（书侧软权限点封口），零 path 写入。"""
+    from deeptutor.multi_user import book_access
+    from deeptutor.multi_user.book_permission import BookPermission
+    from deeptutor.services import auth as auth_service
+
+    monkeypatch.setattr(auth_service, "AUTH_ENABLED", True)
+    monkeypatch.setattr(
+        book_access, "permission_for_user", lambda user: BookPermission(default="none")
+    )
+    carol = _granted_user(isolated, "u_carol", "carol")
+    isolated["current"]["user"] = carol
+    response = isolated["client"].post(
+        "/api/v1/learning/progress/bk_kp/import-from-book",
+        json={"chapters": [{"title": "越权章", "knowledge_points": ["kp越权"]}]},
+    )
+    assert response.status_code == 403, response.text
+
+    with _as(carol):
+        assert LearningStore().load("bk_kp") is None
+
+
+def test_import_from_book_peer_grant_reads_owner_canonical(isolated: dict, monkeypatch) -> None:
+    """有授权（peer grant）走 import-from-book：读 owner canonical 树，模块目级。"""
+    from deeptutor.multi_user import book_access
+    from deeptutor.multi_user.book_permission import BookPermission
+    from deeptutor.services import auth as auth_service
+
+    monkeypatch.setattr(auth_service, "AUTH_ENABLED", True)
+    monkeypatch.setattr(
+        book_access,
+        "permission_for_user",
+        lambda user: BookPermission(books=(("bk_peer", "read"),)),
+    )
+    _peer_book_in_user_workspace(isolated, "u_owner", "bk_peer")
+    carol = _granted_user(isolated, "u_carol", "carol")
+    isolated["current"]["user"] = carol
+    response = isolated["client"].post(
+        "/api/v1/learning/progress/bk_peer/import-from-book", json={"chapters": []}
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["module_count"] == 1
+
+    with _as(carol):
+        progress = LearningStore().load("bk_peer")
+    assert progress is not None
+    assert [m.name for m in progress.modules] == ["6.2 排列与组合"]
