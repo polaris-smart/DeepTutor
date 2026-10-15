@@ -49,11 +49,13 @@ test("auth state normalizes the server learning policy", () => {
 });
 
 test("learning policy drives the sidebar and redacted settings document", () => {
+  // v1.6.14 起 hook 侧策略已归一化为 { allowedSurfaces }。
+  const normalizedPolicy = { allowedSurfaces: policy.allowed_surfaces };
   // /space stays visible: it is the learner hub and its APIs (daily plan,
   // assignments, courses) are exactly the surfaces the policy grants.
-  for (const href of ["/chat", "/reading", "/settings", "/space"]) {
+  for (const href of ["/chat", "/settings", "/space"]) {
     assert.equal(
-      isNavEntryAllowedForLearningPolicy(NAV_BY_HREF.get(href)!, policy),
+      isNavEntryAllowedForLearningPolicy(NAV_BY_HREF.get(href)!, normalizedPolicy),
       true,
       href,
     );
@@ -68,20 +70,20 @@ test("learning policy drives the sidebar and redacted settings document", () => 
     "/knowledge-bases",
   ]) {
     assert.equal(
-      isNavEntryAllowedForLearningPolicy(NAV_BY_HREF.get(href)!, policy),
+      isNavEntryAllowedForLearningPolicy(NAV_BY_HREF.get(href)!, normalizedPolicy),
       false,
       href,
     );
   }
   assert.equal(
     isNavEntryAllowedForLearningPolicy(NAV_BY_HREF.get("/chat")!, {
-      allowed_surfaces: [],
+      allowedSurfaces: [],
     }),
     false,
   );
   assert.equal(
-    isNavEntryAllowedForLearningPolicy(NAV_BY_HREF.get("/reading")!, {
-      allowed_surfaces: ["reading"],
+    isNavEntryAllowedForLearningPolicy(NAV_BY_HREF.get("/chat")!, {
+      allowedSurfaces: ["chat"],
     }),
     true,
   );
