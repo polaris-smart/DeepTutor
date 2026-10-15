@@ -130,9 +130,21 @@ def _load_builtin_reading_extensions(log: logging.Logger) -> list[ReadingExtensi
     """
     import importlib
 
+    from types import SimpleNamespace
+
+    from deeptutor.plugins.runtime import entry_point_can_load
+
     rows: list[ReadingExtension] = []
     for name, module_name, attr in _BUILTIN_READING_EXTENSIONS:
         try:
+            # 与 entry-point 路径同一道审批门：插件被禁用/未审批时，builtin
+            # 回退不得把它复活（registry-gating 契约，上游 #1222 后生效）。
+            synthetic_ep = SimpleNamespace(
+                name=name, value=f"{module_name}:{attr}", group=ENTRY_POINT_GROUP
+            )
+            if not entry_point_can_load(synthetic_ep, ENTRY_POINT_GROUP):
+                log.warning("Built-in reading extension %r is gated; skipping.", name)
+                continue
             module = importlib.import_module(module_name)
             row = _coerce(name, getattr(module, attr))
         except Exception:

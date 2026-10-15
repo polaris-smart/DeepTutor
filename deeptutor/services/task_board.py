@@ -178,11 +178,13 @@ class TaskBoardStore:
             revision=state["revision"],
         )
 
-    def read(self, include_archived: bool = False) -> TaskBoard:
+    def read(self, include_archived: bool = True) -> TaskBoard:
         """Read cards without creating storage for an unused board.
 
-        Archived cards stay on disk but stay out of the default snapshot so
-        repeated archive cycles cannot accumulate ghosts on the board (N63).
+        Upstream v1.6.14 semantics: the store-level snapshot includes archived
+        cards (legacy import / migration assert on it). The N63 default-hide
+        lives at the router layer (`include_archived=False` query param);
+        internal consumers that must not see ghosts pass ``False`` explicitly.
         """
         if not self.path.exists():
             return TaskBoard(cards=[])
@@ -192,7 +194,14 @@ class TaskBoardStore:
             board = self._snapshot(connection)
         if include_archived:
             return board
-        return TaskBoard(cards=[card for card in board.cards if not card.archived])
+        # 过滤归档卡时保留上游 v1.6.14 的 revision 计数，否则 GET 会把
+        # revision 抹成 0，事件流/一致性断言会误判“看板被改动”。
+        return TaskBoard(
+            cards=[card for card in board.cards if not card.archived],
+            colors=board.colors,
+            session_links=board.session_links,
+            revision=board.revision,
+        )
 
     def revision(self) -> int:
         """A cheap event-stream probe; unchanged boards need no snapshot assembly."""
@@ -378,7 +387,7 @@ class TaskBoardStore:
                 self._changed(connection)
 
     def context_text(self, workspace_id: str, session_id: str) -> str:
-        board = self.read()
+        board = self.read(include_archived=False)
         linked = next(
             (
                 row.task_ids
