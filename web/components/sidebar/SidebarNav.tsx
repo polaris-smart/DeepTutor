@@ -45,6 +45,7 @@ import {
   isNavActive,
   isNavEntryAllowedForLearningPolicy,
   primaryNavHrefsFor,
+  navVisibleUnderPolicy,
 } from "@/components/sidebar/nav-entries";
 import { useAuthStatus } from "@/hooks/useAuthStatus";
 import { Tooltip } from "@/shared/ui/Tooltip";
@@ -118,22 +119,22 @@ export function SidebarNav({
     setMoreExpanded(browserStorage.readRaw("local", MORE_EXPANDED_KEY) === "1");
   }, []);
 
-  // Learning-policy nav: a configured learning account only keeps the features
-  // the server policy grants (or explicitly keeps). This mirrors the server
-  // surface gate — hiding here is for the sidebar's sake, the deny happens
-  // server-side either way.
-  const primaryHrefs = useMemo(
+  // 双层过滤（悦学 role 门 + 上游 v1.6.14 学习策略门）：先按角色裁掉
+  // producer/管理条目，再按服务端学习策略裁面——策略账号线性保留
+  // alwaysAvailableToLearningAccounts 的 learner hub（/space、/settings）。
+  const roleVisibleHrefs = useMemo(() => new Set(primaryNavHrefsFor(role)), [role]);
+  const moduleHrefs = useMemo(
     () =>
-      primaryNavHrefsFor(role).filter((href) => {
+      MODULE_NAV_HREFS.filter((href) => roleVisibleHrefs.has(href)).filter((href) => {
         const entry = NAV_BY_HREF.get(href);
         return !entry || isNavEntryAllowedForLearningPolicy(entry, learningPolicy);
       }),
-    [role, learningPolicy],
+    [roleVisibleHrefs, learningPolicy],
   );
 
   const resolved = useMemo(
-    () => resolveNavLayout(MODULE_NAV_HREFS, layout, DEFAULT_COLLAPSED_NAV),
-    [layout],
+    () => resolveNavLayout(moduleHrefs, layout, DEFAULT_COLLAPSED_NAV),
+    [layout, moduleHrefs],
   );
   /** Always edit the resolved order: the stored one may still be empty. */
   const editable = useMemo<SidebarNavLayout>(
@@ -549,7 +550,14 @@ export function SidebarHome({
   const { t } = useTranslation();
   const pathname = usePathname();
   const { has } = useCapabilityAccess();
+  const { learningPolicy } = useAuthStatus();
   const entry = NAV_BY_HREF.get("/chat")!;
+  if (
+    learningPolicy &&
+    !navVisibleUnderPolicy("/chat", learningPolicy.allowedSurfaces)
+  ) {
+    return null;
+  }
   const active = isNavActive(pathname, entry.href);
   const locked = entry.requires ? !has(entry.requires) : false;
   const lockedTooltip = t("Locked — contact your administrator to get access.");

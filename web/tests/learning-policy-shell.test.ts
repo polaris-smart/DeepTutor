@@ -22,7 +22,7 @@ const policy = {
   allowed_surfaces: ["chat", "reading"],
 };
 
-test("auth state preserves the server learning policy", () => {
+test("auth state normalizes the server learning policy", () => {
   const state = authStatusStateFromStatus({
     enabled: true,
     authenticated: true,
@@ -32,7 +32,10 @@ test("auth state preserves the server learning policy", () => {
     learning_policy: policy,
   });
 
-  assert.deepEqual(state.learningPolicy, policy);
+  // v1.6.14 起学习策略在 hook 内归一化为 allowedSurfaces（服务端原始 policy 不再直传）。
+  assert.deepEqual(state.learningPolicy, {
+    allowedSurfaces: policy.allowed_surfaces,
+  });
   assert.deepEqual(authStatusStateFromStatus(null), {
     enabled: false,
     authenticated: false,

@@ -121,6 +121,22 @@ def test_futureinfra_provider_aliases_and_base_detection() -> None:
     assert find_gateway(api_base="https://futureinfra.ai/v1/ai") == spec
 
 
+def test_opper_provider_lookup_and_base_detection() -> None:
+    spec = find_by_name("opper")
+
+    assert spec is not None
+    assert spec.display_name == "Opper"
+    assert spec.env_key == "OPPER_API_KEY"
+    assert spec.backend == "openai_compat"
+    assert spec.mode == "gateway"
+    assert spec.default_api_base == "https://api.opper.ai/v3/compat"
+    assert find_by_name("Opper") == spec
+    assert find_gateway(api_base="https://api.opper.ai/v3/compat") == spec
+    # Detection keys on the API host, so a base URL that merely contains
+    # "opper" (e.g. a self-hosted "copper" endpoint) is not claimed.
+    assert find_gateway(api_base="https://llm.copper.example/v1") is None
+
+
 def test_openai_codex_is_not_detected_from_api_base() -> None:
     assert find_gateway(api_base="https://codex.example.com/v1") is None
 
@@ -139,3 +155,12 @@ def test_github_copilot_is_oauth_backed() -> None:
     assert spec is not None
     assert spec.auth_mode == "oauth"
     assert spec.env_key == ""
+
+
+def test_orcarouter_is_not_a_builtin_provider() -> None:
+    assert find_by_name("orcarouter") is None
+    assert find_by_name("orca_router") is None
+    assert find_by_name("orca-router") is None
+    assert find_gateway(api_key="sk-orca-test-key") is None
+    assert find_gateway(api_base="https://api.orcarouter.ai/v1") is None
+    assert find_gateway(api_key="sk-or-v1-abcdef") == find_by_name("openrouter")
