@@ -251,6 +251,86 @@ def _find_item(record: dict[str, Any], q_idx: int) -> dict[str, Any] | None:
     return items[q_idx]
 
 
+def _kp_root(kp_id: str) -> str:
+    """Root namespace of a KP id: ``{bk}_m0_kp0``/``{bk}_ch0_kp0`` → ``{bk}``.
+
+    Topic-draft paths use their own id vocabulary; an id that does not carry
+    the book suffix pattern is its own root (comparison is equality-only, so
+    any stable namespace token works — no fuzzy matching here).
+    """
+    match = _LEGACY_KP_ID.match(kp_id)
+    if match is None:
+        return kp_id
+    return match.group("root") or kp_id
+
+
+def _student_path_roots(username: str) -> set[str]:
+    """KP roots across every mastery path this user already owns (read-only).
+
+    Book keys come from the v2 sqlite (the source of truth) or the legacy
+    per-book JSON fallback; each progress then loads through the same
+    ``_load_teacher_book`` resolution the roster aggregation trusts. Advisory
+    only: a missing store yields an empty set and read errors degrade to
+    fewer roots — this feeds a warning, never a gate.
+    """
+    learning_dir = _teacher_learning_dir(username)
+    if not learning_dir.is_dir():
+        return set()
+    store_root = learning_dir / "mastery"
+    book_ids: list[str] = []
+    if (store_root / "mastery.sqlite3").is_file():
+        try:
+            from deeptutor.learning.storage import LearningStore
+
+            book_ids = list(LearningStore(root=store_root).list_all())
+        except Exception as exc:  # noqa: BLE001 - advisory check degrades to empty
+            logger.warning("Assignments: v2 store unreadable for %s: %s", username, exc)
+    else:
+        book_ids = sorted(path.stem for path in learning_dir.glob("*.json"))
+    roots: set[str] = set()
+    for book_id in book_ids:
+        progress = _load_teacher_book(username, book_id)
+        if progress is None:
+            continue
+        for module in progress.modules:
+            for kp in module.knowledge_points:
+                roots.add(_kp_root(kp.id))
+    return roots
+
+
+def _cross_root_warnings(class_id: str, items: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """决策 A（跨根界定交付 2026-10-16）: 布置时预警，不阻断布置。
+
+    班级学生的活跃掌握路径根与作业 item 的 KP 根不一致时，submit 侧回写必
+    被 skip（v1020 异根不映射语义，本函数不改变它），该生本次作业的掌握度
+    推进丢失。把这一后果从提交时点前移到布置响应 ``cross_root_warnings``
+    （student_id/expected_root/actual_root），教师布置后即可干预。只读：
+    学生无路径不算跨根（submit 侧 no_progress 已有上报）；路径里有任一同
+    根路径即视为可达（场景 5 双轨只写书路径，无需预警）。
+    """
+    item_roots = {_kp_root(str(item.get("kp_id") or "")) for item in items}
+    if len(item_roots) != 1:
+        return []  # 混根 item 本身异常，不猜主根，交由 submit 侧逐项上报
+    expected_root = next(iter(item_roots))
+    warnings: list[dict[str, str]] = []
+    for student in _roster_usernames(class_id):
+        try:
+            path_roots = _student_path_roots(student)
+        except Exception as exc:  # noqa: BLE001 - advisory, never blocks
+            logger.warning("Assignments: cross-root scan failed for %s: %s", student, exc)
+            continue
+        if not path_roots or expected_root in path_roots:
+            continue
+        warnings.append(
+            {
+                "student_id": student,
+                "expected_root": expected_root,
+                "actual_root": sorted(path_roots)[0],
+            }
+        )
+    return warnings
+
+
 class AssignRequest(BaseModel):
     class_id: str = Field(min_length=1)
     book_id: str = Field(min_length=1)
@@ -271,7 +351,12 @@ async def create_assignment(
     reported in ``skipped`` — a partially covered selection still assigns the
     questions that do exist. ``book_id`` rides along on the record so the
     submit endpoint can link wrong answers into the student's own mastery
-    store for that book.
+    store for that book. Rostered students whose *active* mastery-path root
+    differs from the items' KP root are pre-flagged in
+    ``cross_root_warnings`` (student_id/expected_root/actual_root) — their
+    submit-side write-back will be skipped (v1020 cross-root, no remap), so
+    the teacher can react at assignment time instead of at submission time.
+    Advisory only: nothing here blocks the assignment.
     """
     username = str(getattr(current, "username", "") or "")
     user_id = str(getattr(current, "user_id", "") or username)
@@ -314,7 +399,11 @@ async def create_assignment(
         "submissions": {},
     }
     saved = store.save_assignment(record)
-    return {"assignment": _assignment_summary(saved), "skipped": skipped}
+    return {
+        "assignment": _assignment_summary(saved),
+        "skipped": skipped,
+        "cross_root_warnings": _cross_root_warnings(body.class_id, items),
+    }
 
 
 @router.get("")

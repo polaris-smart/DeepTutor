@@ -452,3 +452,109 @@ def test_cross_root_ch_item_is_not_remapped(client, seeded) -> None:
     ]
     progress = _store_as(seeded["users"], "t_stu").load(BOOK)
     assert all(a.knowledge_point_id != "bk_other_ch0_kp0" for a in progress.quiz_attempts)
+
+
+# ---------------------------------------------------------------------------
+# v1022: 跨根预警前移 —— create_assignment 校验班级学生活跃路径根与作业
+# KP 根（决策 A: 不阻断布置, cross_root_warnings 上报 student_id /
+# expected_root / actual_root）; submit 侧 v1020 异根不映射语义不变。
+# ---------------------------------------------------------------------------
+
+
+def _seed_direct_progress(users: dict, username: str, book_id: str, kp_ids: list[str]) -> None:
+    """给学生 store 直写一条单模块路径（跨根测试的"实际根"来源）。"""
+    from deeptutor.learning.models import (
+        KnowledgePoint,
+        KnowledgeType,
+        LearningModule,
+        LearningProgress,
+    )
+
+    module_id = f"{book_id}_m0"
+    _store_as(users, username).save(
+        LearningProgress(
+            book_id=book_id,
+            modules=[
+                LearningModule(
+                    id=module_id,
+                    name="模块0",
+                    order=0,
+                    knowledge_points=[
+                        KnowledgePoint(
+                            id=kp_id, name=kp_id, type=KnowledgeType.CONCEPT,
+                            module_id=module_id,
+                        )
+                        for kp_id in kp_ids
+                    ],
+                )
+            ],
+        )
+    )
+
+
+def test_same_root_assignment_has_no_cross_root_warning(client, seeded) -> None:
+    """学生走书路径（同根）→ 布置响应无预警。"""
+    cls = create_class(name="同根预警班", teacher="t_tea", students=["t_stu"])
+    resp = client.post(
+        "/api/assignments",
+        json={
+            "class_id": cls["id"], "book_id": BOOK, "title": "同根",
+            "kp_ids": [seeded["kp_id"]],
+        },
+        headers={"x-test-user": "t_tea"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["cross_root_warnings"] == []
+
+
+def test_cross_root_assignment_warns_and_submit_still_skips(
+    client, mu_isolated_root, make_user
+) -> None:
+    """场景 3/4: 仅走 topic draft 的学生被点名, 书路径学生不受累;
+    跨根布置不阻断, 提交侧仍按 v1020 语义 skip（no_progress, 零写入）。"""
+    users = {
+        "t_tea": make_user("t_tea", role="teacher", username="t_tea"),
+        "t_stu": make_user("t_stu", role="user", username="t_stu"),      # 只走 draft
+        "t_stu2": make_user("t_stu2", role="user", username="t_stu2"),  # 走书路径
+    }
+    users_file = mu_isolated_root / "data" / "system" / "auth" / "users.json"
+    users_file.parent.mkdir(parents=True, exist_ok=True)
+    users_file.write_text(
+        json.dumps({"t_stu": {"role": "student"}, "t_stu2": {"role": "student"}}),
+        encoding="utf-8",
+    )
+
+    _import_book(client, "t_tea", [{"title": "ch1", "knowledge_points": ["kp-a", "kp-b"]}])
+    book_kp = f"{BOOK}_m0_kp0"
+    _bind_question(client, "t_tea", book_kp)
+    _seed_direct_progress(users, "t_stu", "topic_draft_demo", [f"topic_draft_demo_m0_kp0"])
+    _seed_direct_progress(users, "t_stu2", BOOK, [book_kp])
+
+    cls = create_class(name="分裂班", teacher="t_tea", students=["t_stu", "t_stu2"])
+    resp = client.post(
+        "/api/assignments",
+        json={"class_id": cls["id"], "book_id": BOOK, "title": "跨根", "kp_ids": [book_kp]},
+        headers={"x-test-user": "t_tea"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # 布置时预警: draft 学生被点名, 同根学生不在列。
+    assert body["cross_root_warnings"] == [
+        {"student_id": "t_stu", "expected_root": BOOK, "actual_root": "topic_draft_demo"}
+    ]
+    assignment_id = body["assignment"]["assignment_id"]
+
+    # submit: v1020 语义不回归 —— 学生无书路径, 回写 skip 且零写入。
+    resp = client.post(
+        f"/api/assignments/{assignment_id}/submit",
+        json={"answers": [{"q_idx": 0, "answer": "C"}]},
+        headers={"x-test-user": "t_stu"},
+    )
+    assert resp.status_code == 200, resp.text
+    link = resp.json()["mastery_link"]
+    assert link["recorded"] == 0
+    assert link["skipped"] == [{"kp_id": "*", "reason": "no_progress"}]
+    # draft 路径零污染, 书路径键也不得被悬空创建。
+    draft = _store_as(users, "t_stu").load("topic_draft_demo")
+    assert draft is not None and draft.quiz_attempts == []
+    assert _store_as(users, "t_stu").load(BOOK) is None
