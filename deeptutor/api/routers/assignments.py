@@ -402,7 +402,9 @@ async def create_assignment(
     return {
         "assignment": _assignment_summary(saved),
         "skipped": skipped,
-        "cross_root_warnings": _cross_root_warnings(body.class_id, items),
+        "cross_root_warnings": await asyncio.to_thread(
+            _cross_root_warnings, body.class_id, items
+        ),
     }
 
 
