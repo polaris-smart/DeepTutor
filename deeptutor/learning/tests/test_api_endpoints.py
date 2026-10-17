@@ -1,5 +1,6 @@
 """API endpoint tests for the mastery_path router."""
 
+import asyncio
 import json
 import time
 from unittest.mock import AsyncMock, patch
@@ -9,6 +10,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from deeptutor.api.routers.mastery_path import router, ws_router
+from deeptutor.book.models import Book
 from deeptutor.learning.models import (
     KnowledgePoint,
     KnowledgeType,
@@ -1237,8 +1239,53 @@ class TestRedoProgress:
 # -- POST /progress/{book_id}/import-from-book ----------------------------
 
 
+@pytest.fixture
+def book_env(tmp_path, monkeypatch):
+    """v1021 书授权门隔离：multi_user 路径整体指到 tmp_path，书落在 admin
+    （own）工作区。与 tests/learning/test_mastery_import_from_kp_tree.py 的
+    ``isolated`` fixture 同一隔离套路；import-from-book 在 v1021 起 fail-close
+    （书不可解析即 403），所以这三个用例必须先有可解析的书。
+    缓存字典（_storages/_engines/_path_services）整体替换而非清空，
+    monkeypatch teardown 恢复原对象，不污染同进程后续用例。"""
+    from deeptutor.book import engine as engine_module
+    from deeptutor.book import storage as storage_module
+    from deeptutor.multi_user import identity, paths
+    from deeptutor.services import auth as auth_service
+    from deeptutor.services import path_service as path_service_module
+
+    admin_root = (tmp_path / "data").resolve()
+    system_root = admin_root / "system"
+    monkeypatch.setattr(paths, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(paths, "ADMIN_WORKSPACE_ROOT", admin_root)
+    monkeypatch.setattr(paths, "USERS_ROOT", admin_root / "users")
+    monkeypatch.setattr(paths, "SYSTEM_ROOT", system_root)
+    monkeypatch.setattr(paths, "_path_services", {})
+    monkeypatch.setattr(identity, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(identity, "SYSTEM_ROOT", system_root)
+    monkeypatch.setattr(identity, "AUTH_DIR", system_root / "auth")
+    monkeypatch.setattr(identity, "USERS_FILE", system_root / "auth" / "users.json")
+    monkeypatch.setattr(identity, "SECRET_FILE", system_root / "auth" / "auth_secret")
+    monkeypatch.setattr(auth_service, "AUTH_ENABLED", False)
+    monkeypatch.setattr(auth_service, "AUTH_USERNAME", "")
+    monkeypatch.setattr(auth_service, "AUTH_PASSWORD_HASH", "")
+    # 无请求上下文时（fixture 准备阶段）的默认工作区。
+    monkeypatch.setattr(
+        path_service_module.PathService,
+        "_instance",
+        path_service_module.PathService(workspace_root=admin_root),
+    )
+    monkeypatch.setattr(storage_module, "_storages", {})
+    monkeypatch.setattr(engine_module, "_engines", {})
+    monkeypatch.setattr(
+        "deeptutor.api.routers.mastery_path._cancel_active_learning_turn",
+        lambda book_id: asyncio.sleep(0),
+    )
+    return {"storage": storage_module.get_book_storage(), "admin_root": admin_root}
+
+
 class TestImportFromBook:
-    def test_import_two_chapters(self, client):
+    def test_import_two_chapters(self, client, book_env):
+        book_env["storage"].save_book(Book(id="import1", title="导入书"))
         resp = client.post(
             "/api/mastery-paths/progress/import1/import-from-book",
             json={
@@ -1256,13 +1303,15 @@ class TestImportFromBook:
         prog = client.get("/api/mastery-paths/progress/import1").json()
         assert len(prog["modules"]) == 2
 
-    def test_import_empty_chapters(self, client):
+    def test_import_empty_chapters(self, client, book_env):
+        book_env["storage"].save_book(Book(id="import2", title="导入书"))
         resp = client.post(
             "/api/mastery-paths/progress/import2/import-from-book", json={"chapters": []}
         )
         assert resp.status_code == 400
 
-    def test_import_empty_chapter_kps_returns_400(self, client):
+    def test_import_empty_chapter_kps_returns_400(self, client, book_env):
+        book_env["storage"].save_book(Book(id="import_empty_kps", title="导入书"))
         resp = client.post(
             "/api/mastery-paths/progress/import_empty_kps/import-from-book",
             json={"chapters": [{"title": "Ch1", "knowledge_points": []}]},

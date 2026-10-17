@@ -2431,6 +2431,12 @@ async def test_cold_start_stalled_provider_settles_with_bounded_retries(monkeypa
         assert failure.value.partial_response is (phase == "partial_stream")
         if phase != "connect":
             assert len(stopped) == len(attempts)
+        # 排空 bus subscriber 队列再断言: partial_stream 是终止路径, 最后一个
+        # provider_transport progress 事件 put 进队列后循环体直接 raise, 中途
+        # 没有 await 让 consumer 被调度（connect/stream 靠 retry 的 sleep(0)
+        # 排空, 故不受影响）。与 _run_simple 尾部的 await asyncio.sleep(0) 同套路。
+        for _ in range(4):
+            await asyncio.sleep(0)
         assert (
             sum(event.metadata.get("error_code") == "provider_transport" for event in events) >= 1
         )

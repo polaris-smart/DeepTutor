@@ -35,7 +35,9 @@ BOOK = "bk_bridge"
 def client(mu_isolated_root, make_user, monkeypatch):
     teacher = make_user("t_tea", role="teacher", username="t_tea")
     student = make_user("t_stu", role="user", username="t_stu")
-    users = {"t_tea": teacher, "t_stu": student}
+    # 第二位教师: DELETE owner 门卫的"非属主教师 403"分支用（P2-2）。
+    peer_teacher = make_user("t_tea2", role="teacher", username="t_tea2")
+    users = {"t_tea": teacher, "t_stu": student, "t_tea2": peer_teacher}
 
     # 花名册门卫要求 live student 账号（users.json 即 store）。
     users_file = mu_isolated_root / "data" / "system" / "auth" / "users.json"
@@ -284,6 +286,24 @@ def test_delete_guards_and_cleanup(client, seeded) -> None:
     assert all(
         a["assignment_id"] != assignment_id for a in resp.json()["assignments"]
     )
+
+
+def test_delete_by_non_owner_teacher_is_403(client, seeded) -> None:
+    """P2-2: owner 门卫另一半——非属主教师删除 → 403, 作业原封不动。
+
+    t_tea2 与 t_tea 同为教师（require_teacher 放行）, 但记录的 teacher_id
+    是 t_tea: 403 只能来自属主门卫, 不能是角色门卫。
+    """
+    assignment_id = seeded["assignment_id"]
+    resp = client.delete(
+        f"/api/assignments/{assignment_id}", headers={"x-test-user": "t_tea2"}
+    )
+    assert resp.status_code == 403, resp.text
+
+    # 记录未被删: 属主教师随后仍能正常删除（无提交 → 200, 不触发 409）。
+    resp = client.delete(f"/api/assignments/{assignment_id}", headers={"x-test-user": "t_tea"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["ok"] is True
 
 
 def test_delete_requires_submitted_force(client, mu_isolated_root, make_user, monkeypatch):
