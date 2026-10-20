@@ -280,3 +280,68 @@ async def test_evidence_matches_across_margin_line_numbers(monkeypatch):
     monkeypatch.setattr("deeptutor.reading.quiz.complete", complete)
     result = await ReadingQuizExtension().run_action("start", context)
     assert len(result.payload["questions"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_math_evidence_with_formatting_drift_still_grounded(monkeypatch):
+    """The page reaches the unit as LaTeX source; a quote that drifts only in
+    delimiter spelling, brace and spacing form, or punctuation width is still
+    a quote from the page, and the quiz must not reject it."""
+    context = ReadingContext(
+        material_id="material",
+        locator=1,
+        locale="zh",
+        visible_text=(
+            "设函数 \\(f(x) = x^{2} + 3x\\)，求 \\(f'(x)\\) 的最小值。"
+            "当 \\(a \\geq 0\\) 且 \\(a \\neq 1\\) 时，\\(\\dfrac{a}{b}\\) 有意义。"
+        ),
+    )
+
+    async def complete(**kwargs):
+        assert "逐字复制" in kwargs["system_prompt"]
+        return _model_response(
+            evidence="设函数 $f(x)=x^2+3x$, 求 $f'(x)$ 的最小值。"
+        )
+
+    monkeypatch.setattr("deeptutor.reading.quiz.complete", complete)
+    result = await ReadingQuizExtension().run_action("start", context)
+    assert len(result.payload["questions"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_short_quote_still_from_the_page_is_accepted(monkeypatch):
+    """A three-character chapter heading quoted verbatim from the page is a
+    genuine citation: the grounding substring check — not a length floor —
+    carries the anti-hallucination guarantee."""
+    context = ReadingContext(
+        material_id="material",
+        locator=1,
+        locale="zh",
+        visible_text="数学必修一 第四章 指数与对数。指数函数 \\(y = 2^{x}\\) 单调递增。",
+    )
+
+    async def complete(**_kwargs):
+        return _model_response(evidence="第四章")
+
+    monkeypatch.setattr("deeptutor.reading.quiz.complete", complete)
+    result = await ReadingQuizExtension().run_action("start", context)
+    assert len(result.payload["questions"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_fabricated_math_evidence_is_still_rejected(monkeypatch):
+    """Normalization only forgives formatting: a formula the page does not
+    contain is still an ungrounded quote."""
+    context = ReadingContext(
+        material_id="material",
+        locator=1,
+        locale="zh",
+        visible_text="设函数 \\(f(x) = x^{2} + 3x\\)，求 \\(f'(x)\\) 的最小值。",
+    )
+
+    async def complete(**_kwargs):
+        return _model_response(evidence="设函数 \\(f(x) = x^{2} + 3x + 1\\)。")
+
+    monkeypatch.setattr("deeptutor.reading.quiz.complete", complete)
+    with pytest.raises(ValueError, match="evidence must come from"):
+        await ReadingQuizExtension().run_action("start", context)

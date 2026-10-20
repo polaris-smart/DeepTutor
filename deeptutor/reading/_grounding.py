@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -52,6 +53,101 @@ def selection_range(text: str, selection: str) -> tuple[int, int] | None:
 _LINE_NUMBER = re.compile(r"^[ \t]*\d{1,4}[ \t]*$", re.MULTILINE)
 _SPACING = re.compile(r"[\s\-\u00ad\u2010\u2011]+")
 
+# Math materials reach the extractor as LaTeX source, and a model quoting a
+# formula drifts in formatting that changes nothing the text says: it may
+# switch delimiters ("\\(x\\)" against "$x$"), brace or unbrace a single
+# superscript ("x^{2}" against "x^2"), write spacing commands the extractor
+# drops, or answer in half-width punctuation where the page is full-width.
+# Those are presentation, not quotation, so the key removes them on both
+# sides before comparing — the quote itself still has to be there.
+_MATH_DELIMITERS = re.compile(r"\$\$|\$|\\\(|\\\)|\\\[|\\\]")
+_RENDER_ONLY_COMMANDS = re.compile(
+    r"\\(?:left|right|displaystyle|limits|nolimits|quad|qquad|bigl|bigr"
+    r"|Bigl|Bigr|biggl|biggr|Biggl|Biggr|big|Big|bigg|Bigg)(?![a-zA-Z])"
+)
+_STYLED_COMMANDS = re.compile(
+    r"\\(?:mathrm|mathbf|mathit|mathcal|mathsf|mathtt|mathbb|mathfrak"
+    r"|text|textrm|textbf|textit|textsf|texttt|operatorname)(?![a-zA-Z])"
+)
+_FRAC_COMMANDS = re.compile(r"\\(?:dfrac|tfrac|frac)(?![a-zA-Z])")
+_BRACES = re.compile(r"[{}]")
+_ANY_BACKSLASH = re.compile(r"\\")
+_FULLWIDTH_PUNCTUATION = str.maketrans(
+    {
+        "\u3002": ".",  # 。
+        "\u3001": ",",  # 、
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2018": "'",
+        "\u2019": "'",
+    }
+)
+_SYMBOL_COMMANDS = {
+    "\\alpha": "\u03b1",
+    "\\beta": "\u03b2",
+    "\\gamma": "\u03b3",
+    "\\delta": "\u03b4",
+    "\\epsilon": "\u03f5",
+    "\\varepsilon": "\u03b5",
+    "\\zeta": "\u03b6",
+    "\\eta": "\u03b7",
+    "\\theta": "\u03b8",
+    "\\iota": "\u03b9",
+    "\\kappa": "\u03ba",
+    "\\lambda": "\u03bb",
+    "\\mu": "\u03bc",
+    "\\nu": "\u03bd",
+    "\\xi": "\u03be",
+    "\\pi": "\u03c0",
+    "\\rho": "\u03c1",
+    "\\sigma": "\u03c3",
+    "\\tau": "\u03c4",
+    "\\upsilon": "\u03c5",
+    "\\phi": "\u03d5",
+    "\\varphi": "\u03c6",
+    "\\chi": "\u03c7",
+    "\\psi": "\u03c8",
+    "\\omega": "\u03c9",
+    "\\Gamma": "\u0393",
+    "\\Delta": "\u0394",
+    "\\Theta": "\u0398",
+    "\\Lambda": "\u039b",
+    "\\Xi": "\u039e",
+    "\\Pi": "\u03a0",
+    "\\Sigma": "\u03a3",
+    "\\Phi": "\u03a6",
+    "\\Psi": "\u03a8",
+    "\\Omega": "\u03a9",
+    "\\times": "\u00d7",
+    "\\cdot": "\u00b7",
+    "\\div": "\u00f7",
+    "\\pm": "\u00b1",
+    "\\mp": "\u2213",
+    "\\leq": "\u2264",
+    "\\le": "\u2264",
+    "\\geq": "\u2265",
+    "\\ge": "\u2265",
+    "\\neq": "\u2260",
+    "\\ne": "\u2260",
+    "\\approx": "\u2248",
+    "\\infty": "\u221e",
+    "\\rightarrow": "\u2192",
+    "\\to": "\u2192",
+    "\\degree": "\u00b0",
+    "\\prime": "\u2032",
+    "\\sum": "\u2211",
+    "\\prod": "\u220f",
+    "\\int": "\u222b",
+    "\\sqrt": "\u221a",
+}
+_SYMBOL_COMMAND_PATTERN = re.compile(
+    "|".join(
+        re.escape(command)
+        for command in sorted(_SYMBOL_COMMANDS, key=len, reverse=True)
+    )
+    + r"(?![a-zA-Z])"
+)
+
 
 def evidence_key(value: str) -> str:
     """A comparison form for "is this quote from the text?".
@@ -62,8 +158,29 @@ def evidence_key(value: str) -> str:
     a word the line broke with a hyphen ("DeepTu-\n4\ntor"). Neither is a
     difference in what the text says, so the key drops number-only lines,
     spacing and hyphens before comparing.
+
+    Math pages add a second layer of presentation drift — LaTeX delimiter
+    and command spellings, braces around single tokens, full-width against
+    half-width punctuation — which the key also folds away, identically on
+    both sides. The semantic characters of the quote still have to appear,
+    in order, in the source; only the spelling of the formula may differ.
     """
-    return _SPACING.sub("", _LINE_NUMBER.sub(" ", value.casefold()))
+    text = unicodedata.normalize("NFKC", value).casefold()
+    text = text.translate(_FULLWIDTH_PUNCTUATION)
+    text = _LINE_NUMBER.sub(" ", text)
+    text = _MATH_DELIMITERS.sub("", text)
+    text = _RENDER_ONLY_COMMANDS.sub("", text)
+    text = _STYLED_COMMANDS.sub("", text)
+    text = _SYMBOL_COMMAND_PATTERN.sub(
+        lambda match: _SYMBOL_COMMANDS[match.group(0)], text
+    )
+    text = _FRAC_COMMANDS.sub("/", text)
+    text = _BRACES.sub("", text)
+    # Whatever commands survive the tables above (\sin, \log, \overline, an
+    # escaped "\%"...) lose their backslash, so their remaining letters are
+    # compared like any other letters on the page.
+    text = _ANY_BACKSLASH.sub("", text)
+    return _SPACING.sub("", text)
 
 
 def grounding_context(
