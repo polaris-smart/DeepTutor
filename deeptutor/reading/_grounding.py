@@ -71,6 +71,14 @@ _STYLED_COMMANDS = re.compile(
 )
 _FRAC_COMMANDS = re.compile(r"\\(?:dfrac|tfrac|frac)(?![a-zA-Z])")
 _BRACES = re.compile(r"[{}]")
+# Braces around a multi-token exponent or subscript group the tokens
+# ("2^{n+1}" is a different formula from "2^n+1"), so they are grouping, not
+# presentation: they are protected through the brace strip below and compared
+# literally. Single-token braces ("x^{2}") and command arguments
+# ("\frac{a}{b}", "\mathrm{PV}") stay presentation drift and keep folding.
+_EXPONENT_GROUPS = re.compile(r"([\^_])\{([^{}]{2,})\}")
+_GROUP_OPEN = "\x00"
+_GROUP_CLOSE = "\x01"
 _ANY_BACKSLASH = re.compile(r"\\")
 _FULLWIDTH_PUNCTUATION = str.maketrans(
     {
@@ -175,7 +183,12 @@ def evidence_key(value: str) -> str:
         lambda match: _SYMBOL_COMMANDS[match.group(0)], text
     )
     text = _FRAC_COMMANDS.sub("/", text)
+    text = _EXPONENT_GROUPS.sub(
+        lambda match: f"{match.group(1)}{_GROUP_OPEN}{match.group(2)}{_GROUP_CLOSE}",
+        text,
+    )
     text = _BRACES.sub("", text)
+    text = text.replace(_GROUP_OPEN, "{").replace(_GROUP_CLOSE, "}")
     # Whatever commands survive the tables above (\sin, \log, \overline, an
     # escaped "\%"...) lose their backslash, so their remaining letters are
     # compared like any other letters on the page.

@@ -38,6 +38,18 @@ def test_evidence_key_matches_superscript_brace_drift() -> None:
     assert evidence_key("x^2 + y^{2} = r^2") == evidence_key("x^{2} + y^2 = r^{2}")
 
 
+def test_evidence_key_keeps_multitoken_exponent_grouping() -> None:
+    """A multi-token exponent groups its tokens: "2^{n+1}" is a different
+    formula from "2^n+1", so brace folding may not erase the distinction —
+    while single-token braces and command arguments keep folding away."""
+    assert evidence_key("2^{n+1}") != evidence_key("2^n+1")
+    assert evidence_key("x^{23}") != evidence_key("x^23")
+    assert evidence_key("a_{12}") != evidence_key("a_12")
+    assert evidence_key("x^2") == evidence_key("x^{2}")
+    assert evidence_key(r"\frac{a}{b} + \mathrm{PV} = nRT") == evidence_key("/ab + PV = nRT")
+    assert evidence_key("所以序列 2^{n+1} 收敛") in evidence_key("证明：所以序列 2^{n+1} 收敛。")
+
+
 def test_evidence_key_matches_render_only_commands_and_styling() -> None:
     page = r"\[ \left( \dfrac{a}{b} \right) \cdot \alpha \]"
     quote = r"$(\frac{a}{b}) \cdot \alpha$"

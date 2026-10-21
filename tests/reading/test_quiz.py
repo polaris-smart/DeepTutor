@@ -345,3 +345,23 @@ async def test_fabricated_math_evidence_is_still_rejected(monkeypatch):
     monkeypatch.setattr("deeptutor.reading.quiz.complete", complete)
     with pytest.raises(ValueError, match="evidence must come from"):
         await ReadingQuizExtension().run_action("start", context)
+
+
+@pytest.mark.asyncio
+async def test_strippable_only_evidence_is_rejected(monkeypatch):
+    """An evidence made only of strippable characters ("$$") normalizes to
+    the empty string, and "" would pass any substring check unguarded —
+    it grounds nothing and must be refused."""
+    context = ReadingContext(
+        material_id="material",
+        locator=1,
+        locale="zh",
+        visible_text="设函数 \\(f(x) = x^{2} + 3x\\)，求 \\(f'(x)\\) 的最小值。",
+    )
+
+    async def complete(**_kwargs):
+        return _model_response(evidence="$$")
+
+    monkeypatch.setattr("deeptutor.reading.quiz.complete", complete)
+    with pytest.raises(ValueError, match="evidence must come from"):
+        await ReadingQuizExtension().run_action("start", context)
