@@ -342,6 +342,46 @@ def _shuffle_choice_options(
     return remapped, new_expected
 
 
+_OPTION_LETTER_RE = re.compile(r"(?<![A-Za-z0-9])([A-Z])(?![A-Za-z0-9])")
+
+
+def _moved_choice_labels(
+    before: list[dict[str, str]], after: list[dict[str, str]]
+) -> dict[str, str]:
+    """Map each option label that a shuffle relocated to its new label.
+
+    Bodies are unique on the validated contract, so body matching is exact.
+    Labels that stayed put (or options that never moved) are absent, and the
+    caller remaps only what actually moved.
+    """
+    body_to_new = {option["body"]: option["label"] for option in after}
+    return {
+        option["label"]: body_to_new[option["body"]]
+        for option in before
+        if body_to_new.get(option["body"], option["label"]) != option["label"]
+    }
+
+
+def remap_choice_letters(text: str, mapping: dict[str, str]) -> str:
+    """Rewrite bare option letters in explanation prose after a shuffle.
+
+    The model authors ``explanation`` against the registration order ("B is
+    correct: …"), then ``_shuffle_choice_options`` re-issues labels
+    positionally — leaving the stored prose citing a letter the card no
+    longer shows. This realigns every standalone A–Z token through the
+    ``old -> new`` map in one pass, so ``B 正确`` becomes ``C 正确`` and
+    multi-letter citations all move together (no chained substitution).
+    The lookarounds only fire on a letter standing alone, so letter runs
+    like "△ABC" and digit-prefixed tokens like "2B" survive untouched; the
+    trade-off is that a stray standalone uppercase letter in the prose is
+    treated as an option reference — in one-or-two-sentence answer keys
+    that is overwhelmingly what it is.
+    """
+    if not text or not mapping:
+        return text
+    return _OPTION_LETTER_RE.sub(lambda match: mapping.get(match.group(1), match.group(1)), text)
+
+
 async def _resolve_pending_choice(
     pending: PendingQuestion, turn_id: str
 ) -> tuple[dict[str, str], str]:
@@ -1011,7 +1051,10 @@ class MasteryQuizTool(BaseTool):
                         "Held server-side like expected_answer — never shown on the "
                         "card the learner is answering — and saved with the attempt "
                         "so a wrong answer is reviewable later in their question "
-                        "bank instead of being just a score."
+                        "bank instead of being just a score. Choice options are "
+                        "shuffled before display, so bare option letters you cite "
+                        "here are remapped to the labels the learner sees; quoting "
+                        "the option's content instead of its letter is clearest."
                     ),
                     required=False,
                     # Withheld from the trace for the same reason as
@@ -1058,7 +1101,17 @@ class MasteryQuizTool(BaseTool):
         )
 
         if q_type == "choice":
+            registered_order = [dict(option) for option in options]
             options, expected = _shuffle_choice_options(options, expected, random.Random())
+            # The explanation was authored against the registration order; the
+            # card now renders the shuffled one. Realign its bare letters so
+            # the answer key always cites the label the learner can see —
+            # the grade card and the question bank both persist this text.
+            explanation_text = str(kwargs.get("explanation") or "")
+            if explanation_text:
+                moved = _moved_choice_labels(registered_order, options)
+                if moved:
+                    kwargs["explanation"] = remap_choice_letters(explanation_text, moved)
 
         service = _new_service()
         progress = _load_path(service, path_id)
