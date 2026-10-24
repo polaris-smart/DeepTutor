@@ -77,6 +77,8 @@ import {
 } from "./WorkspaceChrome";
 import { ReadingCompanion } from "./ReadingCompanion";
 import { PageToolButtons, ReadAloudButton } from "./ReadAloudButton";
+import { MaterialQuizButton } from "./MaterialQuizButton";
+import { TakehomeButton } from "./TakehomeButton";
 import {
   WorkspaceMenuContext,
   type WorkspaceMenuItem,
@@ -448,7 +450,7 @@ export function ReadingWorkspacePage() {
       data-reading-workspace=""
       className="reading-v2 flex h-full min-h-0 flex-col overflow-hidden bg-[var(--background)] text-[var(--foreground)] dark:bg-[var(--background)] dark:text-[var(--foreground)]"
     >
-      <header className="flex h-11 shrink-0 items-center gap-1.5 border-b border-[var(--border)] bg-[var(--card)] px-2.5">
+      <header className="relative flex h-11 shrink-0 items-center gap-1.5 border-b border-[var(--border)] bg-[var(--card)] px-2.5">
         <Link
           href={readingFolderRoute(workspace.workspace_id)}
           className="flex size-7 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] transition hover:bg-[var(--muted)]"
@@ -508,6 +510,13 @@ export function ReadingWorkspacePage() {
           <PageToolButtons
             disabled={!materialReady || state.isStreaming}
             onQuiz={quizThisPage}
+          />
+          <MaterialQuizButton disabled={!materialReady || state.isStreaming} />
+          <TakehomeButton
+            disabled={!materialReady || state.isStreaming}
+            materialId={materialReady ? (activeTab?.material.material_id ?? null) : null}
+            materialTitle={activeTab?.material.title || ""}
+            locator={activeLocator}
           />
           {/* An icon, like every other control on this bar: as the only
               labelled button it read as the page's primary action. */}
