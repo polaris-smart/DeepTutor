@@ -189,6 +189,18 @@ export default function AssignmentsPage() {
                   </option>
                 ))}
               </select>
+              {/* U7: 没有班级时给出建班出口——只加不改，下拉行为不变 */}
+              {!loading && rosters.length === 0 && (
+                <span className="mt-1 block text-xs text-[var(--muted-foreground)]">
+                  {t("No classes yet.")}{" "}
+                  <Link
+                    href="/classes"
+                    className="text-teal-600 hover:text-teal-700 dark:text-teal-400 dark:hover:text-teal-300"
+                  >
+                    {t("Create a class")}
+                  </Link>
+                </span>
+              )}
             </label>
             <label className="block">
               <span className="mb-1 block text-xs font-medium text-[var(--muted-foreground)]">

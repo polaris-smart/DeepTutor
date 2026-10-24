@@ -165,6 +165,15 @@ export const PRIMARY_NAV: NavEntry[] = [
     roles: ["teacher", "admin"],
   },
   {
+    // 班级管理: 建班 + 学生名册（U7）。作业布置的第一步（选班级）依赖这里
+    // 建好的名册，所以紧挨 Assignments 排布，同属教师/管理员全量导航。
+    href: '/classes',
+    label: 'Classes',
+    icon: Users,
+    tooltipKey: 'Classes tooltip',
+    roles: ["teacher", "admin"],
+  },
+  {
     href: '/courses',
     label: 'Courses',
     icon: BookOpen,

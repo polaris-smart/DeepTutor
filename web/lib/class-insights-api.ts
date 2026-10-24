@@ -74,3 +74,57 @@ export async function fetchMyChildren(): Promise<ClassInsightsOverview> {
   if (!res.ok) return parseError(res, "Failed to fetch children insights");
   return res.json();
 }
+
+/** Body of POST /api/class-insights/classes. */
+export interface CreateClassInput {
+  name: string;
+  /** Roster of student usernames; the backend validates each is a live
+   *  role=student account and rejects unknown names. */
+  students?: string[];
+}
+
+/** Body of PUT /api/class-insights/classes/{id}. */
+export interface UpdateClassInput {
+  name?: string;
+  students?: string[];
+}
+
+/** Create a class roster owned by the current teacher (or admin). */
+export async function createClass(
+  input: CreateClassInput,
+): Promise<{ class: ClassRoster }> {
+  const res = await apiFetch(apiUrl("/api/class-insights/classes"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) return parseError(res, "Failed to create class");
+  return res.json();
+}
+
+/** Rename a class and/or replace its roster (owner or admin). */
+export async function updateClass(
+  classId: string,
+  input: UpdateClassInput,
+): Promise<{ class: ClassRoster }> {
+  const res = await apiFetch(
+    apiUrl(`/api/class-insights/classes/${encodeURIComponent(classId)}`),
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    },
+  );
+  if (!res.ok) return parseError(res, "Failed to update class");
+  return res.json();
+}
+
+/** Delete a class roster (owner or admin); student accounts are untouched. */
+export async function deleteClass(classId: string): Promise<{ ok: boolean }> {
+  const res = await apiFetch(
+    apiUrl(`/api/class-insights/classes/${encodeURIComponent(classId)}`),
+    { method: "DELETE" },
+  );
+  if (!res.ok) return parseError(res, "Failed to delete class");
+  return res.json();
+}
