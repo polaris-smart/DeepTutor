@@ -157,7 +157,132 @@ export default function FamilyInsightsPage() {
               </p>
             </div>
           ) : (
-            <table className="w-full text-sm">
+            <>
+              {/* U9 移动端（<640px）：5 列表格 min-content 宽超 390px 视口，
+                  被外层 overflow-hidden 横向裁切。转逐孩卡片堆叠，
+                  字段标签复用表头 i18n 键，文案零新增。 */}
+              <div className="divide-y divide-[var(--border)] md:hidden">
+                {sorted.map((child) => {
+                  const tier = tierOf(child.avg_mastery_pct);
+                  const noAttempts = child.has_attempts === false;
+                  return (
+                    <div key={child.username} className="px-4 py-4 sm:px-5">
+                      <div className="flex items-center gap-2.5">
+                        <span
+                          className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+                            noAttempts
+                              ? "bg-[var(--muted-foreground)]/30"
+                              : TIER_BAR[tier]
+                          }`}
+                          aria-hidden
+                        />
+                        <span className="min-w-0 truncate font-medium text-[var(--foreground)]">
+                          {child.username}
+                        </span>
+                      </div>
+                      <dl className="mt-3 space-y-2 text-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <dt className="shrink-0 text-xs uppercase tracking-wider text-[var(--muted-foreground)]">
+                            {t("KP Total")}
+                          </dt>
+                          <dd className="min-w-0 text-right text-[var(--muted-foreground)]">
+                            {child.no_data ? (
+                              <span className="inline-flex items-center rounded-full bg-[var(--muted)]/60 px-2 py-0.5 text-xs">
+                                {t("No learning data yet")}
+                              </span>
+                            ) : (
+                              child.kp_total
+                            )}
+                          </dd>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <dt className="shrink-0 text-xs uppercase tracking-wider text-[var(--muted-foreground)]">
+                            {t("Average Mastery")}
+                          </dt>
+                          <dd className="min-w-0 text-right">
+                            {child.no_data ? (
+                              <span className="text-xs text-[var(--muted-foreground)]">—</span>
+                            ) : noAttempts ? (
+                              <span className="text-xs text-[var(--muted-foreground)]">
+                                {t(
+                                  "No practice records yet. Mastery will appear here once exercises are completed.",
+                                )}
+                              </span>
+                            ) : (
+                              <div className="flex items-center justify-end gap-2">
+                                <div className="h-2 w-20 overflow-hidden rounded-full bg-[var(--muted)]/50">
+                                  <div
+                                    className={`h-full rounded-full ${TIER_BAR[tier]}`}
+                                    style={{
+                                      width: `${Math.min(100, child.avg_mastery_pct)}%`,
+                                    }}
+                                  />
+                                </div>
+                                <span
+                                  className={`text-xs font-medium tabular-nums ${TIER_TEXT[tier]}`}
+                                >
+                                  {child.avg_mastery_pct}%
+                                </span>
+                              </div>
+                            )}
+                          </dd>
+                        </div>
+                        <div className="flex items-start justify-between gap-3">
+                          <dt className="shrink-0 pt-0.5 text-xs uppercase tracking-wider text-[var(--muted-foreground)]">
+                            {t("Weak Knowledge Points")}
+                          </dt>
+                          <dd className="min-w-0 text-right">
+                            {child.no_data ||
+                            noAttempts ||
+                            child.weak.length === 0 ? (
+                              <span className="text-xs text-[var(--muted-foreground)]">
+                                {child.no_data
+                                  ? t("No learning data yet")
+                                  : noAttempts
+                                    ? t("No practice records yet")
+                                    : t("No weak knowledge points")}
+                              </span>
+                            ) : (
+                              <div className="flex flex-wrap justify-end gap-1">
+                                {child.weak.slice(0, 5).map((kp) => (
+                                  <span
+                                    key={kp.kp_id}
+                                    title={kp.name}
+                                    className="inline-flex max-w-full items-center gap-1 rounded-full
+                                               bg-red-500/10 px-2 py-0.5 text-xs text-red-600
+                                               dark:text-red-400"
+                                  >
+                                    <span className="truncate">{kp.name}</span>
+                                    <span className="shrink-0 opacity-70">
+                                      {Math.round(kp.mastery * 100)}%
+                                    </span>
+                                  </span>
+                                ))}
+                                {child.weak.length > 5 && (
+                                  <span className="text-xs text-[var(--muted-foreground)]">
+                                    +{child.weak.length - 5}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </dd>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <dt className="shrink-0 text-xs uppercase tracking-wider text-[var(--muted-foreground)]">
+                            {t("Last Active")}
+                          </dt>
+                          <dd className="min-w-0 text-right text-[var(--muted-foreground)]">
+                            {formatActive(child.last_active, lang)}
+                          </dd>
+                        </div>
+                      </dl>
+                    </div>
+                  );
+                })}
+              </div>
+              {/* 桌面端（≥640px）：原表格布局，零变化 */}
+              <div className="hidden md:block">
+                <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-[var(--border)] text-left text-xs text-[var(--muted-foreground)] uppercase tracking-wider">
                   <th className="px-5 py-3 font-medium">{t("Child")}</th>
@@ -276,6 +401,8 @@ export default function FamilyInsightsPage() {
                 })}
               </tbody>
             </table>
+              </div>
+            </>
           )}
         </div>
 
