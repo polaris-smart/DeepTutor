@@ -987,6 +987,66 @@ def _bilibili_sessdata() -> str:
     return ""
 
 
+_BILIBILI_BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+def _bilibili_referer(bvid: str) -> str:
+    return f"https://www.bilibili.com/video/{bvid}/"
+
+
+def _bilibili_cookie_dict() -> dict[str, str]:
+    """Full browser cookie dict for Bilibili API/CDN calls.
+
+    ``SESSDATA`` alone is enough for the metadata APIs, but the CDN and the
+    audio playurl endpoint reject anonymous/stale sessions more aggressively
+    these days; carrying the whole exported cookie (bili_jct / DedeUserID /
+    buvid3 when present) is the documented browser state.
+    """
+    cookies: dict[str, str] = {}
+    sessdata = _bilibili_sessdata()
+    if sessdata:
+        cookies["SESSDATA"] = sessdata
+    cookie_file = Path(os.environ.get("BILIBILI_COOKIE_FILE") or "/app/data/bilibili-cookie.json")
+    try:
+        payload = json.loads(cookie_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return cookies
+    if isinstance(payload, dict):
+        for key in ("SESSDATA", "bili_jct", "DedeUserID", "buvid3"):
+            raw = payload.get(key)
+            if isinstance(raw, str) and raw.strip():
+                cookies[key] = raw.strip()
+    return cookies
+
+
+def _bilibili_api_headers(bvid: str) -> dict[str, str]:
+    return {
+        "Accept": "application/json",
+        "Referer": _bilibili_referer(bvid),
+        "User-Agent": "DeepTutor-Reading/1.0",
+    }
+
+
+def _bilibili_browser_headers(bvid: str, *, json_accept: bool = False) -> dict[str, str]:
+    """Browser-shaped headers for endpoints/CDNs that anti-leech on UA/Referer.
+
+    The reading UA works for the metadata API, but the media CDN answers 567
+    ("Unknown Status") for non-browser clients, and the playurl endpoint starts
+    returning -412 risk-control for anonymous browser-shaped requests. Retrying
+    the API with these headers is the cheapest credible escalation.
+    """
+    return {
+        "Accept": "application/json, text/plain, */*" if json_accept else "*/*",
+        "Referer": _bilibili_referer(bvid),
+        "Origin": "https://www.bilibili.com",
+        "User-Agent": _BILIBILI_BROWSER_UA,
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    }
+
+
 async def _load_bilibili_audio(bvid: str, cid: int) -> Path:
     """Pull the best Bilibili audio track into a temporary file.
 
@@ -996,30 +1056,41 @@ async def _load_bilibili_audio(bvid: str, cid: int) -> Path:
     download is capped at ``MAX_BILIBILI_AUDIO_BYTES`` so a pathological
     stream cannot fill the disk, and the caller owns the returned file's
     directory (removing it when done).
+
+    Hardening (v1033): the media CDN anti-leeches on non-browser UA/headers and
+    the playurl API may answer -412 for the reading UA, so this method retries
+    the API once with browser headers, then tries every DASH base/backup URL
+    and finally the legacy durl MP4 before giving up with a classified error.
     """
     try:
         import httpx
     except ImportError as exc:  # pragma: no cover - server installs include httpx
         raise ReadingError("Bilibili import requires httpx") from exc
 
-    headers = {
-        "Accept": "application/json",
-        "Referer": f"https://www.bilibili.com/video/{bvid}/",
-        "User-Agent": "DeepTutor-Reading/1.0",
-    }
-    sessdata = _bilibili_sessdata()
-    cookies = {"SESSDATA": sessdata} if sessdata else None
+    cookies = _bilibili_cookie_dict() or None
+    timeout = httpx.Timeout(120.0, connect=15.0)
     async with httpx.AsyncClient(
-        timeout=httpx.Timeout(120.0, connect=15.0),
+        timeout=timeout,
         follow_redirects=True,
-        headers=headers,
+        headers=_bilibili_api_headers(bvid),
         cookies=cookies,
     ) as client:
+        params = {"bvid": bvid, "cid": cid, "fnval": 16, "fourk": 1}
         playurl_response = await client.get(
             "https://api.bilibili.com/x/player/playurl",
-            params={"bvid": bvid, "cid": cid, "fnval": 16, "fourk": 1},
+            params=params,
         )
-        data = _bilibili_api_data(playurl_response, "audio stream")
+        try:
+            data = _bilibili_api_data(playurl_response, "audio stream")
+        except ReadingError:
+            # Reading-UA call was rejected (often -412 risk control); one
+            # browser-shaped retry distinguishes a UA problem from a real block.
+            retry_response = await client.get(
+                "https://api.bilibili.com/x/player/playurl",
+                params=params,
+                headers=_bilibili_browser_headers(bvid, json_accept=True),
+            )
+            data = _bilibili_api_data(retry_response, "audio stream")
 
         def bandwidth(row: dict[str, Any]) -> int:
             try:
@@ -1031,36 +1102,85 @@ async def _load_bilibili_audio(bvid: str, cid: int) -> Path:
         audio_rows = (
             dash.get("audio") if dash is not None and isinstance(dash.get("audio"), list) else []
         )
-        candidates = [row for row in audio_rows if isinstance(row, dict)]
-        stream_url = ""
-        if candidates:
-            loudest = max(candidates, key=bandwidth)
-            stream_url = str(loudest.get("baseUrl") or loudest.get("base_url") or "").strip()
-        if not stream_url:
+        candidates: list[tuple[str, str]] = []  # (url, suffix)
+        seen: set[str] = set()
+        for row in sorted(
+            (row for row in audio_rows if isinstance(row, dict)),
+            key=bandwidth,
+            reverse=True,
+        ):
+            urls = [row.get("baseUrl") or row.get("base_url")]
+            backups = row.get("backupUrl") or row.get("backup_url") or []
+            if isinstance(backups, list):
+                urls.extend(backups)
+            for raw_url in urls:
+                stream_url = str(raw_url or "").strip()
+                if stream_url and stream_url not in seen:
+                    seen.add(stream_url)
+                    candidates.append((stream_url, ".m4a"))
+        if not candidates:
             durl_rows = data.get("durl") if isinstance(data.get("durl"), list) else []
             for row in durl_rows:
-                if isinstance(row, dict) and str(row.get("url") or "").strip():
-                    stream_url = str(row.get("url") or "").strip()
-                    break
-        if not stream_url:
+                stream_url = (
+                    str(row.get("url") or "").strip() if isinstance(row, dict) else ""
+                )
+                if stream_url and stream_url not in seen:
+                    seen.add(stream_url)
+                    candidates.append((stream_url, ".mp4"))
+        if not candidates:
             raise ReadingError("Bilibili returned no downloadable audio stream")
 
         tmp_dir = Path(tempfile.mkdtemp(prefix="dt-bili-audio-"))
-        audio_path = tmp_dir / "audio.m4a"
-        try:
-            total = 0
-            with audio_path.open("wb") as sink:
-                async with client.stream("GET", stream_url) as stream:
-                    stream.raise_for_status()
-                    async for block in stream.aiter_bytes(1024 * 1024):
-                        total += len(block)
-                        if total > MAX_BILIBILI_AUDIO_BYTES:
-                            raise ReadingError("Bilibili audio exceeded the download size limit")
-                        sink.write(block)
-        except BaseException:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-            raise
-    return audio_path
+        download_headers = _bilibili_browser_headers(bvid)
+        failures: list[str] = []
+        for index, (stream_url, suffix) in enumerate(candidates):
+            audio_path = tmp_dir / f"audio-{index}{suffix}"
+            try:
+                total = 0
+                with audio_path.open("wb") as sink:
+                    async with client.stream(
+                        "GET", stream_url, headers=download_headers
+                    ) as stream:
+                        stream.raise_for_status()
+                        async for block in stream.aiter_bytes(1024 * 1024):
+                            total += len(block)
+                            if total > MAX_BILIBILI_AUDIO_BYTES:
+                                raise ReadingError(
+                                    "Bilibili audio exceeded the download size limit"
+                                )
+                            sink.write(block)
+                if total == 0:
+                    raise ReadingError("Bilibili CDN returned an empty audio body")
+                logger.info(
+                    "Bilibili audio downloaded: bvid=%s candidate=%s/%s bytes=%s",
+                    bvid,
+                    index + 1,
+                    len(candidates),
+                    total,
+                )
+                return audio_path
+            except Exception as exc:  # noqa: BLE001 — try every CDN candidate
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                host = urlparse(stream_url).netloc
+                failures.append(f"{status or type(exc).__name__}@{host}")
+                logger.warning(
+                    "Bilibili audio candidate failed: bvid=%s candidate=%s/%s host=%s status=%s error=%s",
+                    bvid,
+                    index + 1,
+                    len(candidates),
+                    host,
+                    status,
+                    str(exc)[:120],
+                )
+                try:
+                    audio_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise ReadingError(
+            "Bilibili audio download failed for all "
+            f"{len(candidates)} candidates: {', '.join(failures[:6])}"
+        )
 
 
 def _bilibili_api_data(response: Any, label: str) -> dict[str, Any]:
