@@ -13,8 +13,9 @@ import unicodedata
 class DocumentValidator:
     """Document validation utilities"""
 
-    # Maximum file size in bytes (200MB), applied uniformly to every format.
-    MAX_FILE_SIZE: ClassVar[int] = 200 * 1024 * 1024
+    # Maximum file size in bytes (300MB), applied uniformly to every format.
+    # 2026-10-26: 200MB 不够大课件（204MB pptx 被拒），按老板要求放宽到 300MB。
+    MAX_FILE_SIZE: ClassVar[int] = 300 * 1024 * 1024
 
     # Allowed file extensions
     ALLOWED_EXTENSIONS: ClassVar[set[str]] = {
