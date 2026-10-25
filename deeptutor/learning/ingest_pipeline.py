@@ -686,16 +686,22 @@ def _node_struct_path(tree: Any, node_id: str) -> str:
     return ""
 
 
+def _path_segments(path: Any) -> list[str]:
+    """把结构路径切成段：canonical ``struct_path`` 用 ">"，历史/兼容路径可能用 "/"。"""
+    return [seg for seg in re.split(r"[>/]", str(path or "")) if seg]
+
+
 def _is_path_prefix(ancestor_path: str, descendant_path: str) -> bool:
-    """路径段前缀判断：按 "/" 切段逐段比，不做裸字符串 startswith。
+    """路径段前缀判断：按 ">" / "/" 切段逐段比，不做裸字符串 startswith。
 
     裸前缀会让「第一章 集合」误配「第一章 集合练习」——切段后两者第二段
-    不同，不会误挂。
+    不同，不会误挂；分隔符必须同时兼容 ">"（书 manifest 的 canonical
+    struct_path）与 "/"（早期 KB doc_tree 的写法）。
     """
-    ancestor = [seg for seg in ancestor_path.split("/") if seg]
+    ancestor = _path_segments(ancestor_path)
     if not ancestor:
         return False
-    descendant = [seg for seg in descendant_path.split("/") if seg]
+    descendant = _path_segments(descendant_path)
     return len(descendant) >= len(ancestor) and descendant[: len(ancestor)] == ancestor
 
 
@@ -732,6 +738,122 @@ def _find_kp(progress: Any, kp_id: str, tree: Any = None) -> Any:
     return found[0] if found else None
 
 
+def _bridge_str(value: Any) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _modules_from_canonical_tree(
+    book_id: str, tree: Any
+) -> list[Any]:
+    """按原生 ``import-from-kp-tree`` 的规则，把 canonical 树的目级 ``mu`` 节点
+
+    投影成 LearningModule/KP 列表（与 mastery_path router 的
+    ``_modules_from_canonical_tree`` 同构，避免 pipeline 依赖 api 层）。
+
+    规则：``type: "mu"`` 节点是 KP，挂在最近的非-mu 祖先下；该祖先（节/课/单元）
+    成为模块。没有 mu 节点的树返回 ``[]``（原生导入同样不支持）。
+    """
+    from deeptutor.learning.models import (
+        KnowledgePoint,
+        KnowledgeType,
+        LearningModule,
+    )
+
+    groups: list[list[Any]] = []  # [anchor_title, mu_nodes]
+    last_anchor: Any = None
+
+    def walk(node: Any, anchor: Any) -> None:
+        nonlocal last_anchor
+        if not isinstance(node, dict):
+            return
+        if node.get("type") == "mu":
+            if groups and anchor is last_anchor:
+                groups[-1][1].append(node)
+            else:
+                groups.append([str((anchor or {}).get("title") or ""), [node]])
+                last_anchor = anchor
+        child_anchor = anchor if node.get("type") == "mu" else node
+        for child in node.get("children") or []:
+            walk(child, child_anchor)
+
+    root = tree
+    if isinstance(root, list):
+        tops = [n for n in root if isinstance(n, dict)]
+    elif isinstance(root, dict):
+        tops = list(root.get("children") or [])
+    else:
+        tops = []
+    for child in tops:
+        walk(child, None)
+
+    modules: list[Any] = []
+    for i, (anchor_title, mus) in enumerate(groups):
+        module_id = f"{book_id}_m{i}"
+        kps = [
+            KnowledgePoint(
+                id=f"{module_id}_kp{j}",
+                name=_bridge_str(mu.get("title")),
+                type=KnowledgeType("concept"),
+                module_id=module_id,
+                struct_path=_bridge_str(mu.get("struct_path")),
+                textbook_node_id=_bridge_str(mu.get("node_id")),
+            )
+            for j, mu in enumerate(mus)
+            if _bridge_str(mu.get("title"))
+        ]
+        if not kps:
+            continue
+        modules.append(
+            LearningModule(
+                id=module_id,
+                name=anchor_title or f"Chapter {i + 1}",
+                order=i,
+                pass_threshold=0.7,
+                knowledge_points=kps,
+            )
+        )
+    return modules
+
+
+def _sync_mastery_path_from_tree(
+    record: dict[str, Any], ctx: dict[str, Any], deps: PipelineDeps
+) -> tuple[bool, str]:
+    """挂载失败时的自愈：用 canonical 树重建 mastery path（原生能力，保守边界）。
+
+    - 树里没有目级 mu 节点 → 不做（原生 import 同样不支持，返回 False 交由调用方报错）；
+    - path 已有真实学习进度（quiz_attempts / mastery_levels 非空）→ 拒绝重建，
+      绝不为了挂题抹掉学生学习数据；
+    - 否则按原生 ``import-from-kp-tree`` 的方式重建模块与 KP 桥接字段。
+    """
+    book_id = record["book_id"]
+    tree = ctx.get("tree")
+    if tree is None:
+        _load_book_ctx(record, ctx, deps)
+        tree = ctx.get("tree")
+    modules = _modules_from_canonical_tree(book_id, tree)
+    if not modules:
+        return False, "canonical 树无目级 mu 节点，原生 mastery path 导入不可用"
+
+    from deeptutor.learning.service import LearningService
+    from deeptutor.learning.storage import LearningStore
+
+    root = deps.learning_root()
+    store = LearningStore(root=root) if root else LearningStore()
+    progress = store.load(book_id)
+    if progress is not None and (
+        getattr(progress, "quiz_attempts", None) or getattr(progress, "mastery_levels", None)
+    ):
+        return False, "mastery path 已有学习进度，拒绝重建"
+
+    service = LearningService(store)
+    progress = service.get_or_create(book_id)
+    service.init_modules(progress, modules)
+    progress.current_module_id = modules[0].id
+    progress.current_kp_index = 0
+    service.save(progress)
+    return True, f"已按 canonical 树重建 mastery path（{len(modules)} 模块）"
+
+
 def _stage_qb_mounted(record: dict[str, Any], ctx: dict[str, Any], deps: PipelineDeps) -> dict[str, Any]:
     book_id = record["book_id"]
     qbanks_dir = deps.qbanks_dir()
@@ -754,30 +876,53 @@ def _stage_qb_mounted(record: dict[str, Any], ctx: dict[str, Any], deps: Pipelin
 
     root = deps.learning_root()
     store = LearningStore(root=root) if root else LearningStore()
+    def _mount(progress: Any) -> tuple[int, int, list[str]]:
+        mounted_kps = 0
+        mounted_questions = 0
+        missing: list[str] = []
+        for kp_id, items in grouped.items():
+            targets = _find_kps(progress, kp_id, tree)
+            if not targets:
+                missing.append(kp_id)
+                continue
+            for target in targets:
+                # 合并写：只替换 question_bank，保留 meta 里的 bank_cursor 等其它键。
+                target.meta = {**(target.meta or {}), "question_bank": [dict(q) for q in items]}
+                mounted_kps += 1
+                mounted_questions += len(items)
+        return mounted_kps, mounted_questions, missing
+
     progress = store.load(book_id)
+    mounted_kps, mounted_questions, missing = (
+        _mount(progress) if progress is not None else (0, 0, [])
+    )
+
+    sync_note = ""
+    if mounted_kps == 0:
+        # 自愈：canonical 树与 mastery path 不同步是 ZC 素材管线的历史缺口
+        # （structured 只检查树，从未把树导入 path）。这里调用原生等价逻辑重建
+        # path 后重试挂载；path 有学习进度时 sync 助手会拒绝，绝不覆盖学生数据。
+        try:
+            synced, why = _sync_mastery_path_from_tree(record, ctx, deps)
+        except Exception as exc:  # noqa: BLE001 — 自愈失败不吞原始错误
+            synced, why = False, f"自愈异常 {_exc_summary(exc)}"
+        sync_note = "；" + why
+        if synced:
+            progress = store.load(book_id)
+            mounted_kps, mounted_questions, missing = (
+                _mount(progress) if progress is not None else (0, 0, missing)
+            )
+
     if progress is None:
         raise RuntimeError(
-            f"Mastery path '{book_id}' 未初始化：请先在引导学习中为该书生成/导入章节，再重试挂载"
+            f"Mastery path '{book_id}' 未初始化：请先在引导学习中为该书生成/导入章节，"
+            f"再重试挂载{sync_note}"
         )
-
-    mounted_kps = 0
-    mounted_questions = 0
-    missing: list[str] = []
-    for kp_id, items in grouped.items():
-        targets = _find_kps(progress, kp_id, tree)
-        if not targets:
-            missing.append(kp_id)
-            continue
-        for target in targets:
-            # 合并写：只替换 question_bank，保留 meta 里的 bank_cursor 等其它键。
-            target.meta = {**(target.meta or {}), "question_bank": [dict(q) for q in items]}
-            mounted_kps += 1
-            mounted_questions += len(items)
 
     if mounted_kps == 0:
         raise RuntimeError(
             f"未能挂载任何 KP：映射的 {len(grouped)} 个 KP 均未在 mastery path 中找到"
-            f"（无映射题 {skipped_no_map}）"
+            f"（无映射题 {skipped_no_map}）{sync_note}"
         )
 
     store.save(progress)
@@ -787,6 +932,7 @@ def _stage_qb_mounted(record: dict[str, Any], ctx: dict[str, Any], deps: Pipelin
     )
     if missing:
         note += f"；{len(missing)} 个 KP 未在 path 中（{', '.join(missing[:5])}）"
+    note += sync_note
     return {"mounted": mounted_kps, "note": note}
 
 
