@@ -815,6 +815,55 @@ def _modules_from_canonical_tree(
     return modules
 
 
+def _spine_chapter_modules(book: dict[str, Any], book_id: str) -> list[Any]:
+    """canonical 树没有目级 ``mu`` 节点时的兜底：用 spine 章链建模块（政治类教材）。
+
+    每个 spine 章（跳过 overview/导览）一个模块、一个 KP；KP 的
+    ``textbook_node_id`` 用 spine 章 id —— 与题库 ``chapter_id``、kp_map 的键一致，
+    这样即使 kp_mapper 把章节映射到树节点 id，挂载段也能用章 id 候选命中。
+    """
+    from deeptutor.learning.models import (
+        KnowledgePoint,
+        KnowledgeType,
+        LearningModule,
+    )
+
+    chapters = [
+        c
+        for c in (book.get("chapters") or [])
+        if isinstance(c, dict) and c.get("id") and c.get("title")
+    ]
+    real = [
+        c
+        for c in chapters
+        if not any(key in str(c["title"]) for key in ("本书导览", "目录", "导览"))
+    ]
+    if not real:
+        return []
+    modules: list[Any] = []
+    for i, chapter in enumerate(real):
+        module_id = f"{book_id}_m{i}"
+        title = str(chapter["title"])
+        kp = KnowledgePoint(
+            id=f"{module_id}_kp0",
+            name=title,
+            type=KnowledgeType("concept"),
+            module_id=module_id,
+            struct_path=title,
+            textbook_node_id=str(chapter["id"]),
+        )
+        modules.append(
+            LearningModule(
+                id=module_id,
+                name=title,
+                order=i,
+                pass_threshold=0.7,
+                knowledge_points=[kp],
+            )
+        )
+    return modules
+
+
 def _sync_mastery_path_from_tree(
     record: dict[str, Any], ctx: dict[str, Any], deps: PipelineDeps
 ) -> tuple[bool, str]:
@@ -831,8 +880,15 @@ def _sync_mastery_path_from_tree(
         _load_book_ctx(record, ctx, deps)
         tree = ctx.get("tree")
     modules = _modules_from_canonical_tree(book_id, tree)
+    fallback_note = ""
     if not modules:
-        return False, "canonical 树无目级 mu 节点，原生 mastery path 导入不可用"
+        # 政治类教材：canonical 树没有 mu 节点（原生 import-from-kp-tree 直接 400），
+        # 回退用 spine 章链建模块（每章一个 KP，桥接 spine 章 id）。
+        book = deps.load_book(book_id)
+        modules = _spine_chapter_modules(book, book_id) if book else []
+        if not modules:
+            return False, "canonical 树无目级 mu 节点，spine 章链也不可用，原生 mastery path 导入不可用"
+        fallback_note = f"（canonical 树无 mu，已用 spine 章链兜底 {len(modules)} 模块）"
 
     from deeptutor.learning.service import LearningService
     from deeptutor.learning.storage import LearningStore
@@ -851,7 +907,7 @@ def _sync_mastery_path_from_tree(
     progress.current_module_id = modules[0].id
     progress.current_kp_index = 0
     service.save(progress)
-    return True, f"已按 canonical 树重建 mastery path（{len(modules)} 模块）"
+    return True, f"已按 canonical 树重建 mastery path（{len(modules)} 模块）{fallback_note}"
 
 
 def _stage_qb_mounted(record: dict[str, Any], ctx: dict[str, Any], deps: PipelineDeps) -> dict[str, Any]:
@@ -876,12 +932,26 @@ def _stage_qb_mounted(record: dict[str, Any], ctx: dict[str, Any], deps: Pipelin
 
     root = deps.learning_root()
     store = LearningStore(root=root) if root else LearningStore()
+    #: kp_id -> 映射到它的 chapter_id 列表（挂载候选：先映射值，再章 id）。
+    reverse_ids: dict[str, list[str]] = {}
+    for chapter_id, mapped_id in mapping.items():
+        reverse_ids.setdefault(str(mapped_id), []).append(str(chapter_id))
+
+    def _targets_for(group_id: str, progress: Any) -> list[Any]:
+        for candidate in [group_id, *reverse_ids.get(group_id, [])]:
+            if not candidate:
+                continue
+            targets = _find_kps(progress, candidate, tree)
+            if targets:
+                return targets
+        return []
+
     def _mount(progress: Any) -> tuple[int, int, list[str]]:
         mounted_kps = 0
         mounted_questions = 0
         missing: list[str] = []
         for kp_id, items in grouped.items():
-            targets = _find_kps(progress, kp_id, tree)
+            targets = _targets_for(kp_id, progress)
             if not targets:
                 missing.append(kp_id)
                 continue
