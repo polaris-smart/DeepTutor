@@ -257,13 +257,20 @@ def _default_load_book(book_id: str, *, storage: Any = None) -> dict[str, Any] |
     ]
 
     pages: dict[str, list[dict[str, Any]]] = {}
+    # 出题原文优先用 verbatim ``reading`` 块；rebuild/canonicalize 出来的书可能
+    # 只有 section/text/callout 等生成块（没有 reading），此时回退用这些块的正文，
+    # 否则 qb_generated 会把整本书都判成「无正文」而只出导览题。
+    fallback_types = set()
+    for name in ("SECTION", "TEXT", "CALLOUT", "DEEP_DIVE"):
+        block_type = getattr(BlockType, name, None)
+        if block_type is not None:
+            fallback_types.add(block_type)
     for page in store.list_pages(book_id):  # list_pages 已按 (order, created_at) 排序
         if not page.chapter_id:
             continue
         texts: list[str] = []
+        fallback_texts: list[str] = []
         for block in page.blocks:
-            if block.type != BlockType.READING:
-                continue
             body = ""
             payload = getattr(block, "payload", None)
             if isinstance(payload, dict):
@@ -273,8 +280,14 @@ def _default_load_book(book_id: str, *, storage: Any = None) -> dict[str, Any] |
                 if isinstance(params, dict):
                     body = str(params.get("body") or "")
             body = body.strip()
-            if body:
+            if not body:
+                continue
+            if block.type == BlockType.READING:
                 texts.append(body)
+            elif block.type in fallback_types:
+                fallback_texts.append(body)
+        if not texts and fallback_texts:
+            texts = fallback_texts
         pages.setdefault(page.chapter_id, []).append(
             {
                 "page_id": page.id,
